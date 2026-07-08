@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知著 PenMark</title>
+<style>
+/* ============ 全局重置与设计变量 ============ */
+:root{
+  --bg:#faf8f3;          /* 暖白米白底，纸张质感 */
+  --bg-panel:#f3efe6;    /* 工具栏/状态栏底色 */
+  --bg-editor:#fdfbf5;   /* 编辑区底色，略亮 */
+  --ink:#2b2a27;         /* 主文字色，温润近黑 */
+  --ink-soft:#6b6660;    /* 次要文字色 */
+  --ink-faint:#a8a39a;   /* 更淡 */
+  --line:#e6e0d4;        /* 分隔线 */
+  --accent:#8a7a5c;      /* 低饱和点缀色，黄铜感 */
+  --accent-soft:#c9bc9a;
+  --highlight:#f0ead8;   /* 选中/聚焦淡底 */
+  --shadow:0 1px 3px rgba(60,50,30,.08), 0 4px 16px rgba(60,50,30,.06);
+  --radius:6px;
+  --serif:"Songti SC","STSong","Source Han Serif SC","Noto Serif CJK SC","SimSun",Georgia,"Times New Roman",serif;
+  --sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB","Helvetica Neue",Arial,sans-serif;
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;margin:0;padding:0;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:14px;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+
+/* ============ 顶部工具栏 ============ */
+.toolbar{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:2px;
+  padding:8px 14px;
+  background:var(--bg-panel);
+  border-bottom:1px solid var(--line);
+  font-size:13px;
+}
+.tb-group{
+  display:flex;
+  align-items:center;
+  gap:2px;
+  padding:0 8px;
+  border-right:1px solid var(--line);
+  height:30px;
+}
+.tb-group:last-child{border-right:none;}
+.tb-btn{
+  appearance:none;
+  background:transparent;
+  border:1px solid transparent;
+  color:var(--ink-soft);
+  height:28px;
+  min-width:30px;
+  padding:0 8px;
+  border-radius:4px;
+  cursor:pointer;
+  font-family:var(--sans);
+  font-size:13px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  transition:background .12s, color .12s, border-color .12s;
+  user-select:none;
+}
+.tb-btn:hover{background:var(--highlight);color:var(--ink);}
+.tb-btn:active{background:#e8e1cf;}
+.tb-btn.active{background:#e8e1cf;color:var(--ink);border-color:#d4ccb8;}
+.tb-btn svg{width:15px;height:15px;display:block;}
+.tb-title{font-size:15px;color:var(--accent);font-weight:600;letter-spacing:1px;padding-right:6px;}
+.tb-spacer{flex:1 1 auto;}
+
+/* 下拉选择 */
+.tb-select{
+  height:28px;
+  border:1px solid var(--line);
+  background:var(--bg-editor);
+  color:var(--ink);
+  border-radius:4px;
+  font-family:var(--sans);
+  font-size:13px;
+  padding:0 6px;
+  cursor:pointer;
+}
+
+/* ============ 编辑区 ============ */
+.editor-wrap{
+  flex:1 1 auto;
+  overflow-y:auto;
+  position:relative;
+  background:var(--bg);
+}
+.editor{
+  max-width:780px;
+  margin:40px auto 80px;
+  padding:50px 70px;
+  background:var(--bg-editor);
+  border:1px solid var(--line);
+  border-radius:8px;
+  box-shadow:var(--shadow);
+  min-height:calc(100vh - 200px);
+  outline:none;
+  font-family:var(--serif);
+  font-size:17px;
+  line-height:1.85;
+  color:var(--ink);
+  caret-color:var(--accent);
+}
+.editor:empty:before{
+  content:attr(data-placeholder);
+  color:var(--ink-faint);
+  font-style:italic;
+  pointer-events:none;
+}
+.editor:focus{border-color:var(--accent-soft);}
+
+/* 编辑区内排版 */
+.editor h1{font-size:1.9em;font-weight:700;line-height:1.4;margin:1.2em 0 .6em;color:var(--ink);}
+.editor h2{font-size:1.5em;font-weight:700;line-height:1.4;margin:1.1em 0 .5em;color:var(--ink);}
+.editor h3{font-size:1.2em;font-weight:600;line-height:1.4;margin:1em 0 .4em;color:var(--ink);}
+.editor p{margin:.6em 0;}
+.editor blockquote{
+  margin:.8em 0;
+  padding:.4em 1em .4em 1.1em;
+  border-left:3px solid var(--accent-soft);
+  background:#f5f0e3;
+  color:var(--ink-soft);
+  border-radius:0 4px 4px 0;
+  font-style:italic;
+}
+.editor ul,.editor ol{margin:.6em 0;padding-left:1.8em;}
+.editor li{margin:.25em 0;}
+.editor hr{
+  border:none;
+  border-top:1px solid var(--line);
+  margin:1.6em 0;
+  position:relative;
+}
+.editor a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;}
+.editor:focus-visible{outline:none;}
+
+/* ============ 图片容器（内联、可缩放、可拖拽） ============ */
+.editor figure.img-wrap{
+  display:table;            /* 收缩到图片宽度，让缩放手柄贴住图片四角 */
+  margin:1em auto;
+  position:relative;
+  max-width:100%;
+  text-align:center;
+  -webkit-user-select:none;
+  user-select:none;
+  background:transparent;
+}
+.editor figure.img-wrap img{
+  display:inline-block;
+  max-width:100%;
+  height:auto;
+  vertical-align:middle;
+  border-radius:4px;
+  background:#fff;
+  box-shadow:0 1px 4px rgba(60,50,30,.1);
+  pointer-events:none; /* 让拖拽/缩放由容器处理 */
+}
+.editor figure.img-wrap.selected{
+  outline:2px solid var(--accent);
+  outline-offset:3px;
+  border-radius:4px;
+}
+/* 缩放手柄 */
+.img-wrap .rs-handle{
+  position:absolute;
+  width:14px;height:14px;
+  background:#fff;
+  border:2px solid var(--accent);
+  border-radius:50%;
+  z-index:5;
+  display:none;
+  box-shadow:0 1px 3px rgba(0,0,0,.2);
+}
+.img-wrap.selected .rs-handle{display:block;}
+.rs-handle.tl{top:-7px;left:-7px;cursor:nwse-resize;}
+.rs-handle.tr{top:-7px;right:-7px;cursor:nesw-resize;}
+.rs-handle.bl{bottom:-7px;left:-7px;cursor:nesw-resize;}
+.rs-handle.br{bottom:-7px;right:-7px;cursor:nwse-resize;}
+/* 拖拽中的视觉 */
+.img-wrap.dragging{opacity:.55;}
+
+/* ============ 状态栏 ============ */
+.statusbar{
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  gap:18px;
+  padding:6px 16px;
+  background:var(--bg-panel);
+  border-top:1px solid var(--line);
+  font-size:12px;
+  color:var(--ink-soft);
+  height:30px;
+}
+.statusbar .stat{display:inline-flex;align-items:center;gap:4px;}
+.statusbar .dot{color:var(--ink-faint);}
+.statusbar .right{margin-left:auto;}
+
+/* ============ Toast 通知 ============ */
+.toast-stack{
+  position:fixed;
+  left:50%;
+  bottom:46px;
+  transform:translateX(-50%);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:8px;
+  z-index:9999;
+  pointer-events:none;
+}
+.toast{
+  background:rgba(43,42,39,.92);
+  color:#f5f0e3;
+  padding:8px 16px;
+  border-radius:20px;
+  font-size:13px;
+  box-shadow:0 4px 16px rgba(0,0,0,.18);
+  animation:toastIn .2s ease, toastOut .3s ease 1.7s forwards;
+  max-width:80vw;
+}
+@keyframes toastIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+@keyframes toastOut{to{opacity:0;transform:translateY(-6px);}}
+
+/* ============ 拖入覆盖层 ============ */
+.drop-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(138,122,92,.12);
+  border:3px dashed var(--accent);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:9000;
+  pointer-events:none;
+  font-size:18px;
+  color:var(--accent);
+  font-family:var(--serif);
+}
+.drop-overlay.show{display:flex;}
+.drop-overlay .drop-inner{
+  background:var(--bg-editor);
+  padding:22px 36px;
+  border-radius:10px;
+  box-shadow:var(--shadow);
+}
+
+/* 隐藏的文件输入 */
+.hidden-input{position:absolute;left:-9999px;top:-9999px;opacity:0;}
+
+/* 滚动条 */
+.editor-wrap::-webkit-scrollbar{width:10px;}
+.editor-wrap::-webkit-scrollbar-track{background:transparent;}
+.editor-wrap::-webkit-scrollbar-thumb{background:#d4ccb8;border-radius:5px;border:2px solid var(--bg);}
+.editor-wrap::-webkit-scrollbar-thumb:hover{background:#c0b69d;}
+</style>
+</head>
+<body>
+
+<!-- ============ 工具栏 ============ -->
+<div class="toolbar" id="toolbar">
+  <span class="tb-title">知著</span>
+
+  <div class="tb-group">
+    <select class="tb-select" id="blockStyle" title="段落样式">
+      <option value="P">正文</option>
+      <option value="H1">标题1</option>
+      <option value="H2">标题2</option>
+      <option value="H3">标题3</option>
+      <option value="BLOCKQUOTE">引用</option>
+    </select>
+  </div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-cmd="bold" title="加粗 Ctrl+B"><b>B</b></button>
+    <button class="tb-btn" data-cmd="italic" title="斜体 Ctrl+I"><i>I</i></button>
+    <button class="tb-btn" data-cmd="underline" title="下划线 Ctrl+U"><u>U</u></button>
+    <button class="tb-btn" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
+  </div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-cmd="insertUnorderedList" title="无序列表">• 列表</button>
+    <button class="tb-btn" data-cmd="insertOrderedList" title="有序列表">1. 列表</button>
+  </div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-action="hr" title="分隔线">— 分隔线</button>
+    <button class="tb-btn" data-cmd="removeFormat" title="清除格式">清除</button>
+  </div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-action="undo" title="撤销 Ctrl+Z">↶ 撤销</button>
+    <button class="tb-btn" data-action="redo" title="重做 Ctrl+Y">↷ 重做</button>
+  </div>
+
+  <div class="spacer" style="flex:1"></div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-action="new" title="新建 Ctrl+N">新建</button>
+    <button class="tb-btn" data-action="open" title="打开 Ctrl+O">打开</button>
+    <button class="tb-btn" data-action="save" title="保存 Ctrl+S">保存</button>
+  </div>
+
+  <div class="tb-group">
+    <button class="tb-btn" data-action="exportHTML" title="导出HTML">HTML</button>
+    <button class="tb-btn" data-action="exportMD" title="导出Markdown">MD</button>
+    <button class="tb-btn" data-action="exportDoc" title="导出Word">Word</button>
+  </div>
+</div>
+
+<!-- ============ 编辑区 ============ -->
+<div class="editor-wrap" id="editorWrap">
+  <div class="editor" id="editor" contenteditable="true" data-placeholder="在这里开始写作，或从微信拖入图片、粘贴图文……"></div>
+</div>
+
+<!-- ============ 状态栏 ============ -->
+<div class="statusbar" id="statusbar">
+  <span class="stat"><span id="charCount">0</span> 字</span>
+  <span class="dot">·</span>
+  <span class="stat"><span id="imgCount">0</span> 张图片</span>
+  <span class="dot">·</span>
+  <span class="stat" id="saveState">已就绪</span>
+  <span class="right stat">知著 PenMark · 本地编辑器</span>
+</div>
+
+<!-- 拖入覆盖层 -->
+<div class="drop-overlay" id="dropOverlay"><div class="drop-inner">松开以插入图片</div></div>
+
+<!-- toast 容器 -->
+<div class="toast-stack" id="toastStack"></div>
+
+<!-- 隐藏的文件输入，用于"打开" -->
+<input type="file" id="fileInput" class="hidden-input" accept=".html,.htm">
+
+<script>
+"use strict";
+/* ================================================================
+ * 知著 PenMark — 单文件本地图文编辑器
+ * 核心原则：离线优先、双击即用、操作流畅、文档自包含
+ * ================================================================ */
+
+(function(){
+  var editor = document.getElementById('editor');
+  var editorWrap = document.getElementById('editorWrap');
+  var dropOverlay = document.getElementById('dropOverlay');
+  var toastStack = document.getElementById('toastStack');
+  var fileInput = document.getElementById('fileInput');
+  var charCountEl = document.getElementById('charCount');
+  var imgCountEl = document.getElementById('imgCount');
+  var saveStateEl = document.getElementById('saveState');
+  var blockStyleSel = document.getElementById('blockStyle');
+
+  var AUTO_SAVE_KEY = 'penmark_autosave_v1';
+  var AUTO_SAVE_INTERVAL = 5000; // 5秒
+  var LS_QUOTA_WARN = 4 * 1024 * 1024; // 4MB 警戒线
+
+  /* -------------------- 工具函数 -------------------- */
+  function toast(msg){
+    var el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = msg;
+    toastStack.appendChild(el);
+    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 2100);
+  }
+
+  function setSaveState(text){
+    saveStateEl.textContent = text;
+  }
+
+  // 生成唯一id
+  function uid(){
+    return 'pm' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  }
+
+  // 读取图片文件为 base64
+  function readFileAsDataURL(file){
+    return new Promise(function(resolve, reject){
+      var r = new FileReader();
+      r.onload = function(){ resolve(r.result); };
+      r.onerror = function(){ reject(r.error); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  // 把 CF_DIB 原始数据转成 PNG dataURL（微信粘贴常是 CF_DIB）
+  // dib: ArrayBuffer，BITMAPINFOHEADER 起始
+  function dibToPngDataUrl(dibBuffer){
+    try{
+      var view = new DataView(dibBuffer);
+      var headerSize = view.getUint32(0, true);
+      var width = view.getInt32(4, true);   // 有符号
+      var height = view.getInt32(8, true);  // 有符号，正数=bottom-up
+      var planes = view.getUint16(12, true);
+      var bpp = view.getUint16(14, true);
+      var compression = view.getUint32(16, true);
+      var absHeight = Math.abs(height);
+      var bottomUp = height > 0;
+
+      if(bpp !== 24 && bpp !== 32){
+        // 非24/32位图，回退走 Canvas 不能直接处理，放弃
+        return null;
+      }
+      if(compression !== 0){
+        return null; // 仅处理 BI_RGB 未压缩
+      }
+
+      var maskR=0xff0000, maskG=0xff00, maskB=0xff, maskA=0;
+      var maskOffsets = null;
+      if(headerSize >= 56){
+        // BITMAPV4HEADER 及以上有掩码
+        maskR = view.getUint32(40, true);
+        maskG = view.getUint32(44, true);
+        maskB = view.getUint32(48, true);
+        maskA = view.getUint32(52, true);
+      }
+      maskOffsets = computeMaskOffsets(maskR, maskG, maskB, maskA, bpp);
+
+      var paletteCount = (bpp < 24) ? view.getUint32(32, true) : 0;
+      if(bpp < 24 && paletteCount === 0) paletteCount = 1 << bpp;
+      var paletteOffset = headerSize;
+      var pixelOffset = paletteOffset + paletteCount * 4;
+      var rowSize = Math.floor((bpp * width + 31) / 32) * 4; // 4字节对齐
+
+      var canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = absHeight;
+      var ctx = canvas.getContext('2d');
+      var imgData = ctx.createImageData(width, absHeight);
+      var data = imgData.data;
+
+      for(var y=0; y<absHeight; y++){
+        var srcY = bottomUp ? (absHeight - 1 - y) : y;
+        var rowStart = pixelOffset + srcY * rowSize;
+        for(var x=0; x<width; x++){
+          var pixel;
+          if(bpp === 32){
+            pixel = view.getUint32(rowStart + x*4, true); // little endian
+          }else{ // 24
+            var off = rowStart + x*3;
+            var b = view.getUint8(off);
+            var g = view.getUint8(off+1);
+            var r = view.getUint8(off+2);
+            pixel = (r<<16)|(g<<8)|b;
+          }
+          var di = (y*width + x)*4;
+          data[di]   = maskOffsets.rShift>=0 ? (pixel & maskR) >>> maskOffsets.rShift : (pixel & maskR) << -maskOffsets.rShift;
+          data[di+1] = maskOffsets.gShift>=0 ? (pixel & maskG) >>> maskOffsets.gShift : (pixel & maskG) << -maskOffsets.gShift;
+          data[di+2] = maskOffsets.bShift>=0 ? (pixel & maskB) >>> maskOffsets.bShift : (pixel & maskB) << -maskOffsets.bShift;
+          data[di+3] = bpp===32 && maskA ? (maskOffsets.aShift>=0 ? (pixel & maskA) >>> maskOffsets.aShift : (pixel & maskA) << -maskOffsets.aShift) : 255;
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+      return canvas.toDataURL('image/png');
+    }catch(e){
+      console.error('DIB转换失败', e);
+      return null;
+    }
+  }
+
+  // 计算掩码位偏移
+  function computeMaskOffsets(r,g,b,a,bpp){
+    function shiftOf(mask){
+      if(!mask) return -1;
+      var s=0;
+      while(mask && (mask & 1)===0){ s++; mask>>>=1; }
+      return s;
+    }
+    // 对24位，标准掩码
+    if(bpp===24){
+      return { rShift:16, gShift:8, bShift:0, aShift:-1 };
+    }
+    return { rShift:shiftOf(r), gShift:shiftOf(g), bShift:shiftOf(b), aShift:shiftOf(a) };
+  }
+
+  // 从剪贴板 item 获取图片 dataURL（兼容 ClipboardItem）
+  function imageBlobToDataURL(blob){
+    return new Promise(function(resolve, reject){
+      var r = new FileReader();
+      r.onload = function(){ resolve(r.result); };
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  /* -------------------- 图片插入（进入撤销栈） -------------------- */
+  // 用 execCommand insertHTML 让插入进入浏览器 undo 栈
+  function insertImageHTML(dataUrl, naturalWidth){
+    var id = uid();
+    var initW = naturalWidth ? Math.min(naturalWidth, 480) : 480;
+    var html =
+      '<figure class="img-wrap" contenteditable="false" data-id="'+id+'" draggable="true">'+
+        '<img src="'+dataUrl+'" style="width:'+initW+'px;"/>'+
+        '<span class="rs-handle tl" draggable="false"></span>'+
+        '<span class="rs-handle tr" draggable="false"></span>'+
+        '<span class="rs-handle bl" draggable="false"></span>'+
+        '<span class="rs-handle br" draggable="false"></span>'+
+      '</figure>';
+    // 确保聚焦
+    editor.focus();
+    // insertHTML 会插入到光标位置
+    var ok = document.execCommand('insertHTML', false, html + '<p><br></p>');
+    if(!ok){
+      // 退化方案：直接 append
+      var tmp = document.createElement('div');
+      tmp.innerHTML = html + '<p><br></p>';
+      while(tmp.firstChild) editor.appendChild(tmp.firstChild);
+    }
+    bindImageEvents(document.querySelector('.img-wrap[data-id="'+id+'"]'));
+    updateStats();
+    return id;
+  }
+
+  /* -------------------- 图片交互：缩放、拖拽、删除 -------------------- */
+  function bindImageEvents(fig){
+    if(!fig) return;
+    // 单击选中（用 click 而非 mousedown，避免与 figure 的 draggable 拖拽手势冲突）
+    fig.addEventListener('click', function(e){
+      if(e.target.classList.contains('rs-handle')) return;
+      e.stopPropagation();
+      selectImage(fig);
+    });
+    // 双击取消选中
+    fig.addEventListener('dblclick', function(e){ e.stopPropagation(); selectImage(null); });
+
+    // 缩放手柄
+    var handles = fig.querySelectorAll('.rs-handle');
+    Array.prototype.forEach.call(handles, function(h){
+      h.addEventListener('mousedown', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        startResize(fig, h, e);
+      });
+    });
+
+    // 拖拽移动位置（编辑器内）
+    fig.addEventListener('dragstart', function(e){
+      fig.classList.add('dragging');
+      // 用 drag image 让浏览器有拖影
+      try{
+        var img = fig.querySelector('img');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/penmark-img', fig.getAttribute('data-id'));
+        // 设置拖拽影像
+        if(img && e.dataTransfer.setDragImage){
+          e.dataTransfer.setDragImage(img, img.offsetWidth/2, img.offsetHeight/2);
+        }
+      }catch(_){}
+    });
+    fig.addEventListener('dragend', function(){
+      fig.classList.remove('dragging');
+    });
+
+    // 删除键
+    fig.addEventListener('keydown', function(e){
+      if(e.key === 'Delete' || e.key === 'Backspace'){
+        e.preventDefault();
+        deleteImage(fig);
+      }
+    });
+  }
+
+  var selectedImage = null;
+  function selectImage(fig){
+    // 取消其他选中
+    var all = editor.querySelectorAll('.img-wrap.selected');
+    Array.prototype.forEach.call(all, function(f){ f.classList.remove('selected'); });
+    selectedImage = fig;
+    if(fig){
+      fig.classList.add('selected');
+      fig.setAttribute('tabindex','-1');
+      fig.focus();
+    }
+  }
+
+  function deleteImage(fig){
+    // 删除要进入撤销栈：用 execCommand 选中后删除
+    var range = document.createRange();
+    range.selectNode(fig);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('delete', false);
+    selectImage(null);
+    updateStats();
+  }
+
+  // 缩放
+  function startResize(fig, handle, e){
+    var img = fig.querySelector('img');
+    if(!img) return;
+    var startX = e.clientX;
+    var startY = e.clientY;
+    var startW = img.offsetWidth;
+    var startH = img.offsetHeight;
+    var ratio = startW / startH;
+    var corner = handle.classList.contains('tl')||handle.classList.contains('tr')||
+                 handle.classList.contains('bl')||handle.classList.contains('br') ? 'corner' : 'corner';
+    var docMouseMove = function(ev){
+      var dx = ev.clientX - startX;
+      var dy = ev.clientY - startY;
+      // 等比：用对角线变化近似
+      var delta;
+      if(handle.classList.contains('br')) delta = (dx + dy)/2;
+      else if(handle.classList.contains('tr')) delta = (dx - dy)/2;
+      else if(handle.classList.contains('bl')) delta = (-dx + dy)/2;
+      else if(handle.classList.contains('tl')) delta = (-dx - dy)/2;
+      else delta = dx;
+      var newW = Math.max(40, startW + delta);
+      var newH = Math.max(30, newW / ratio);
+      img.style.width = newW + 'px';
+      img.style.height = newH + 'px';
+    };
+    var docMouseUp = function(){
+      document.removeEventListener('mousemove', docMouseMove);
+      document.removeEventListener('mouseup', docMouseUp);
+      // 缩放完成后，把这次缩放作为一次撤销点（记录到自定义undo栈辅助）
+      // 浏览器对 style 修改不进 undo 栈，这里做轻量补偿：标记一个 history 空点
+      pushStyleUndoPoint(fig, startW, startH);
+    };
+    document.addEventListener('mousemove', docMouseMove);
+    document.addEventListener('mouseup', docMouseUp);
+  }
+
+  // 由于 style 修改不进浏览器 undo 栈，自定义一个轻量"样式撤销"层
+  // 思路：监听 Ctrl+Z，若浏览器 undo 已无可撤销，则尝试应用我们的样式栈
+  var styleUndoStack = [];
+  function pushStyleUndoPoint(fig, prevW, prevH){
+    styleUndoStack.push({ fig:fig, w:prevW, h:prevH });
+  }
+
+  /* -------------------- 编辑器内图片拖拽移位 -------------------- */
+  // drop 到编辑区时，若 dataTransfer 含 text/penmark-img，则移动该图
+  editor.addEventListener('dragover', function(e){
+    // 允许 move
+    if(e.dataTransfer.types.indexOf('text/penmark-img') >= 0){
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    }
+  });
+  editor.addEventListener('drop', function(e){
+    var internalId = e.dataTransfer.getData('text/penmark-img');
+    if(internalId){
+      e.preventDefault();
+      e.stopPropagation();
+      var fig = editor.querySelector('.img-wrap[data-id="'+internalId+'"]');
+      if(!fig) return;
+      // 把光标移到 drop 位置
+      var caretRange = getCaretRangeFromPoint(e.clientX, e.clientY);
+      if(!caretRange) return;
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(caretRange);
+      // 移动节点：先删除原位置，再 insertHTML
+      var html = fig.outerHTML;
+      fig.parentNode.removeChild(fig);
+      document.execCommand('insertHTML', false, html);
+      bindImageEvents(editor.querySelector('.img-wrap[data-id="'+internalId+'"]'));
+      updateStats();
+      return;
+    }
+  }, true); // capture，优先于外部拖入处理
+
+  function getCaretRangeFromPoint(x, y){
+    if(document.caretRangeFromPoint){
+      return document.caretRangeFromPoint(x, y);
+    }
+    if(document.caretPositionFromPoint){
+      var pos = document.caretPositionFromPoint(x, y);
+      if(pos){
+        var r = document.createRange();
+        r.setStart(pos.offsetNode, pos.offset);
+        r.collapse(true);
+        return r;
+      }
+    }
+    return null;
+  }
+
+  /* -------------------- 外部拖入图片文件 -------------------- */
+  var dragDepth = 0;
+  window.addEventListener('dragenter', function(e){
+    if(e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0){
+      dragDepth++;
+      dropOverlay.classList.add('show');
+    }
+  });
+  window.addEventListener('dragover', function(e){
+    if(e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0){
+      e.preventDefault(); // 必须，否则 drop 不触发
+    }
+  });
+  window.addEventListener('dragleave', function(e){
+    dragDepth--;
+    if(dragDepth <= 0){
+      dragDepth = 0;
+      dropOverlay.classList.remove('show');
+    }
+  });
+  window.addEventListener('drop', async function(e){
+    if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length){
+      // 仅当是图片文件才拦截
+      var imgs = [];
+      for(var i=0;i<e.dataTransfer.files.length;i++){
+        var f = e.dataTransfer.files[i];
+        if(f.type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name)){
+          imgs.push(f);
+        }
+      }
+      if(imgs.length){
+        e.preventDefault();
+        dropOverlay.classList.remove('show');
+        dragDepth = 0;
+        // 把光标定位到 drop 位置（如果点在编辑区内）
+        var inEditor = editor.contains(e.target);
+        if(inEditor){
+          var r = getCaretRangeFromPoint(e.clientX, e.clientY);
+          if(r){
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+        }else{
+          editor.focus();
+          // 光标放末尾
+          placeCaretAtEnd(editor);
+        }
+        for(var k=0;k<imgs.length;k++){
+          try{
+            var url = await readFileAsDataURL(imgs[k]);
+            insertImageHTML(url, 0);
+          }catch(err){ toast('图片插入失败：'+imgs[k].name); }
+        }
+        toast('已插入 '+imgs.length+' 张图片');
+      }
+    }
+    dropOverlay.classList.remove('show');
+    dragDepth = 0;
+  });
+
+  function placeCaretAtEnd(el){
+    el.focus();
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  /* -------------------- 粘贴处理：微信图文、CF_DIB、混合 -------------------- */
+  editor.addEventListener('paste', async function(e){
+    var cd = e.clipboardData || window.clipboardData;
+    if(!cd){ return; }
+
+    // 1. 优先从 items 取图片（微信截图、网页复制图片）
+    var imageItem = null;
+    var items = cd.items || [];
+    for(var i=0;i<items.length;i++){
+      var it = items[i];
+      if(it.kind === 'file' && it.type && it.type.indexOf('image/') === 0){
+        imageItem = it;
+        break;
+      }
+    }
+
+    // 有图片：插入图片 + 追加文字（混合粘贴先图后文）
+    if(imageItem){
+      var blob = imageItem.getAsFile();
+      if(blob){
+        e.preventDefault();
+        var url = await imageBlobToDataURL(blob);
+        // image/bmp / 未知类型体积大，转 PNG 压缩
+        if(blob.type === 'image/bmp' || blob.type === ''){
+          url = await compressToPNG(url);
+        }
+        insertImageHTML(url, 0);
+        var text = cd.getData('text/plain');
+        if(text){
+          document.execCommand('insertHTML', false, escapeHtml(text).replace(/\n/g,'<br>'));
+        }
+        return;
+      }
+    }
+
+    // 2. 富文本（HTML）：清洗后插入，保留加粗/斜体/标题/列表/引用等
+    //    覆盖从微信文章、网页、Word 复制带格式文字的场景
+    var html = cd.getData('text/html');
+    if(html && html.trim()){
+      e.preventDefault();
+      var cleaned = sanitizeHTML(html);
+      if(cleaned && cleaned.trim()){
+        document.execCommand('insertHTML', false, cleaned);
+        return;
+      }
+    }
+
+    // 3. 纯文本兜底：保留换行
+    var plain = cd.getData('text/plain');
+    if(plain){
+      e.preventDefault();
+      var safe = escapeHtml(plain).replace(/\n/g,'<br>');
+      document.execCommand('insertHTML', false, safe);
+      return;
+    }
+    // 其余情况走默认
+  });
+
+  // 清洗剪贴板 HTML：白名单标签 + 剥离 style/class/事件，保留语义格式
+  function sanitizeHTML(html){
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var body = doc.body;
+    // 移除危险/无关元素
+    body.querySelectorAll('script,style,meta,link,head,title,iframe,object,embed,form,input,button,noscript,template,svg').forEach(function(n){ n.remove(); });
+    // 允许的标签白名单
+    var allowed = {P:1,BR:1,B:1,STRONG:1,I:1,EM:1,U:1,S:1,STRIKE:1,DEL:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,BLOCKQUOTE:1,UL:1,OL:1,LI:1,A:1,IMG:1,HR:1,SPAN:1,DIV:1,PRE:1,CODE:1,FIGURE:1,FIGCAPTION:1,TABLE:1,THEAD:1,TBODY:1,TR:1,TD:1,TH:1};
+    // 倒序遍历，子节点先处理
+    var all = Array.prototype.slice.call(body.querySelectorAll('*')).reverse();
+    all.forEach(function(n){
+      var tag = n.tagName;
+      if(!allowed[tag]){
+        var parent = n.parentNode;
+        if(!parent) return;
+        while(n.firstChild) parent.insertBefore(n.firstChild, n);
+        parent.removeChild(n);
+        return;
+      }
+      // 剥离 class / style / 事件属性，去掉微信样式污染
+      n.removeAttribute('class');
+      n.removeAttribute('style');
+      ['onclick','onload','onerror','onmouseover','onmouseout','onfocus','onblur','onmousedown','onmouseup','onmouseenter','onmouseleave'].forEach(function(a){ n.removeAttribute(a); });
+      // img：仅保留 http/data 协议 src
+      if(tag === 'IMG'){
+        var src = n.getAttribute('src') || '';
+        if(!/^(https?:|data:)/i.test(src)){ n.remove(); return; }
+      }
+      // a：仅保留安全协议 href
+      if(tag === 'A'){
+        var href = n.getAttribute('href') || '';
+        if(href && !/^(https?:|mailto:|#|\/)/i.test(href)){ n.removeAttribute('href'); }
+      }
+    });
+    return body.innerHTML;
+  }
+
+  function escapeHtml(s){
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  // 把任意图片 dataURL 通过 canvas 转为 PNG，避免 BMP 巨大体积
+  function compressToPNG(dataUrl){
+    return new Promise(function(resolve){
+      var img = new Image();
+      img.onload = function(){
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth || img.width;
+        c.height = img.naturalHeight || img.height;
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        try{ resolve(c.toDataURL('image/png')); }
+        catch(_){ resolve(dataUrl); }
+      };
+      img.onerror = function(){ resolve(dataUrl); };
+      img.src = dataUrl;
+    });
+  }
+
+  /* -------------------- 工具栏命令 -------------------- */
+  document.getElementById('toolbar').addEventListener('click', function(e){
+    var btn = e.target.closest('.tb-btn');
+    if(!btn) return;
+    var cmd = btn.getAttribute('data-cmd');
+    var action = btn.getAttribute('data-action');
+    if(cmd){
+      editor.focus();
+      document.execCommand(cmd, false, null);
+      refreshToolbarState();
+    }else if(action){
+      handleAction(action);
+    }
+  });
+
+  // 段落样式下拉
+  blockStyleSel.addEventListener('change', function(){
+    editor.focus();
+    var tag = blockStyleSel.value;
+    // formatBlock 需要 <tag> 包裹
+    document.execCommand('formatBlock', false, '<'+tag+'>');
+  });
+
+  function handleAction(action){
+    switch(action){
+      case 'hr':
+        editor.focus();
+        document.execCommand('insertHTML', false, '<hr>');
+        break;
+      case 'undo':
+        if(!tryBrowserUndo()){
+          toast('无可撤销操作');
+        }
+        break;
+      case 'redo':
+        if(!tryBrowserRedo()){
+          toast('无可重做操作');
+        }
+        break;
+      case 'new':
+        newDocument();
+        break;
+      case 'open':
+        fileInput.click();
+        break;
+      case 'save':
+        saveDocument();
+        break;
+      case 'exportHTML':
+        exportHTML();
+        break;
+      case 'exportMD':
+        exportMarkdown();
+        break;
+      case 'exportDoc':
+        exportWord();
+        break;
+    }
+  }
+
+  // 撤销/重做：先尝试浏览器栈，失败则尝试自定义样式栈
+  function tryBrowserUndo(){
+    editor.focus();
+    var before = editor.innerHTML;
+    document.execCommand('undo', false);
+    var after = editor.innerHTML;
+    if(before === after){
+      // 浏览器栈空，尝试样式栈
+      if(styleUndoStack.length){
+        var p = styleUndoStack.pop();
+        if(p.fig && p.fig.parentNode){
+          var img = p.fig.querySelector('img');
+          img.style.width = p.w+'px';
+          img.style.height = p.h+'px';
+          return true;
+        }
+      }
+      return false;
+    }
+    return true;
+  }
+  function tryBrowserRedo(){
+    editor.focus();
+    var before = editor.innerHTML;
+    document.execCommand('redo', false);
+    return editor.innerHTML !== before;
+  }
+
+  /* -------------------- 工具栏状态刷新 -------------------- */
+  function refreshToolbarState(){
+    var cmds = ['bold','italic','underline','strikeThrough'];
+    var btns = document.querySelectorAll('.tb-btn[data-cmd]');
+    Array.prototype.forEach.call(btns, function(b){
+      var c = b.getAttribute('data-cmd');
+      if(c && cmds.indexOf(c)>=0){
+        try{
+          if(document.queryCommandState(c)) b.classList.add('active');
+          else b.classList.remove('active');
+        }catch(_){}
+      }
+    });
+    // 段落样式
+    try{
+      var bt = document.queryCommandValue('formatBlock');
+      bt = (bt||'').toUpperCase().replace(/[<>]/g,'');
+      var map = {'P':'P','H1':'H1','H2':'H2','H3':'H3','BLOCKQUOTE':'BLOCKQUOTE','PRE':'P','DIV':'P','':''};
+      var v = map[bt] || 'P';
+      blockStyleSel.value = v;
+    }catch(_){}
+  }
+
+  document.addEventListener('selectionchange', function(){
+    if(document.activeElement === editor) refreshToolbarState();
+  });
+
+  /* -------------------- 全局点击取消图片选中 -------------------- */
+  document.addEventListener('mousedown', function(e){
+    if(!e.target.closest('.img-wrap') && !e.target.closest('.rs-handle')){
+      if(selectedImage && !e.target.closest('.img-wrap')){
+        selectImage(null);
+      }
+    }
+  });
+
+  /* -------------------- 全局快捷键 -------------------- */
+  document.addEventListener('keydown', function(e){
+    var ctrl = e.ctrlKey || e.metaKey;
+    if(!ctrl) return;
+    var k = e.key.toLowerCase();
+    if(k === 's'){ e.preventDefault(); saveDocument(); }
+    else if(k === 'o'){ e.preventDefault(); fileInput.click(); }
+    else if(k === 'n'){ e.preventDefault(); newDocument(); }
+    else if(k === 'y'){ e.preventDefault(); tryBrowserRedo(); }
+    // z 在编辑器内默认走浏览器 undo，已由 tryBrowserUndo 补偿
+    else if(k === 'z' && e.shiftKey){ e.preventDefault(); tryBrowserRedo(); }
+  });
+
+  // 编辑器内删除图片后取消选中
+  editor.addEventListener('keyup', function(e){
+    if((e.key === 'Delete' || e.key === 'Backspace')){
+      updateStats();
+    }
+  });
+  editor.addEventListener('input', function(){
+    updateStats();
+    scheduleAutoSave();
+  });
+
+  /* -------------------- 字数/图片数统计 -------------------- */
+  function updateStats(){
+    var text = editor.innerText || '';
+    text = text.replace(/\s/g,'');
+    charCountEl.textContent = text.length;
+    var imgs = editor.querySelectorAll('.img-wrap img');
+    imgCountEl.textContent = imgs.length;
+  }
+
+  /* -------------------- 文件管理：新建/打开/保存 -------------------- */
+  function newDocument(){
+    if(editor.innerText.trim() || editor.querySelector('.img-wrap')){
+      if(!confirm('当前内容将被清空，确定新建文档吗？')) return;
+    }
+    editor.innerHTML = '<p><br></p>';
+    selectImage(null);
+    updateStats();
+    try{ localStorage.removeItem(AUTO_SAVE_KEY); }catch(_){}
+    setSaveState('已新建');
+    toast('已新建空白文档');
+  }
+
+  fileInput.addEventListener('change', function(){
+    var f = fileInput.files[0];
+    if(!f) return;
+    var r = new FileReader();
+    r.onload = function(){
+      // 解析 HTML，提取编辑区内容
+      var html = r.result;
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var ed = doc.querySelector('#editor');
+      editor.innerHTML = ed ? ed.innerHTML : (doc.body.innerHTML || html);
+      // 重新绑定图片事件
+      var figs = editor.querySelectorAll('.img-wrap');
+      Array.prototype.forEach.call(figs, function(f){
+        f.setAttribute('draggable','true');
+        if(!f.querySelector('.rs-handle')){
+          f.insertAdjacentHTML('beforeend',
+            '<span class="rs-handle tl" draggable="false"></span><span class="rs-handle tr" draggable="false"></span>'+
+            '<span class="rs-handle bl" draggable="false"></span><span class="rs-handle br" draggable="false"></span>');
+        }
+        bindImageEvents(f);
+      });
+      updateStats();
+      setSaveState('已打开');
+      toast('已打开文件');
+    };
+    r.readAsText(f, 'UTF-8');
+    fileInput.value = '';
+  });
+
+  function saveDocument(){
+    var html = buildSelfContainedHTML();
+    var blob = new Blob([html], {type:'text/html;charset=utf-8'});
+    downloadBlob(blob, suggestedFilename('html'));
+    setSaveState('已保存');
+    toast('已保存为 HTML');
+  }
+
+  function suggestedFilename(ext){
+    var d = new Date();
+    var pad = function(n){ return n<10?'0'+n:n; };
+    var name = '知著_'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'_'+pad(d.getHours())+pad(d.getMinutes());
+    return name+'.'+ext;
+  }
+
+  function downloadBlob(blob, filename){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }
+
+  /* -------------------- 导出：HTML 自包含 -------------------- */
+  function buildSelfContainedHTML(){
+    var content = editor.innerHTML;
+    return [
+'<!DOCTYPE html>',
+'<html lang="zh-CN"><head><meta charset="UTF-8">',
+'<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+'<title>知著 PenMark 文档</title>',
+'<style>',
+'body{background:#faf8f3;color:#2b2a27;font-family:"Songti SC","Source Han Serif SC","Noto Serif CJK SC","SimSun",Georgia,serif;margin:0;padding:40px 0;}',
+'.doc{max-width:780px;margin:0 auto;padding:50px 70px;background:#fdfbf5;border:1px solid #e6e0d4;border-radius:8px;line-height:1.85;font-size:17px;}',
+'.doc h1{font-size:1.9em;margin:1.2em 0 .6em;}',
+'.doc h2{font-size:1.5em;margin:1.1em 0 .5em;}',
+'.doc h3{font-size:1.2em;margin:1em 0 .4em;}',
+'.doc p{margin:.6em 0;}',
+'.doc blockquote{margin:.8em 0;padding:.4em 1.1em;border-left:3px solid #c9bc9a;background:#f5f0e3;color:#6b6660;border-radius:0 4px 4px 0;font-style:italic;}',
+'.doc ul,.doc ol{margin:.6em 0;padding-left:1.8em;}',
+'.doc li{margin:.25em 0;}',
+'.doc hr{border:none;border-top:1px solid #e6e0d4;margin:1.6em 0;}',
+'.doc figure.img-wrap{display:block;margin:1em 0;text-align:center;}',
+'.doc figure.img-wrap img{max-width:100%;height:auto;border-radius:4px;}',
+'</style></head><body><div class="doc">'+content+'</div></body></html>'
+    ].join('\n');
+  }
+
+  function exportHTML(){
+    var html = buildSelfContainedHTML();
+    var blob = new Blob([html], {type:'text/html;charset=utf-8'});
+    downloadBlob(blob, suggestedFilename('html'));
+    toast('已导出 HTML');
+  }
+
+  /* -------------------- 导出：Markdown -------------------- */
+  function exportMarkdown(){
+    var md = htmlToMarkdown(editor);
+    var blob = new Blob([md], {type:'text/markdown;charset=utf-8'});
+    downloadBlob(blob, suggestedFilename('md'));
+    toast('已导出 Markdown');
+  }
+
+  function htmlToMarkdown(root){
+    var lines = [];
+    function walk(node){
+      var n = node.firstChild;
+      while(n){
+        if(n.nodeType === 3){ // text
+          lines.push(n.textContent.replace(/\n/g,' '));
+          n = n.nextSibling; continue;
+        }
+        if(n.nodeType !== 1){ n = n.nextSibling; continue; }
+        var tag = n.tagName.toLowerCase();
+        switch(tag){
+          case 'h1': lines.push('\n# '+innerText(n)+'\n'); break;
+          case 'h2': lines.push('\n## '+innerText(n)+'\n'); break;
+          case 'h3': lines.push('\n### '+innerText(n)+'\n'); break;
+          case 'p': lines.push('\n'+innerText(n)+'\n'); break;
+          case 'br': lines.push('\n'); break;
+          case 'blockquote':
+            var bq = innerText(n).split('\n').map(function(s){ return '> '+s; }).join('\n');
+            lines.push('\n'+bq+'\n'); break;
+          case 'ul':
+            lines.push('');
+            Array.prototype.forEach.call(n.querySelectorAll(':scope > li'), function(li){
+              lines.push('- '+innerText(li).trim());
+            });
+            lines.push('');
+            break;
+          case 'ol':
+            lines.push('');
+            var idx=1;
+            Array.prototype.forEach.call(n.querySelectorAll(':scope > li'), function(li){
+              lines.push((idx++)+'. '+innerText(li).trim());
+            });
+            lines.push('');
+            break;
+          case 'hr': lines.push('\n---\n'); break;
+          case 'figure':
+          case 'img':
+            var im = tag==='figure' ? n.querySelector('img') : n;
+            if(im && im.getAttribute('src')){
+              lines.push('\n![]('+im.getAttribute('src')+')\n');
+            }
+            break;
+          case 'b': case 'strong': lines.push('**'+innerText(n)+'**'); break;
+          case 'i': case 'em': lines.push('*'+innerText(n)+'*'); break;
+          case 's': case 'del': lines.push('~~'+innerText(n)+'~~'); break;
+          case 'u': lines.push(innerText(n)); break; // MD无下划线
+          case 'a':
+            lines.push('['+innerText(n)+']('+(n.getAttribute('href')||'')+')'); break;
+          default:
+            walk(n);
+        }
+        n = n.nextSibling;
+      }
+    }
+    walk(root);
+    // 清理多余空行
+    var md = lines.join('\n').replace(/\n{3,}/g,'\n\n').trim()+'\n';
+    return md;
+  }
+  function innerText(node){ return node.textContent || ''; }
+
+  /* -------------------- 导出：Word 假 .doc（msword HTML） -------------------- */
+  function exportWord(){
+    var content = editor.innerHTML;
+    var header =
+'<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'+
+'<head><meta charset="UTF-8"><title>知著 PenMark 文档</title>'+
+'<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]-->'+
+'<style>'+
+'@page WordSection1{size:595.3pt 841.9pt;margin:72.0pt 90.0pt 72.0pt 90.0pt;}'+
+'div.WordSection1{page:WordSection1;}'+
+'body{font-family:"Songti SC","SimSun",serif;font-size:12pt;line-height:1.75;color:#2b2a27;}'+
+'h1{font-size:24pt;margin:12pt 0 6pt;}'+
+'h2{font-size:18pt;margin:10pt 0 5pt;}'+
+'h3{font-size:14pt;margin:8pt 0 4pt;}'+
+'p{margin:6pt 0;}'+
+'blockquote{margin:8pt 0;padding:4pt 11pt;border-left:3pt solid #c9bc9a;background:#f5f0e3;font-style:italic;}'+
+'ul,ol{margin:6pt 0;}'+
+'hr{border:none;border-top:1pt solid #999;margin:12pt 0;}'+
+'figure.img-wrap{display:block;margin:8pt 0;text-align:center;}'+
+'figure.img-wrap img{max-width:100%;height:auto;}'+
+'</style></head><body><div class="WordSection1">';
+    var footer = '</div></body></html>';
+    var html = header + content + footer;
+    var blob = new Blob(['\ufeff', html], {type:'application/msword;charset=utf-8'});
+    downloadBlob(blob, suggestedFilename('doc'));
+    toast('已导出 Word');
+  }
+
+  /* -------------------- 自动保存与恢复 -------------------- */
+  var autoSaveTimer = null;
+  function scheduleAutoSave(){
+    if(autoSaveTimer) clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(autoSave, AUTO_SAVE_INTERVAL);
+  }
+  function autoSave(){
+    try{
+      var html = editor.innerHTML;
+      // 体积检查
+      if(html.length > LS_QUOTA_WARN){
+        setSaveState('内容过大，自动保存已暂停');
+        return;
+      }
+      localStorage.setItem(AUTO_SAVE_KEY, html);
+      setSaveState('已自动保存 '+currentTimeStr());
+    }catch(e){
+      // 存储溢出
+      setSaveState('自动保存失败（存储已满）');
+      console.warn('autosave fail', e);
+    }
+  }
+  function currentTimeStr(){
+    var d = new Date();
+    var pad = function(n){return n<10?'0'+n:n;};
+    return pad(d.getHours())+':'+pad(d.getMinutes());
+  }
+  function tryRestore(){
+    try{
+      var saved = localStorage.getItem(AUTO_SAVE_KEY);
+      if(saved){
+        editor.innerHTML = saved;
+        // 重新绑定图片事件
+        var figs = editor.querySelectorAll('.img-wrap');
+        Array.prototype.forEach.call(figs, function(f){
+          f.setAttribute('draggable','true');
+          if(!f.querySelector('.rs-handle')){
+            f.insertAdjacentHTML('beforeend',
+              '<span class="rs-handle tl"></span><span class="rs-handle tr"></span>'+
+              '<span class="rs-handle bl"></span><span class="rs-handle br"></span>');
+          }
+          bindImageEvents(f);
+        });
+        updateStats();
+        setSaveState('已恢复上次内容');
+        toast('已恢复上次编辑内容');
+        return true;
+      }
+    }catch(e){}
+    // 首次：放个空段落
+    if(!editor.innerHTML.trim()){
+      editor.innerHTML = '<p><br></p>';
+    }
+    return false;
+  }
+
+  /* -------------------- 初始化 -------------------- */
+  // 微调：让 formatBlock 对引用块生效（部分浏览器需要 P 包裹）
+  // 初始化编辑器
+  tryRestore();
+  updateStats();
+  editor.focus();
+
+  // 关闭前再存一次
+  window.addEventListener('beforeunload', function(){
+    autoSave();
+  });
+
+  // 周期自动保存兜底
+  setInterval(autoSave, AUTO_SAVE_INTERVAL);
+
+  // 友好提示
+  setTimeout(function(){
+    if(!editor.innerText.trim() && !editor.querySelector('.img-wrap')){
+      toast('欢迎使用知著 PenMark，从微信拖入图片或粘贴图文开始');
+    }
+  }, 600);
+
+})();
+</script>
+</body>
+</html>

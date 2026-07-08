@@ -1,0 +1,14 @@
+{
+  "name": "penmark",
+  "version": "1.0.0",
+  "description": "知著 PenMark — 微信图文笔记应用",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.2"
+  }
+}

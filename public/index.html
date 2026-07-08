@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知著 PenMark</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span class="brand">知著<small>PenMark</small></span>
+      <button class="icon-btn" id="themeToggle" title="切换深浅色">◐</button>
+    </div>
+    <div class="search-box">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="searchInput" placeholder="搜索文档…">
+    </div>
+    <button class="new-btn" id="newDocBtn">+ 新建文档</button>
+    <div class="doc-list" id="docList"></div>
+    <div class="sidebar-foot" id="userBadge" style="display:none">
+      <span class="user-avatar">●</span>
+      <span class="user-name"></span>
+      <button class="icon-btn" id="logoutBtn" title="退出登录">⎋</button>
+    </div>
+  </aside>
+
+  <!-- ============ 主区域 ============ -->
+  <main class="main">
+    <div class="doc-title-bar">
+      <button class="mobile-menu-btn" id="mobileMenuBtn" title="文档列表">☰</button>
+      <input type="text" id="docTitle" placeholder="无标题">
+    </div>
+
+    <div class="toolbar" id="toolbar">
+      <div class="tb-group">
+        <select class="tb-select" id="blockStyle" title="段落样式">
+          <option value="P">正文</option>
+          <option value="H1">标题1</option>
+          <option value="H2">标题2</option>
+          <option value="H3">标题3</option>
+          <option value="H4">标题4</option>
+          <option value="BLOCKQUOTE">引用</option>
+          <option value="PRE">代码块</option>
+        </select>
+      </div>
+
+      <div class="tb-group">
+        <button class="tb-btn" data-cmd="bold" title="加粗 Ctrl+B"><b>B</b></button>
+        <button class="tb-btn" data-cmd="italic" title="斜体 Ctrl+I"><i>I</i></button>
+        <button class="tb-btn" data-cmd="underline" title="下划线 Ctrl+U"><u>U</u></button>
+        <button class="tb-btn" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
+        <button class="tb-btn" data-cmd="insertUnorderedList" title="无序列表">•</button>
+        <button class="tb-btn" data-cmd="insertOrderedList" title="有序列表">1.</button>
+        <button class="tb-btn" data-action="quote" title="引用块">❝</button>
+      </div>
+
+      <div class="tb-group">
+        <button class="tb-btn" data-action="code" title="行内代码">&lt;/&gt;</button>
+        <button class="tb-btn" data-action="codeblock" title="代码块">{ }</button>
+        <button class="tb-btn" data-action="table" title="表格">▦</button>
+        <button class="tb-btn" data-action="hr" title="分隔线">—</button>
+        <button class="tb-btn" data-action="toc" title="目录">≡</button>
+      </div>
+
+      <div class="tb-group">
+        <button class="tb-btn" data-action="undo" title="撤销 Ctrl+Z">↶</button>
+        <button class="tb-btn" data-action="redo" title="重做 Ctrl+Y">↷</button>
+        <button class="tb-btn" data-cmd="removeFormat" title="清除格式">⌫</button>
+      </div>
+
+      <div style="flex:1"></div>
+
+      <div class="tb-group">
+        <button class="tb-btn" data-action="importHtml" title="导入HTML文件">导入</button>
+        <button class="tb-btn" data-action="exportHTML" title="导出HTML">HTML</button>
+        <button class="tb-btn" data-action="exportMD" title="导出Markdown">MD</button>
+        <button class="tb-btn" data-action="exportDoc" title="导出Word">Word</button>
+      </div>
+    </div>
+
+    <div class="editor-wrap" id="editorWrap">
+      <div class="editor" id="editor" contenteditable="true" spellcheck="true" data-placeholder="在这里开始写作，或从微信拖入图片、粘贴图文……"></div>
+    </div>
+
+    <div class="statusbar" id="statusbar">
+      <span class="stat"><span id="charCount">0</span> 字</span>
+      <span class="dot">·</span>
+      <span class="stat"><span id="imgCount">0</span> 张图片</span>
+      <span class="dot">·</span>
+      <span class="stat" id="saveState">已就绪</span>
+      <span class="right stat">知著 PenMark</span>
+    </div>
+  </main>
+</div>
+
+<div class="drop-overlay" id="dropOverlay"><div class="drop-inner">松开以插入图片</div></div>
+<div class="mobile-backdrop" id="mobileBackdrop"></div>
+
+<!-- 选中浮动菜单（飞书式） -->
+<div class="float-menu" id="floatMenu" hidden>
+  <button class="fm-btn" data-cmd="bold" title="加粗"><b>B</b></button>
+  <button class="fm-btn" data-cmd="italic" title="斜体"><i>I</i></button>
+  <button class="fm-btn" data-cmd="underline" title="下划线"><u>U</u></button>
+  <button class="fm-btn" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
+  <span class="fm-divider"></span>
+  <button class="fm-btn" data-block="H1" title="标题1">H1</button>
+  <button class="fm-btn" data-block="H2" title="标题2">H2</button>
+  <button class="fm-btn" data-block="H3" title="标题3">H3</button>
+  <button class="fm-btn" data-block="P" title="正文">正文</button>
+  <span class="fm-divider"></span>
+  <button class="fm-btn" data-cmd="insertUnorderedList" title="无序列表">•</button>
+  <button class="fm-btn" data-cmd="insertOrderedList" title="有序列表">1.</button>
+  <button class="fm-btn" data-block="BLOCKQUOTE" title="引用">❝</button>
+  <button class="fm-btn" data-action="code" title="行内代码">&lt;/&gt;</button>
+  <span class="fm-divider"></span>
+  <button class="fm-btn" data-cmd="removeFormat" title="清除格式">⌫</button>
+</div>
+
+<!-- 图片选中浮动菜单 -->
+<div class="float-menu float-menu-img" id="floatMenuImg" hidden>
+  <button class="fm-btn" data-img-action="reset" title="重置大小">↺ 原始</button>
+  <button class="fm-btn" data-img-action="fit" title="适应宽度">⤢ 适应宽度</button>
+  <span class="fm-divider"></span>
+  <button class="fm-btn" data-img-action="align-left" title="左对齐">⇤</button>
+  <button class="fm-btn" data-img-action="align-center" title="居中">↔</button>
+  <span class="fm-divider"></span>
+  <button class="fm-btn danger" data-img-action="delete" title="删除图片">✕ 删除</button>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+<input type="file" id="importInput" class="hidden-input" accept=".html,.htm">
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
