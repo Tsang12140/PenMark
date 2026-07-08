@@ -19,11 +19,15 @@
       <span class="search-icon">⌕</span>
       <input type="text" id="searchInput" placeholder="搜索文档…">
     </div>
-    <button class="new-btn" id="newDocBtn">+ 新建文档</button>
+    <div class="new-row">
+      <button class="new-btn" id="newDocBtn">+ 新建文档</button>
+      <button class="new-folder-btn" id="newFolderBtn" title="新建文件夹">+ 文件夹</button>
+    </div>
     <div class="doc-list" id="docList"></div>
     <div class="sidebar-foot" id="userBadge" style="display:none">
       <span class="user-avatar">●</span>
       <span class="user-name"></span>
+      <button class="icon-btn" id="inviteBtn" title="邀请码管理" style="display:none">✦</button>
       <button class="icon-btn" id="logoutBtn" title="退出登录">⎋</button>
     </div>
   </aside>
@@ -37,6 +41,12 @@
 
     <div class="toolbar" id="toolbar">
       <div class="tb-group">
+        <select class="tb-select" id="fontSelect" title="字体">
+          <option value="sans">默认</option>
+          <option value="serif">宋体</option>
+          <option value="kai">楷体</option>
+          <option value="mono">等宽</option>
+        </select>
         <select class="tb-select" id="blockStyle" title="段落样式">
           <option value="P">正文</option>
           <option value="H1">标题1</option>
@@ -80,10 +90,15 @@
         <button class="tb-btn" data-action="exportMD" title="导出Markdown">MD</button>
         <button class="tb-btn" data-action="exportDoc" title="导出Word">Word</button>
       </div>
+
+      <div class="tb-group">
+        <button class="tb-btn" data-action="reading" title="切换阅读模式">阅读</button>
+        <button class="tb-btn share-btn" id="shareBtn" data-action="share" title="分享文档（仅管理员）" style="display:none">分享</button>
+      </div>
     </div>
 
     <div class="editor-wrap" id="editorWrap">
-      <div class="editor" id="editor" contenteditable="true" spellcheck="true" data-placeholder="在这里开始写作，或从微信拖入图片、粘贴图文……"></div>
+      <div class="editor" id="editor" contenteditable="true" spellcheck="true" data-placeholder="在这里开始写作……"></div>
     </div>
 
     <div class="statusbar" id="statusbar">
@@ -133,6 +148,31 @@
 
 <div class="toast-stack" id="toastStack"></div>
 <input type="file" id="importInput" class="hidden-input" accept=".html,.htm">
+
+<!-- 分享弹窗 -->
+<div class="modal-overlay" id="shareModal" hidden>
+  <div class="modal share-modal">
+    <div class="modal-head">
+      <span class="modal-title">分享文档</span>
+      <button class="modal-close" id="shareModalClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body" id="shareModalBody"></div>
+  </div>
+</div>
+
+<!-- 邀请码管理弹窗 -->
+<div class="modal-overlay" id="inviteModal" hidden>
+  <div class="modal invite-modal">
+    <div class="modal-head">
+      <span class="modal-title">邀请码管理</span>
+      <button class="modal-close" id="inviteModalClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body" id="inviteModalBody"></div>
+  </div>
+</div>
+
+<!-- 阅读模式退出按钮 -->
+<button class="reading-exit" id="readingExit" title="退出阅读模式（Esc）" hidden>✕ 退出阅读</button>
 
 <script type="module" src="app.js"></script>
 </body>

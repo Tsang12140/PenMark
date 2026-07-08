@@ -494,7 +494,7 @@ export class Editor {
     });
   }
 
-  /* ---------- 粘贴：有图片转 base64 插入；无图片放行浏览器默认（保留公众号版式） ---------- */
+  /* ---------- 粘贴：有图片转 base64 插入；富文本清理视觉样式后插入（保留结构） ---------- */
   _bindPaste() {
     this.editor.addEventListener('paste', async (e) => {
       const cd = e.clipboardData || window.clipboardData;
@@ -523,10 +523,44 @@ export class Editor {
           return;
         }
       }
-      // 没有图片 item：放行浏览器默认粘贴（保留公众号等富文本版式与 img）
-      // 延迟把裸 img 包装成可编辑容器、自动限宽
-      setTimeout(() => { this.fixImageContainers(); this._afterChange(); }, 60);
+      // 无图片 file item：取 text/html 清理视觉样式后插入（去除背景色/字体/颜色等，保留语义结构）
+      const html = cd.getData('text/html');
+      if (html) {
+        e.preventDefault();
+        const cleaned = this._cleanPastedHTML(html);
+        document.execCommand('insertHTML', false, cleaned);
+        setTimeout(() => { this.fixImageContainers(); this._afterChange(); }, 60);
+      } else {
+        // 纯文本：放行默认
+        setTimeout(() => { this.fixImageContainers(); this._afterChange(); }, 60);
+      }
     });
+  }
+
+  /* 清理粘贴 HTML：删除所有内联样式与 class/id，只保留语义标签和必要属性（href/src/alt 等） */
+  _cleanPastedHTML(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const keepAttrs = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'target']);
+    const walk = (node) => {
+      if (node.nodeType !== 1) return;
+      // 删除非白名单属性（含 style/class/id/data-*）
+      const toRemove = [];
+      for (const attr of node.attributes) {
+        if (!keepAttrs.has(attr.name.toLowerCase())) toRemove.push(attr.name);
+      }
+      toRemove.forEach(a => node.removeAttribute(a));
+      // 移除空 span/font 等纯样式标签，保留内容
+      const tag = node.tagName.toLowerCase();
+      if (['span', 'font', 'div', 'o:p'].includes(tag) && node.attributes.length === 0) {
+        while (node.firstChild) node.parentNode.insertBefore(node.firstChild, node);
+        node.parentNode.removeChild(node);
+        return;
+      }
+      // 递归子节点（注意 live 列表，先拷贝）
+      Array.prototype.slice.call(node.childNodes).forEach(walk);
+    };
+    walk(doc.body);
+    return doc.body.innerHTML;
   }
 
   /* ---------- Markdown 快捷输入 ---------- */
