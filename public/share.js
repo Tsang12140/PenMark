@@ -12,6 +12,15 @@ const token = (function() {
 })();
 
 let shareInfo = null;
+let shareTheme = 'light';
+const SHARE_THEMES = ['light', 'feishu', 'dark'];
+const THEME_LABELS = { light: '纸张', feishu: '飞书', dark: '暗色' };
+
+function applyShareTheme(theme) {
+  shareTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('penmark_share_theme', theme); } catch(_) {}
+}
 
 function toast(msg) {
   const el = document.createElement('div');
@@ -54,6 +63,19 @@ async function init() {
     if (infoRes.status === 410) { renderError('链接已过期'); return; }
     if (!infoRes.ok) { renderError('加载失败'); return; }
     shareInfo = await infoRes.json();
+
+    // 应用主题：优先读者上次选择，否则用作者预设
+    let savedTheme = null;
+    try { savedTheme = localStorage.getItem('penmark_share_theme'); } catch(_) {}
+    applyShareTheme(savedTheme && SHARE_THEMES.includes(savedTheme) ? savedTheme : (shareInfo.theme || 'light'));
+    const themeBtn = $('themeToggle');
+    themeBtn.hidden = false;
+    themeBtn.addEventListener('click', () => {
+      const idx = SHARE_THEMES.indexOf(shareTheme);
+      const next = SHARE_THEMES[(idx + 1) % SHARE_THEMES.length];
+      applyShareTheme(next);
+      toast('主题：' + THEME_LABELS[next]);
+    });
 
     // 先尝试直接拿文档；若需密码会返回 401
     const docRes = await fetch('/api/public/share/' + token + '/doc', { credentials: 'same-origin' });

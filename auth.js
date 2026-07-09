@@ -179,11 +179,11 @@ function register(username, nickname, password, inviteRecord) {
 }
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin };
+  return { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin, is_banned: !!u.is_banned, can_share: !!u.can_share };
 }
 
 function getUserById(id) {
-  const u = db.prepare('SELECT id, username, nickname, is_admin FROM users WHERE id = ?').get(id);
+  const u = db.prepare('SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = ?').get(id);
   if (!u) return null;
   return publicUser(u);
 }
@@ -197,7 +197,17 @@ function authMiddleware(req, res, next) {
   if (!payload) {
     return res.status(401).json({ error: 'unauthorized', needLogin: true });
   }
-  req.user = { id: payload.uid, isAdmin: !!payload.admin };
+  const user = getUserById(payload.uid);
+  if (!user) {
+    clearCookie(res);
+    return res.status(401).json({ error: 'need login', needLogin: true });
+  }
+  // 检查是否被禁用
+  if (user.is_banned) {
+    clearCookie(res);
+    return res.status(403).json({ error: '账号已被禁用', banned: true });
+  }
+  req.user = user;
   next();
 }
 

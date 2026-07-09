@@ -51,6 +51,20 @@ $('toolbar').addEventListener('click', (e) => {
   }
 });
 
+/* ---------- 导出下拉菜单 ---------- */
+const exportMenu = $('exportMenu');
+$('exportToggle').addEventListener('click', (e) => {
+  e.stopPropagation();
+  exportMenu.hidden = !exportMenu.hidden;
+});
+exportMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('.dropdown-item');
+  if (!item) return;
+  exportMenu.hidden = true;
+  handleAction(item.getAttribute('data-action'));
+});
+document.addEventListener('click', () => { exportMenu.hidden = true; });
+
 blockStyleSel.addEventListener('change', () => {
   editor.exec('formatBlock', '<' + blockStyleSel.value + '>');
 });
@@ -233,6 +247,8 @@ floatMenuImg.addEventListener('click', (e) => {
   const act = btn.getAttribute('data-img-action');
   const c = editor.selectedImage;
   switch (act) {
+    case 'copy': editor.copyImage(c); break;
+    case 'cut': editor.cutImage(c); floatMenuImg.hidden = true; break;
     case 'reset': editor.resetImageSize(c); break;
     case 'fit': editor.fitImageWidth(c); break;
     case 'align-left': editor.alignImage(c, 'left'); break;
@@ -269,8 +285,9 @@ function scheduleAutoSave() {
   saveTimer = setTimeout(saveCurrent, 1000);
 }
 
-async function saveCurrent() {
+async function saveCurrent(opts) {
   if (!currentDoc) return;
+  opts = opts || {};
   const title = docTitleEl.value.trim() || '无标题';
   const content = editor.getHTML();
   try {
@@ -281,18 +298,20 @@ async function saveCurrent() {
     currentDoc.updated_at = now;
     saveStateEl.textContent = '已保存 ' + timeStr();
     // 更新列表中该项的标题和时间（不重新拉列表，避免抖动）
-    updateListItem(currentDoc);
+    updateListItem(currentDoc, { reorder: opts.reorder !== false });
   } catch (e) {
     saveStateEl.textContent = '保存失败';
     toast('保存失败：' + (e.message || e));
   }
 }
 
-function updateListItem(doc) {
+function updateListItem(doc, opts) {
+  opts = opts || {};
   const item = docListEl.querySelector('.doc-item[data-id="' + doc.id + '"]');
   if (!item) return;
   item.querySelector('.doc-title').textContent = doc.title;
   item.querySelector('.doc-meta').textContent = relativeTime(doc.updated_at);
+  if (opts.reorder === false) return;
   // 移到所在文件夹子列表的最前面（保持分组结构）
   const parentList = item.parentNode;
   if (parentList && parentList.classList.contains('folder-docs')) {
@@ -341,6 +360,8 @@ async function api(url, method, body) {
 let folders = [];
 let expandedFolders = new Set(JSON.parse(localStorage.getItem('penmark_expanded_folders') || '[]'));
 let draggingDocId = null;
+let renamingFolderId = null;
+let docClipboard = null;
 
 async function loadSidebar() {
   const [fRes, dRes] = await Promise.all([api('/api/folders'), api('/api/documents')]);
@@ -386,21 +407,26 @@ function renderFolderItem(folder, docs) {
     '<span class="folder-count">' + (folder.doc_count || 0) + '</span>' +
     '<button class="folder-menu" title="更多操作">⋯</button>';
   head.addEventListener('click', (e) => {
-    if (e.target.closest('.folder-menu')) return;
+    if (e.target.closest('.folder-menu') || e.target.closest('.folder-name-input')) return;
     wrap.classList.toggle('expanded');
     if (wrap.classList.contains('expanded')) expandedFolders.add(folder.id);
     else expandedFolders.delete(folder.id);
     persistExpanded();
   });
+  head.querySelector('.folder-name').addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    startFolderRename(folder.id, { selectAll: true });
+  });
   head.querySelector('.folder-menu').addEventListener('click', (e) => {
     e.stopPropagation();
     showFolderMenu(folder, head.querySelector('.folder-menu'));
   });
+  bindDropTarget(head, folder.id, wrap);
 
   // 子文档容器（作为拖拽 drop target）
   const list = document.createElement('div');
   list.className = 'folder-docs';
-  bindDropTarget(list, folder.id);
+  bindDropTarget(list, folder.id, list);
   docs.forEach(doc => list.appendChild(buildDocItem(doc)));
   if (!docs.length && expanded) {
     const empty = document.createElement('div');
@@ -421,10 +447,17 @@ function renderUnfiledSection(docs) {
     '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden">▸</span>' +
     '<span class="folder-icon">▸</span>' +
     '<span class="folder-name">未分类</span>' +
-    '<span class="folder-count">' + docs.length + '</span></div>';
+    '<span class="folder-count">' + docs.length + '</span>' +
+    '<button class="folder-menu" title="更多操作">⋯</button></div>';
+  const head = wrap.querySelector('.folder-head');
+  head.querySelector('.folder-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showFolderMenu({ id: null, name: '未分类', unfiled: true }, head.querySelector('.folder-menu'));
+  });
+  bindDropTarget(head, null, wrap);
   const list = document.createElement('div');
   list.className = 'folder-docs';
-  bindDropTarget(list, null); // null = 移到根
+  bindDropTarget(list, null, list); // null = 移到根
   docs.forEach(doc => list.appendChild(buildDocItem(doc)));
   wrap.appendChild(list);
   // 未分类始终展开
@@ -441,10 +474,19 @@ function buildDocItem(doc) {
     '<div class="doc-title">' + escapeHtml(doc.title || '无标题') + '</div>' +
     '<div class="doc-meta">' + relativeTime(doc.updated_at) + '</div>' +
     (doc.snippet ? '<div class="doc-snippet">' + escapeHtml(doc.snippet) + '</div>' : '') +
+    '<button class="doc-menu" title="更多操作">⋯</button>' +
     '<button class="doc-del" title="删除">×</button>';
+  if (docClipboard && docClipboard.mode === 'cut' && String(docClipboard.docId) === String(doc.id)) {
+    item.classList.add('cutting');
+  }
   item.addEventListener('click', (e) => {
     if (e.target.classList.contains('doc-del')) { e.stopPropagation(); confirmDelete(doc); }
+    else if (e.target.closest('.doc-menu')) { e.stopPropagation(); showDocMenu(doc, item.querySelector('.doc-menu')); }
     else openDoc(doc.id);
+  });
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showDocMenu(doc, item, { x: e.clientX, y: e.clientY });
   });
   // 拖拽
   item.addEventListener('dragstart', (e) => {
@@ -460,19 +502,33 @@ function buildDocItem(doc) {
   return item;
 }
 
-function bindDropTarget(listEl, folderId) {
-  listEl.addEventListener('dragover', (e) => {
-    if (draggingDocId === null) return;
+function getDraggingDocId(e) {
+  if (draggingDocId !== null) return draggingDocId;
+  try {
+    const id = e.dataTransfer && e.dataTransfer.getData('text/penmark-doc');
+    return id ? Number(id) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function bindDropTarget(targetEl, folderId, highlightEl) {
+  const hl = highlightEl || targetEl;
+  targetEl.addEventListener('dragover', (e) => {
+    const hasDoc = draggingDocId !== null || (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('text/penmark-doc') >= 0);
+    if (!hasDoc) return;
     e.preventDefault();
-    listEl.classList.add('drag-over');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    hl.classList.add('drag-over');
   });
-  listEl.addEventListener('dragleave', (e) => {
-    if (!listEl.contains(e.relatedTarget)) listEl.classList.remove('drag-over');
+  targetEl.addEventListener('dragleave', (e) => {
+    if (!targetEl.contains(e.relatedTarget)) hl.classList.remove('drag-over');
   });
-  listEl.addEventListener('drop', (e) => {
+  targetEl.addEventListener('drop', (e) => {
     e.preventDefault();
-    listEl.classList.remove('drag-over');
-    if (draggingDocId !== null) moveDocToFolder(draggingDocId, folderId);
+    hl.classList.remove('drag-over');
+    const docId = getDraggingDocId(e);
+    if (docId !== null) moveDocToFolder(docId, folderId);
   });
 }
 
@@ -490,26 +546,83 @@ folderContextMenu.className = 'folder-context-menu';
 folderContextMenu.hidden = true;
 document.body.appendChild(folderContextMenu);
 
+const docContextMenu = document.createElement('div');
+docContextMenu.className = 'folder-context-menu doc-context-menu';
+docContextMenu.hidden = true;
+document.body.appendChild(docContextMenu);
+
+function closeContextMenus() {
+  folderContextMenu.hidden = true;
+  folderContextMenu.style.display = 'none';
+  docContextMenu.hidden = true;
+  docContextMenu.style.display = 'none';
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.folder-context-menu') || e.target.closest('.doc-menu') || e.target.closest('.folder-menu')) return;
+  closeContextMenus();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeContextMenus();
+});
+folderContextMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
+docContextMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
+
 function showFolderMenu(folder, anchor) {
-  folderContextMenu.innerHTML =
-    '<div class="fcm-item" data-act="new">在此新建文档</div>' +
-    '<div class="fcm-item" data-act="rename">重命名</div>' +
-    '<div class="fcm-item danger" data-act="delete">删除文件夹</div>';
+  closeContextMenus();
+  const pasteItem = docClipboard ? '<div class="fcm-item" data-act="paste">' + (docClipboard.mode === 'cut' ? '粘贴剪切的文章' : '粘贴复制的文章') + '</div>' : '';
+  folderContextMenu.innerHTML = folder.unfiled
+    ? (pasteItem || '<div class="fcm-item disabled">没有可粘贴的文章</div>')
+    : '<div class="fcm-item" data-act="new">在此新建文档</div>' +
+      '<div class="fcm-item" data-act="rename">重命名</div>' +
+      pasteItem +
+      '<div class="fcm-item danger" data-act="delete">删除文件夹</div>';
   folderContextMenu.style.display = 'block';
   const rect = anchor.getBoundingClientRect();
   folderContextMenu.style.left = rect.right + 'px';
   folderContextMenu.style.top = rect.bottom + 'px';
   folderContextMenu.hidden = false;
-  const close = () => { folderContextMenu.hidden = true; document.removeEventListener('mousedown', close); };
+  docContextMenu.hidden = true;
   folderContextMenu.onclick = (e) => {
+    e.stopPropagation();
     const act = e.target.getAttribute('data-act');
     if (!act) return;
-    close();
+    closeContextMenus();
     if (act === 'new') newDocInFolder(folder.id);
     else if (act === 'rename') renameFolder(folder);
+    else if (act === 'paste') pasteDocToFolder(folder.id);
     else if (act === 'delete') deleteFolder(folder);
   };
-  setTimeout(() => document.addEventListener('mousedown', close), 0);
+}
+
+function showDocMenu(doc, anchor, point) {
+  closeContextMenus();
+  docContextMenu.innerHTML =
+    '<div class="fcm-item" data-act="duplicate">创建副本</div>' +
+    '<div class="fcm-item" data-act="copy">复制</div>' +
+    '<div class="fcm-item" data-act="cut">剪切</div>' +
+    '<div class="fcm-item danger" data-act="delete">删除</div>';
+  docContextMenu.style.display = 'block';
+  if (point) {
+    docContextMenu.style.left = point.x + 'px';
+    docContextMenu.style.top = point.y + 'px';
+  } else {
+    const rect = anchor.getBoundingClientRect();
+    docContextMenu.style.left = rect.right + 'px';
+  docContextMenu.style.top = rect.bottom + 'px';
+  }
+  docContextMenu.hidden = false;
+  folderContextMenu.hidden = true;
+  docContextMenu.onclick = (e) => {
+    e.stopPropagation();
+    const act = e.target.getAttribute('data-act');
+    if (!act) return;
+    closeContextMenus();
+    if (act === 'duplicate') duplicateDoc(doc);
+    else if (act === 'copy') copyDoc(doc);
+    else if (act === 'cut') cutDoc(doc);
+    else if (act === 'delete') confirmDelete(doc);
+  };
 }
 
 async function newDocInFolder(folderId) {
@@ -531,23 +644,129 @@ async function newDocInFolder(folderId) {
 }
 
 async function createFolder() {
-  const name = prompt('文件夹名称：', '新文件夹');
-  if (!name || !name.trim()) return;
   try {
-    await api('/api/folders', 'POST', { name: name.trim() });
+    const res = await api('/api/folders', 'POST', { name: '新文件夹' });
     await loadSidebar();
+    startFolderRename(res.id, { selectAll: true });
     toast('已创建文件夹');
   } catch (e) { toast('创建失败：' + (e.message || e)); }
 }
 
 async function renameFolder(folder) {
-  const name = prompt('重命名文件夹：', folder.name);
-  if (!name || !name.trim() || name.trim() === folder.name) return;
+  startFolderRename(folder.id, { selectAll: true });
+}
+
+async function startFolderRename(folderId, opts) {
+  if (folderId === null || renamingFolderId === folderId) return;
+  const nameEl = docListEl.querySelector('.folder-item[data-folder-id="' + folderId + '"] .folder-name');
+  const folder = folders.find(f => String(f.id) === String(folderId));
+  if (!nameEl || !folder) return;
+  renamingFolderId = folderId;
+  const oldName = folder.name || '新文件夹';
+  const input = document.createElement('input');
+  input.className = 'folder-name-input';
+  input.type = 'text';
+  input.maxLength = 40;
+  input.value = oldName;
+  input.setAttribute('aria-label', '文件夹名称');
+  nameEl.replaceWith(input);
+  input.focus();
+  if (opts && opts.selectAll) input.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const next = input.value.trim();
+    const restore = (name) => {
+      const span = document.createElement('span');
+      span.className = 'folder-name';
+      span.title = name;
+      span.textContent = name;
+      span.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startFolderRename(folderId, { selectAll: true });
+      });
+      input.replaceWith(span);
+      renamingFolderId = null;
+    };
+    if (!commit || !next || next === oldName) {
+      restore(oldName);
+      if (!next) toast('文件夹名不能为空');
+      return;
+    }
+    try {
+      await api('/api/folders/' + folderId, 'PUT', { name: next });
+      folder.name = next;
+      restore(next);
+      toast('已重命名');
+    } catch (e) {
+      restore(oldName);
+      toast('重命名失败：' + (e.message || e));
+    }
+  };
+
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+async function duplicateDoc(doc, folderId) {
   try {
-    await api('/api/folders/' + folder.id, 'PUT', { name: name.trim() });
+    if (currentDoc && saveTimer) { clearTimeout(saveTimer); await saveCurrent(); }
+    const detail = await api('/api/documents/' + doc.id);
+    const title = (detail.title || doc.title || '无标题') + ' 副本';
+    const targetFolderId = folderId !== undefined ? folderId : (detail.folder_id || doc.folder_id || null);
+    const res = await api('/api/documents', 'POST', { title, content: detail.content || '', folder_id: targetFolderId });
+    if (targetFolderId) expandedFolders.add(targetFolderId);
+    persistExpanded();
     await loadSidebar();
-    toast('已重命名');
-  } catch (e) { toast('重命名失败：' + (e.message || e)); }
+    await openDoc(res.id);
+    toast('已创建副本');
+  } catch (e) { toast('创建副本失败：' + (e.message || e)); }
+}
+
+function copyDoc(doc) {
+  docClipboard = { mode: 'copy', docId: doc.id, title: doc.title || '无标题' };
+  toast('已复制文章，选择文件夹后可粘贴');
+}
+
+function cutDoc(doc) {
+  docClipboard = { mode: 'cut', docId: doc.id, title: doc.title || '无标题' };
+  docListEl.querySelectorAll('.doc-item.cutting').forEach(el => el.classList.remove('cutting'));
+  const item = docListEl.querySelector('.doc-item[data-id="' + doc.id + '"]');
+  if (item) item.classList.add('cutting');
+  toast('已剪切文章，选择文件夹后可粘贴');
+}
+
+async function pasteDocToFolder(folderId) {
+  if (!docClipboard) return;
+  try {
+    if (docClipboard.mode === 'copy') {
+      const detail = await api('/api/documents/' + docClipboard.docId);
+      const title = (detail.title || docClipboard.title || '无标题') + ' 副本';
+      const res = await api('/api/documents', 'POST', {
+        title,
+        content: detail.content || '',
+        folder_id: folderId
+      });
+      if (folderId) expandedFolders.add(folderId);
+      persistExpanded();
+      await loadSidebar();
+      await openDoc(res.id);
+      toast('已粘贴副本');
+    } else {
+      const docId = docClipboard.docId;
+      docClipboard = null;
+      await moveDocToFolder(docId, folderId);
+      if (currentDoc && String(currentDoc.id) === String(docId)) currentDoc.folder_id = folderId || null;
+      toast('已粘贴');
+    }
+  } catch (e) { toast('粘贴失败：' + (e.message || e)); }
 }
 
 async function deleteFolder(folder) {
@@ -563,9 +782,9 @@ async function deleteFolder(folder) {
 
 async function openDoc(id) {
   if (currentDoc && currentDoc.id === id) return;
-  if (currentDoc && saveTimer) { clearTimeout(saveTimer); await saveCurrent(); }
   switching = true;
   try {
+    if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveCurrent({ reorder: false }); }
     const doc = await api('/api/documents/' + id);
     currentDoc = doc;
     docTitleEl.value = doc.title === '无标题' ? '' : doc.title;
@@ -659,17 +878,21 @@ searchInput.addEventListener('search', () => {
   if (!searchInput.value) loadSidebar();
 });
 
-/* ---------- 暗色模式 ---------- */
+/* ---------- 主题切换：纸张 → 飞书 → 暗色 ---------- */
+const THEME_LABELS = { light: '纸张', feishu: '飞书', dark: '暗色' };
+const THEME_ORDER = ['light', 'feishu', 'dark'];
 function initTheme() {
   const saved = localStorage.getItem('penmark_theme');
   const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', theme);
 }
 function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme');
-  const next = cur === 'dark' ? 'light' : 'dark';
+  const cur = document.documentElement.getAttribute('data-theme') || 'light';
+  const idx = THEME_ORDER.indexOf(cur);
+  const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('penmark_theme', next);
+  toast('主题：' + THEME_LABELS[next]);
 }
 $('themeToggle').addEventListener('click', toggleTheme);
 
@@ -744,14 +967,89 @@ function exportWord() {
   toast('已导出 Word');
 }
 
+let shortcutHelpEl = null;
+const shortcutGroups = [
+  ['文档', [
+    ['Ctrl/⌘ + N', '新建文章'],
+    ['Ctrl/⌘ + S', '保存当前文章'],
+    ['Ctrl/⌘ + F', '搜索文章'],
+    ['Ctrl/⌘ + /', '打开快捷键面板'],
+    ['Ctrl/⌘ + Alt + R', '切换阅读模式']
+  ]],
+  ['文字', [
+    ['Ctrl/⌘ + B', '加粗'],
+    ['Ctrl/⌘ + I', '斜体'],
+    ['Ctrl/⌘ + U', '下划线'],
+    ['Ctrl/⌘ + Shift + X', '删除线'],
+    ['Ctrl/⌘ + K', '插入链接'],
+    ['Ctrl/⌘ + \\', '清除格式']
+  ]],
+  ['段落', [
+    ['Ctrl/⌘ + Alt + 0', '正文'],
+    ['Ctrl/⌘ + Alt + 1-6', '标题 1-6'],
+    ['Ctrl/⌘ + Alt + Q', '引用块'],
+    ['Ctrl/⌘ + Shift + 7', '有序列表'],
+    ['Ctrl/⌘ + Shift + 8', '无序列表'],
+    ['Ctrl/⌘ + Shift + L/E/R/J', '左/中/右/两端对齐'],
+    ['Tab / Shift + Tab', '缩进 / 反缩进'],
+    ['Alt + Shift + ↑/↓', '上移 / 下移当前块']
+  ]],
+  ['插入与导出', [
+    ['Ctrl/⌘ + Shift + M', '行内代码'],
+    ['Ctrl/⌘ + Alt + C', '代码块'],
+    ['Ctrl/⌘ + Alt + T', '表格'],
+    ['Ctrl/⌘ + Alt + H', '分隔线'],
+    ['Ctrl/⌘ + Shift + H', '导出 HTML'],
+    ['Ctrl/⌘ + Shift + D', '导出 Markdown'],
+    ['Ctrl/⌘ + Shift + W', '导出 Word']
+  ]]
+];
+
+function buildShortcutHelp() {
+  const el = document.createElement('div');
+  el.className = 'shortcut-overlay';
+  el.hidden = true;
+  el.innerHTML = '<div class="shortcut-panel" role="dialog" aria-modal="true" aria-label="快捷键">' +
+    '<div class="shortcut-head"><strong>快捷键</strong><button class="shortcut-close" type="button" title="关闭">×</button></div>' +
+    '<div class="shortcut-body">' + shortcutGroups.map(group =>
+      '<section class="shortcut-section"><h3>' + escapeHtml(group[0]) + '</h3>' +
+      group[1].map(item => '<div class="shortcut-row"><kbd>' + escapeHtml(item[0]) + '</kbd><span>' + escapeHtml(item[1]) + '</span></div>').join('') +
+      '</section>'
+    ).join('') + '</div></div>';
+  el.addEventListener('pointerdown', (e) => { if (e.target === el) hideShortcutHelp(); });
+  el.querySelector('.shortcut-close').addEventListener('click', hideShortcutHelp);
+  document.body.appendChild(el);
+  return el;
+}
+
+function showShortcutHelp() {
+  shortcutHelpEl = shortcutHelpEl || buildShortcutHelp();
+  shortcutHelpEl.hidden = false;
+}
+
+function hideShortcutHelp() {
+  if (shortcutHelpEl) shortcutHelpEl.hidden = true;
+}
+
+function isNativeField(target) {
+  return !!(target && target.closest && target.closest('input, textarea, select'));
+}
+
 /* ---------- 全局快捷键 ---------- */
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
+  if (e.key === 'Escape') hideShortcutHelp();
   if (!ctrl) return;
+  if (isNativeField(e.target) && e.target !== docTitleEl && e.target !== searchInput) return;
   const k = e.key.toLowerCase();
-  if (k === 's') { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
-  else if (k === 'n' && e.altKey) { e.preventDefault(); newDoc(); }
-  else if (k === 'f' && e.altKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  if (k === '/') { e.preventDefault(); showShortcutHelp(); }
+  else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
+  else if (k === 'n' && !e.shiftKey) { e.preventDefault(); newDoc(); }
+  else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  else if (k === 'r' && e.altKey) { e.preventDefault(); toggleReadingMode(); }
+  else if (k === 'h' && e.shiftKey && !e.altKey) { e.preventDefault(); exportHTML(); }
+  else if (k === 'd' && e.shiftKey && !e.altKey) { e.preventDefault(); exportMarkdown(); }
+  else if (k === 'w' && e.shiftKey && !e.altKey) { e.preventDefault(); exportWord(); }
 });
 
 // 离开前保存
@@ -801,16 +1099,14 @@ function updateUserBadge() {
   if (!badge || !currentUser) return;
   badge.querySelector('.user-name').textContent = currentUser.nickname || currentUser.username;
   badge.style.display = '';
-  // 管理员显示邀请码管理入口
-  const inviteBtn = $('inviteBtn');
-  if (inviteBtn) inviteBtn.style.display = currentUser.isAdmin ? '' : 'none';
 }
 
-// 占位：第二批分享功能实现时替换。仅管理员显示分享入口。
+// 设置入口仅管理员可见；分享入口对管理员及被授权用户可见
 function updateShareButton() {
-  const btn = $('shareBtn');
-  if (!btn) return;
-  btn.style.display = (currentUser && currentUser.isAdmin) ? '' : 'none';
+  const shareBtn = $('shareBtn');
+  if (shareBtn) shareBtn.style.display = (currentUser && (currentUser.isAdmin || currentUser.can_share)) ? '' : 'none';
+  const settingsBtn = $('settingsBtn');
+  if (settingsBtn) settingsBtn.style.display = (currentUser && currentUser.isAdmin) ? '' : 'none';
 }
 
 $('logoutBtn').addEventListener('click', async () => {
@@ -820,27 +1116,187 @@ $('logoutBtn').addEventListener('click', async () => {
   window.location.href = '/login.html';
 });
 
-/* ---------- 邀请码管理（管理员） ---------- */
-const inviteModal = $('inviteModal');
-const inviteModalBody = $('inviteModalBody');
-$('inviteBtn').addEventListener('click', () => { if (currentUser && currentUser.isAdmin) openInviteModal(); });
-$('inviteModalClose').addEventListener('click', () => inviteModal.hidden = true);
-inviteModal.addEventListener('click', (e) => { if (e.target === inviteModal) inviteModal.hidden = true; });
+/* ---------- 设置面板（管理员） ---------- */
+const settingsModal = $('settingsModal');
+const settingsModalBody = $('settingsModalBody');
+let settingsTab = 'users';
 
-async function openInviteModal() {
-  inviteModal.hidden = false;
-  inviteModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
+$('settingsBtn').addEventListener('click', () => { if (currentUser && currentUser.isAdmin) openSettings(); });
+$('settingsModalClose').addEventListener('click', () => settingsModal.hidden = true);
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.hidden = true; });
+
+$('settingsTabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('.settings-tab');
+  if (!tab) return;
+  settingsTab = tab.getAttribute('data-stab');
+  $('settingsTabs').querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t === tab));
+  loadSettingsTab(settingsTab);
+});
+
+function openSettings() {
+  settingsModal.hidden = false;
+  loadSettingsTab(settingsTab);
+}
+
+async function loadSettingsTab(tab) {
+  settingsModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
   try {
-    const list = await api('/api/invites');
-    renderInviteList(list);
+    if (tab === 'users') await renderUserManagement();
+    else if (tab === 'invites') renderInviteList(await api('/api/invites'));
+    else if (tab === 'review') await renderReviewPanel();
+    else if (tab === 'sensitive') await renderSensitiveWords();
   } catch (e) {
-    inviteModalBody.innerHTML = '<div class="share-error">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
+    settingsModalBody.innerHTML = '<div class="share-error">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
 
+/* ---------- 用户管理 ---------- */
+async function renderUserManagement() {
+  const users = await api('/api/admin/users');
+  let html = '<table class="user-table"><thead><tr><th>用户名</th><th>昵称</th><th>状态</th><th>分享权限</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+  users.forEach(u => {
+    const status = u.is_banned ? '<span class="tag-banned">已禁用</span>' : '<span style="color:var(--ink-faint);font-size:12px">正常</span>';
+    const shareBtn = u.is_admin ? '<span class="tag-share">管理员</span>' : '<button class="user-share-btn' + (u.can_share ? ' active' : '') + '" data-uid="' + u.id + '" data-field="can_share">' + (u.can_share ? '已授权' : '授权') + '</button>';
+    html += '<tr>' +
+      '<td>' + escapeHtml(u.username) + '</td>' +
+      '<td>' + escapeHtml(u.nickname) + '</td>' +
+      '<td>' + status + '</td>' +
+      '<td>' + shareBtn + '</td>' +
+      '<td><input type="text" class="user-note-input" data-uid="' + u.id + '" value="' + escapeHtml(u.admin_note || '') + '" placeholder="—"></td>' +
+      '<td>' + (u.is_admin ? '' : '<button class="user-ban-btn" data-uid="' + u.id + '" data-banned="' + (u.is_banned ? 1 : 0) + '">' + (u.is_banned ? '解禁' : '禁用') + '</button>') + '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  settingsModalBody.innerHTML = html;
+
+  settingsModalBody.querySelectorAll('.user-ban-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const uid = btn.getAttribute('data-uid');
+      const banned = btn.getAttribute('data-banned') === '1';
+      try {
+        await api('/api/admin/users/' + uid, 'PUT', { is_banned: !banned });
+        toast(banned ? '已解禁' : '已禁用');
+        renderUserManagement();
+      } catch (e) { toast('操作失败'); }
+    });
+  });
+  settingsModalBody.querySelectorAll('.user-share-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const uid = btn.getAttribute('data-uid');
+      const active = btn.classList.contains('active');
+      try {
+        await api('/api/admin/users/' + uid, 'PUT', { can_share: !active });
+        toast(active ? '已取消分享权限' : '已授权分享');
+        renderUserManagement();
+      } catch (e) { toast('操作失败'); }
+    });
+  });
+  settingsModalBody.querySelectorAll('.user-note-input').forEach(inp => {
+    inp.addEventListener('blur', async () => {
+      const uid = inp.getAttribute('data-uid');
+      const val = inp.value.trim();
+      try {
+        await api('/api/admin/users/' + uid, 'PUT', { admin_note: val });
+        toast('备注已保存');
+      } catch (e) { toast('保存失败'); }
+    });
+  });
+}
+
+/* ---------- 内容审核面板 ---------- */
+async function renderReviewPanel() {
+  const docs = await api('/api/admin/flagged');
+  if (!docs.length) {
+    settingsModalBody.innerHTML = '<div class="trash-empty">暂无待审核内容</div>';
+    return;
+  }
+  let html = '';
+  docs.forEach(d => {
+    const flagged = d.flagged === 1;
+    const content = (d.content || '').replace(/<[^>]+>/g, ' ').trim().slice(0, 200);
+    html += '<div class="review-item' + (flagged ? ' flagged' : '') + '">' +
+      '<div class="review-item-head">' +
+        '<span class="review-item-title">' + escapeHtml(d.title || '无标题') + '</span>' +
+        (flagged ? '<span class="flag-badge">已标记</span>' : '') +
+      '</div>' +
+      '<div class="review-item-author">' + escapeHtml(d.author_nickname || '') + ' · ' + relativeTime(d.updated_at) + '</div>' +
+      '<div class="review-item-content">' + escapeHtml(content) + (content.length >= 200 ? '…' : '') + '</div>' +
+      '<div class="review-item-actions">' +
+        '<button class="review-btn flag" data-did="' + d.id + '" data-flagged="' + (flagged ? 1 : 0) + '">' + (flagged ? '取消标记' : '标记违规') + '</button>' +
+        '<button class="review-btn pass" data-did="' + d.id + '">通过</button>' +
+      '</div>' +
+    '</div>';
+  });
+  settingsModalBody.innerHTML = html;
+
+  settingsModalBody.querySelectorAll('.review-btn.flag').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const did = btn.getAttribute('data-did');
+      const flagged = btn.getAttribute('data-flagged') === '1';
+      try {
+        await api('/api/admin/flagged/' + did, 'PUT', { flagged: !flagged });
+        toast(flagged ? '已取消标记' : '已标记违规');
+        renderReviewPanel();
+      } catch (e) { toast('操作失败'); }
+    });
+  });
+  settingsModalBody.querySelectorAll('.review-btn.pass').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const did = btn.getAttribute('data-did');
+      try {
+        await api('/api/admin/flagged/' + did, 'PUT', { flagged: false });
+        toast('已通过');
+        renderReviewPanel();
+      } catch (e) { toast('操作失败'); }
+    });
+  });
+}
+
+/* ---------- 敏感词管理 ---------- */
+async function renderSensitiveWords() {
+  const words = await api('/api/admin/sensitive-words');
+  let html = '<div class="sensitive-input-row"><input type="text" class="sensitive-input" id="sensitiveInput" placeholder="输入敏感词" maxlength="30"><button class="sensitive-add-btn" id="sensitiveAdd">添加</button></div>';
+  html += '<div class="sensitive-list" id="sensitiveList">';
+  if (!words.length) {
+    html += '<span style="color:var(--ink-faint);font-size:13px">暂无敏感词</span>';
+  } else {
+    words.forEach(w => {
+      html += '<span class="sensitive-tag">' + escapeHtml(w.word) + '<button class="sensitive-tag-remove" data-id="' + w.id + '">×</button></span>';
+    });
+  }
+  html += '</div>';
+  settingsModalBody.innerHTML = html;
+
+  $('sensitiveAdd').addEventListener('click', async () => {
+    const inp = $('sensitiveInput');
+    const word = inp.value.trim();
+    if (!word) return;
+    try {
+      await api('/api/admin/sensitive-words', 'POST', { word });
+      toast('已添加');
+      renderSensitiveWords();
+    } catch (e) { toast(e.message || '添加失败'); }
+  });
+  $('sensitiveInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('sensitiveAdd').click();
+  });
+  settingsModalBody.querySelectorAll('.sensitive-tag-remove').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id');
+      try {
+        await api('/api/admin/sensitive-words/' + id, 'DELETE');
+        toast('已删除');
+        renderSensitiveWords();
+      } catch (e) { toast('删除失败'); }
+    });
+  });
+}
+
+/* ---------- 邀请码管理（设置面板 tab） ---------- */
 function renderInviteList(list) {
   const unused = list.filter(i => !i.used).length;
   const used = list.length - unused;
+  const copyIcon = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>';
   let html = '<div class="invite-toolbar">' +
     '<div class="invite-stat">共 ' + list.length + ' 个 · 未用 ' + unused + ' · 已用 ' + used + '</div>' +
     '<div class="invite-actions">' +
@@ -858,13 +1314,16 @@ function renderInviteList(list) {
         ? '<span class="invite-tag used">已使用</span>'
         : '<span class="invite-tag unused">未使用</span>';
       const user = i.used
-        ? '<span class="invite-user">' + escapeHtml(i.registered_nickname || '') + '<small>' + escapeHtml(i.registered_username || '') + '</small></span>'
-        : '<span class="ink-faint">—</span>';
+        ? '<span class="invite-user">' + escapeHtml(i.registered_nickname || '') + (i.registered_username ? '<small>' + escapeHtml(i.registered_username) + '</small>' : '') + '</span>'
+        : '';
       const del = i.used
         ? ''
         : '<button class="invite-del" data-code="' + code + '" title="删除">删除</button>';
+      const codeCell = i.used
+        ? '<div class="invite-code-cell used"><code class="invite-code">' + code + '</code></div>'
+        : '<div class="invite-code-cell"><code class="invite-code" title="点击复制">' + code + '</code><button class="invite-copy-btn" data-code="' + code + '" title="复制">' + copyIcon + '</button></div>';
       html += '<tr>' +
-        '<td><code class="invite-code">' + code + '</code></td>' +
+        '<td>' + codeCell + '</td>' +
         '<td>' + status + '</td>' +
         '<td>' + user + '</td>' +
         '<td class="invite-time">' + relativeTime(i.created_at) + '</td>' +
@@ -873,30 +1332,34 @@ function renderInviteList(list) {
     });
     html += '</tbody></table></div>';
   }
-  inviteModalBody.innerHTML = html;
+  settingsModalBody.innerHTML = html;
 
   const genOne = $('genOneBtn');
   const genFive = $('genFiveBtn');
   if (genOne) genOne.addEventListener('click', () => generateInvites(1));
   if (genFive) genFive.addEventListener('click', () => generateInvites(5));
-  inviteModalBody.querySelectorAll('.invite-del').forEach(btn => {
+  settingsModalBody.querySelectorAll('.invite-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       const code = btn.getAttribute('data-code');
       if (!confirm('确定删除邀请码 ' + code + '？')) return;
       try {
         await api('/api/invites/' + encodeURIComponent(code), 'DELETE');
         toast('已删除');
-        openInviteModal();
+        loadSettingsTab('invites');
       } catch (e) { toast('删除失败：' + (e.message || e)); }
     });
   });
-  // 点击邀请码复制
-  inviteModalBody.querySelectorAll('.invite-code').forEach(el => {
-    el.style.cursor = 'pointer';
-    el.title = '点击复制';
-    el.addEventListener('click', () => {
-      const text = el.textContent;
-      navigator.clipboard.writeText(text).then(() => toast('已复制：' + text)).catch(() => {});
+  // 点击邀请码或复制按钮复制（仅未使用）
+  const copyCode = (text) => {
+    navigator.clipboard.writeText(text).then(() => toast('已复制：' + text)).catch(() => {});
+  };
+  settingsModalBody.querySelectorAll('.invite-code-cell:not(.used) .invite-code').forEach(el => {
+    el.addEventListener('click', () => copyCode(el.textContent));
+  });
+  settingsModalBody.querySelectorAll('.invite-copy-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyCode(btn.getAttribute('data-code'));
     });
   });
 }
@@ -905,9 +1368,66 @@ async function generateInvites(count) {
   try {
     await api('/api/invites', 'POST', { count });
     toast('已生成 ' + count + ' 个邀请码');
-    openInviteModal();
+    loadSettingsTab('invites');
   } catch (e) {
     toast('生成失败：' + (e.message || e));
+  }
+}
+
+/* ---------- 回收站 ---------- */
+const trashModal = $('trashModal');
+const trashModalBody = $('trashModalBody');
+$('trashBtn').addEventListener('click', openTrash);
+$('trashModalClose').addEventListener('click', () => trashModal.hidden = true);
+trashModal.addEventListener('click', (e) => { if (e.target === trashModal) trashModal.hidden = true; });
+
+async function openTrash() {
+  trashModal.hidden = false;
+  trashModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
+  try {
+    const list = await api('/api/trash');
+    if (!list.length) {
+      trashModalBody.innerHTML = '<div class="trash-empty">回收站为空</div>';
+      return;
+    }
+    let html = '';
+    list.forEach(d => {
+      html += '<div class="trash-item">' +
+        '<div>' +
+          '<div class="trash-item-title">' + escapeHtml(d.title || '无标题') + '</div>' +
+          '<div class="trash-item-meta">删除于 ' + relativeTime(d.deleted_at) + '</div>' +
+        '</div>' +
+        '<div class="trash-item-actions">' +
+          '<button class="trash-restore" data-id="' + d.id + '">恢复</button>' +
+          '<button class="trash-delete" data-id="' + d.id + '">永久删除</button>' +
+        '</div>' +
+      '</div>';
+    });
+    trashModalBody.innerHTML = html;
+    trashModalBody.querySelectorAll('.trash-restore').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-id');
+        try {
+          await api('/api/trash/' + id + '/restore', 'POST');
+          toast('已恢复');
+          openTrash();
+          loadSidebar();
+        } catch (e) { toast('恢复失败'); }
+      });
+    });
+    trashModalBody.querySelectorAll('.trash-delete').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-id');
+        if (!confirm('永久删除不可恢复，确定？')) return;
+        try {
+          await api('/api/trash/' + id, 'DELETE');
+          toast('已永久删除');
+          openTrash();
+        } catch (e) { toast('删除失败'); }
+      });
+    });
+  } catch (e) {
+    trashModalBody.innerHTML = '<div class="share-error">加载失败</div>';
   }
 }
 
@@ -934,7 +1454,7 @@ shareModal.addEventListener('click', (e) => { if (e.target === shareModal) share
 
 async function openShareModal() {
   if (!currentDoc) { toast('请先选择文档'); return; }
-  if (!currentUser || !currentUser.isAdmin) { toast('仅管理员可分享文档'); return; }
+  if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { toast('无分享权限'); return; }
   shareModal.hidden = false;
   shareModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
   try {
@@ -1006,6 +1526,14 @@ function renderShareForm(share) {
         '<button class="share-confirm-btn" id="shareExpConfirm">确定</button>' +
       '</div>' +
     '</div>' +
+    '<div class="share-section">' +
+      '<div class="share-label">默认主题</div>' +
+      '<div class="share-theme-row" id="shareThemeRow">' +
+        '<button class="share-theme-btn' + (share.theme === 'light' ? ' active' : '') + '" data-theme="light">纸张</button>' +
+        '<button class="share-theme-btn' + (share.theme === 'feishu' ? ' active' : '') + '" data-theme="feishu">飞书</button>' +
+        '<button class="share-theme-btn' + (share.theme === 'dark' ? ' active' : '') + '" data-theme="dark">暗色</button>' +
+      '</div>' +
+    '</div>' +
     '<div class="share-link-section">' +
       '<div class="share-link-label">分享链接</div>' +
       '<div class="share-link-row">' +
@@ -1074,6 +1602,18 @@ function renderShareForm(share) {
 
   // 撤销分享
   $('shareRevoke').addEventListener('click', revokeShare);
+
+  // 主题切换
+  shareModalBody.querySelectorAll('.share-theme-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const theme = btn.getAttribute('data-theme');
+      try {
+        await api('/api/documents/' + currentDoc.id + '/share/theme', 'PUT', { theme });
+        shareModalBody.querySelectorAll('.share-theme-btn').forEach(b => b.classList.toggle('active', b === btn));
+        toast('主题已更新');
+      } catch (e) { toast('更新失败'); }
+    });
+  });
 }
 
 function buildShareHint(share) {

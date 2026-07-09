@@ -65,4 +65,64 @@ try {
 
 // 注意：users 表与 documents.user_id 列由 auth.js 在 require 时迁移创建
 
+// users 表增量迁移：审核相关字段（users 表由 auth.js 创建，这里只加列）
+try {
+  const userCols = db.prepare("PRAGMA table_info(users)").all();
+  if (!userCols.some(c => c.name === 'is_banned')) {
+    db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!userCols.some(c => c.name === 'can_share')) {
+    db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!userCols.some(c => c.name === 'admin_note')) {
+    db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
+  }
+} catch (e) { console.warn('users 迁移跳过：', e.message); }
+
+// documents 表增量迁移：软删除 + 审核标记
+try {
+  const docCols = db.prepare("PRAGMA table_info(documents)").all();
+  if (!docCols.some(c => c.name === 'deleted_at')) {
+    db.exec("ALTER TABLE documents ADD COLUMN deleted_at INTEGER");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(deleted_at)");
+  }
+  if (!docCols.some(c => c.name === 'flagged')) {
+    db.exec("ALTER TABLE documents ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!docCols.some(c => c.name === 'flag_reason')) {
+    db.exec("ALTER TABLE documents ADD COLUMN flag_reason TEXT DEFAULT ''");
+  }
+} catch (e) { console.warn('documents 迁移跳过：', e.message); }
+
+// 举报表
+db.exec(`
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL,
+  reporter_id INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (doc_id) REFERENCES documents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
+`);
+
+// 敏感词表
+db.exec(`
+CREATE TABLE IF NOT EXISTS sensitive_words (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  word TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+`);
+
+// shares 表增量迁移：加 theme 列
+try {
+  const shareCols = db.prepare("PRAGMA table_info(shares)").all();
+  if (!shareCols.some(c => c.name === 'theme')) {
+    db.exec("ALTER TABLE shares ADD COLUMN theme TEXT DEFAULT 'light'");
+  }
+} catch (e) { console.warn('shares 迁移跳过：', e.message); }
+
 module.exports = db;

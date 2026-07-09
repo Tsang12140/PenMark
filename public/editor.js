@@ -9,6 +9,7 @@ export class Editor {
     this.onImageSelect = opts.onImageSelect || function(){};
     this.dropOverlay = opts.dropOverlay;
     this.selectedImage = null;
+    this.imageClipboard = null;
     this.styleUndoStack = [];
     this.resizeState = null;
     this._init();
@@ -26,7 +27,52 @@ export class Editor {
   /* ---------- 工具 ---------- */
   _uid() { return 'pm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   focus() { this.editor.focus(); }
-  _editorContentWidth() { return this.editor.clientWidth - 112; }
+  _editorContentWidth() {
+    const cs = window.getComputedStyle(this.editor);
+    const pl = parseFloat(cs.paddingLeft) || 0;
+    const pr = parseFloat(cs.paddingRight) || 0;
+    return Math.max(120, this.editor.clientWidth - pl - pr);
+  }
+  _imageAspect(img) {
+    const nw = img && img.naturalWidth ? img.naturalWidth : 1;
+    const nh = img && img.naturalHeight ? img.naturalHeight : 1;
+    return nh ? nw / nh : 1;
+  }
+  _setImageDisplaySize(container, width) {
+    const img = container.querySelector('img');
+    const aspect = this._imageAspect(img);
+    const maxW = this._editorContentWidth() * 0.95;
+    const w = Math.max(40, Math.min(width, maxW));
+    const h = Math.max(30, w / aspect);
+    container.style.width = Math.round(w) + 'px';
+    container.style.height = Math.round(h) + 'px';
+    if (img) {
+      img.style.width = '';
+      img.style.height = '';
+      img.removeAttribute('width');
+      img.removeAttribute('height');
+    }
+    this._syncImageSizeLabel(container);
+  }
+  _readImageWidth(img) {
+    if (!img) return 0;
+    const rectW = img.getBoundingClientRect ? img.getBoundingClientRect().width : 0;
+    if (rectW > 1) return rectW;
+    const styleW = (img.style && img.style.width || '').trim();
+    const pct = styleW.match(/^([\d.]+)%$/);
+    if (pct) return this._editorContentWidth() * Math.min(parseFloat(pct[1]), 100) / 100;
+    const px = styleW.match(/^([\d.]+)px$/);
+    if (px) return parseFloat(px[1]);
+    const attrW = parseFloat(img.getAttribute('width') || '');
+    if (attrW > 0) return attrW;
+    return img.naturalWidth || 0;
+  }
+  _syncImageSizeLabel(container) {
+    const label = container.querySelector('.img-size-label');
+    if (!label) return;
+    const rect = container.getBoundingClientRect();
+    label.textContent = Math.round(rect.width) + '\u00D7' + Math.round(rect.height);
+  }
 
   /* ---------- 命令执行 ---------- */
   exec(cmd, val) {
@@ -54,7 +100,8 @@ export class Editor {
         const p = this.styleUndoStack.pop();
         if (p.container && p.container.parentNode) {
           p.container.style.width = p.w + 'px';
-          p.container.style.height = p.h + 'px';
+          p.container.style.height = p.h == null ? '' : p.h + 'px';
+          this._syncImageSizeLabel(p.container);
           this._afterChange();
           return true;
         }
@@ -88,6 +135,17 @@ export class Editor {
   insertCodeBlock() {
     this.editor.focus();
     document.execCommand('insertHTML', false, '<pre><code><br></code></pre><p><br></p>');
+    this._afterChange();
+  }
+  insertLink() {
+    this.editor.focus();
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) { this.onToast('先选中文字，再插入链接'); return; }
+    const selected = sel.toString().trim();
+    const guess = /^https?:\/\//i.test(selected) ? selected : 'https://';
+    const url = window.prompt('链接地址：', guess);
+    if (!url || !url.trim() || url.trim() === 'https://') return;
+    document.execCommand('createLink', false, url.trim());
     this._afterChange();
   }
   insertTable(rows, cols) {
@@ -154,16 +212,14 @@ export class Editor {
   // 图片加载完成后按编辑器宽度自动缩放（防止突破宽度）
   _attachImgLoad(container) {
     const img = container.querySelector('img');
-    const label = container.querySelector('.img-size-label');
     if (!img) return;
     const onLoad = () => {
       const ew = this._editorContentWidth();
-      if (img.naturalWidth > ew * 0.9) {
-        container.style.width = Math.floor(ew * 0.8) + 'px';
-      } else {
-        container.style.width = img.naturalWidth + 'px';
-      }
-      if (label) label.textContent = img.naturalWidth + '\u00D7' + img.naturalHeight;
+      const styleW = (container.style.width || '').trim();
+      const pct = styleW.match(/^([\d.]+)%$/);
+      const currentW = pct ? ew * Math.min(parseFloat(pct[1]), 100) / 100 : (parseFloat(styleW) || this._readImageWidth(img) || img.naturalWidth || ew * 0.8);
+      const w = Math.min(currentW, img.naturalWidth || currentW, ew * 0.95);
+      this._setImageDisplaySize(container, w);
     };
     img.onload = onLoad;
     if (img.complete && img.naturalWidth) onLoad();
@@ -178,7 +234,8 @@ export class Editor {
       container.contentEditable = 'false';
       container.setAttribute('data-type', 'image');
       container.draggable = true;
-      container.style.width = (img.style.width || (img.width ? img.width + 'px' : 'auto'));
+      const sourceWidth = this._readImageWidth(img);
+      if (sourceWidth) container.style.width = Math.round(sourceWidth) + 'px';
 
       const sizeLabel = document.createElement('span');
       sizeLabel.className = 'img-size-label';
@@ -207,6 +264,21 @@ export class Editor {
     // 确保已有容器都齐备
     this.editor.querySelectorAll('.img-container').forEach(c => {
       if (!c.draggable) c.draggable = true;
+      c.contentEditable = 'false';
+      c.setAttribute('data-type', 'image');
+      const img = c.querySelector('img');
+      if (img) {
+        img.style.width = '';
+        img.style.height = '';
+        img.removeAttribute('width');
+        img.removeAttribute('height');
+        img.setAttribute('draggable', 'false');
+      }
+      if (!c.querySelector('.img-size-label')) {
+        const sizeLabel = document.createElement('span');
+        sizeLabel.className = 'img-size-label';
+        c.appendChild(sizeLabel);
+      }
       if (!c.querySelector('.rs-handle')) {
         ['nw', 'ne', 'sw', 'se'].forEach(dir => {
           const h = document.createElement('span');
@@ -216,7 +288,10 @@ export class Editor {
           c.appendChild(h);
         });
       }
+      this._attachImgLoad(c);
     });
+
+    this.editor.querySelectorAll('.img-grid').forEach(g => this._cleanupImageGrid(g));
   }
 
   /* ---------- 图片事件委托 ---------- */
@@ -250,7 +325,7 @@ export class Editor {
       this.resizeState = {
         container, dir,
         startX: e.clientX, startY: e.clientY,
-        startW: rect.width, aspect
+        startW: rect.width, startH: rect.height, aspect
       };
     });
 
@@ -267,16 +342,13 @@ export class Editor {
       if (newH < 30) { newH = 30; newW = newH * s.aspect; }
       const maxW = this._editorContentWidth();
       if (newW > maxW * 0.95) newW = maxW * 0.95;
-      s.container.style.width = Math.round(newW) + 'px';
-      s.container.style.height = Math.round(newH) + 'px';
-      const label = s.container.querySelector('.img-size-label');
-      if (label) label.textContent = Math.round(newW) + '\u00D7' + Math.round(newH);
+      this._setImageDisplaySize(s.container, newW);
     });
     document.addEventListener('mouseup', () => {
       if (this.resizeState) {
         const s = this.resizeState;
         // 缩放前尺寸入栈，供 undo 补偿
-        this.styleUndoStack.push({ container: s.container, w: s.startW, h: null });
+        this.styleUndoStack.push({ container: s.container, w: s.startW, h: s.startH });
         this.resizeState = null;
         this._afterChange();
       }
@@ -284,7 +356,16 @@ export class Editor {
 
     // 删除键
     this.editor.addEventListener('keydown', (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedImage) {
+      if (!this.selectedImage) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (ctrl && key === 'c') {
+        e.preventDefault();
+        this.copyImage(this.selectedImage);
+      } else if (ctrl && key === 'x') {
+        e.preventDefault();
+        this.cutImage(this.selectedImage);
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         this._deleteImage(this.selectedImage);
       }
@@ -321,13 +402,21 @@ export class Editor {
         e.stopPropagation();
         const container = this.editor.querySelector('.img-container[data-id="' + id + '"]');
         if (!container) return;
+        const gridTarget = this._imageDropTarget(e.clientX, e.clientY, container);
+        if (gridTarget) {
+          this._moveImageBeside(container, gridTarget, e.clientX);
+          this._afterChange();
+          return;
+        }
         const r = this._caretFromPoint(e.clientX, e.clientY);
         if (!r) return;
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(r);
+        const oldGrid = container.closest('.img-grid');
         const html = container.outerHTML;
         container.parentNode.removeChild(container);
+        this._cleanupImageGrid(oldGrid);
         document.execCommand('insertHTML', false, html);
         // 重新绑定 onload（外部插入的 img 可能已加载）
         const nid = this._uid();
@@ -338,6 +427,94 @@ export class Editor {
     }, true);
   }
 
+  _imageDropTarget(x, y, dragged) {
+    const hit = [];
+    if (document.elementsFromPoint) hit.push(...document.elementsFromPoint(x, y));
+    for (const el of hit) {
+      const c = el.closest && el.closest('.img-container');
+      if (c && c !== dragged && this.editor.contains(c) && !dragged.contains(c)) return c;
+    }
+    let best = null;
+    let bestScore = Infinity;
+    this.editor.querySelectorAll('.img-container').forEach(c => {
+      if (c === dragged || dragged.contains(c)) return;
+      const r = c.getBoundingClientRect();
+      const nearY = y >= r.top - 24 && y <= r.bottom + 24;
+      const nearX = x >= r.left - 48 && x <= r.right + 48;
+      if (!nearY || !nearX) return;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const score = Math.abs(x - cx) + Math.abs(y - cy);
+      if (score < bestScore) { best = c; bestScore = score; }
+    });
+    return best;
+  }
+
+  _moveImageBeside(source, target, clientX) {
+    if (!source || !target || source === target) return;
+    const sourceGrid = source.closest('.img-grid');
+    let targetGrid = target.closest('.img-grid');
+    const targetRect = target.getBoundingClientRect();
+    const insertBeforeTarget = clientX < targetRect.left + targetRect.width / 2;
+
+    source.removeAttribute('data-id');
+    if (!targetGrid) {
+      targetGrid = document.createElement('div');
+      targetGrid.className = 'img-grid';
+      targetGrid.setAttribute('data-type', 'image-grid');
+      target.parentNode.insertBefore(targetGrid, target);
+      if (insertBeforeTarget) {
+        targetGrid.appendChild(source);
+        targetGrid.appendChild(target);
+      } else {
+        targetGrid.appendChild(target);
+        targetGrid.appendChild(source);
+      }
+      targetGrid.after(document.createTextNode('\u200B'));
+    } else {
+      source.parentNode && source.parentNode.removeChild(source);
+      targetGrid.insertBefore(source, insertBeforeTarget ? target : target.nextSibling);
+    }
+
+    if (sourceGrid && sourceGrid !== targetGrid) this._cleanupImageGrid(sourceGrid);
+    this._normalizeImageGrid(targetGrid);
+    this._selectImage(source);
+  }
+
+  _normalizeImageGrid(grid) {
+    if (!grid || !grid.classList || !grid.classList.contains('img-grid')) return;
+    grid.removeAttribute('contenteditable');
+    grid.setAttribute('data-type', 'image-grid');
+    const items = Array.from(grid.querySelectorAll(':scope > .img-container'));
+    grid.setAttribute('data-count', String(items.length));
+    items.forEach(c => {
+      c.style.float = '';
+      c.style.display = '';
+      c.style.marginLeft = '';
+      c.style.marginRight = '';
+      this._attachImgLoad(c);
+      this._syncImageSizeLabel(c);
+    });
+  }
+
+  _cleanupImageGrid(grid) {
+    if (!grid || !grid.parentNode) return;
+    const items = Array.from(grid.querySelectorAll(':scope > .img-container'));
+    if (items.length === 0) {
+      grid.parentNode.removeChild(grid);
+      return;
+    }
+    if (items.length === 1) {
+      const only = items[0];
+      grid.parentNode.insertBefore(only, grid);
+      grid.parentNode.removeChild(grid);
+      only.style.width = only.style.width || Math.floor(this._editorContentWidth() * 0.6) + 'px';
+      this._attachImgLoad(only);
+      return;
+    }
+    this._normalizeImageGrid(grid);
+  }
+
   _selectImage(container) {
     this.editor.querySelectorAll('.img-container.selected').forEach(c => c.classList.remove('selected'));
     this.selectedImage = container;
@@ -346,14 +523,65 @@ export class Editor {
   }
 
   _deleteImage(container) {
-    const range = document.createRange();
-    range.selectNode(container);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    document.execCommand('delete');
+    if (!container || !container.parentNode) return;
+    const grid = container && container.closest ? container.closest('.img-grid') : null;
+    container.parentNode.removeChild(container);
+    this._cleanupImageGrid(grid);
     this._selectImage(null);
     this._afterChange();
+  }
+
+  _imageClipboardHTML(container) {
+    if (!container) return '';
+    const clone = container.cloneNode(true);
+    clone.classList.remove('selected', 'dragging');
+    clone.removeAttribute('data-id');
+    clone.removeAttribute('tabindex');
+    clone.querySelectorAll('.rs-handle, .img-size-label').forEach(n => n.remove());
+    return clone.outerHTML;
+  }
+
+  async _writeImageClipboard(container) {
+    const img = container && container.querySelector('img');
+    if (!img) return false;
+    const html = this._imageClipboardHTML(container);
+    const src = img.getAttribute('src') || '';
+    this.imageClipboard = { html, src };
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        const items = {
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([src], { type: 'text/plain' })
+        };
+        if (/^data:image\/png/i.test(src)) {
+          try { items['image/png'] = await (await fetch(src)).blob(); } catch (_) {}
+        }
+        await navigator.clipboard.write([new ClipboardItem(items)]);
+        return true;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(src);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  async copyImage(container) {
+    container = container || this.selectedImage;
+    if (!container) return false;
+    await this._writeImageClipboard(container);
+    this.onToast('已复制图片');
+    return true;
+  }
+
+  async cutImage(container) {
+    container = container || this.selectedImage;
+    if (!container) return false;
+    await this._writeImageClipboard(container);
+    this._deleteImage(container);
+    this.onToast('已剪切图片');
+    return true;
   }
 
   /* ---------- 图片浮动菜单操作 ---------- */
@@ -361,24 +589,19 @@ export class Editor {
   resetImageSize(container) {
     const img = container.querySelector('img');
     if (!img || !img.naturalWidth) return;
+    const before = container.getBoundingClientRect();
     const ew = this._editorContentWidth();
     const w = Math.min(img.naturalWidth, ew * 0.95);
-    container.style.width = Math.floor(w) + 'px';
-    container.style.height = '';
-    const label = container.querySelector('.img-size-label');
-    if (label) label.textContent = img.naturalWidth + '\u00D7' + img.naturalHeight;
-    this.styleUndoStack.push({ container, w: container.offsetWidth, h: null });
+    this._setImageDisplaySize(container, w);
+    this.styleUndoStack.push({ container, w: before.width, h: before.height });
     this._afterChange();
   }
   // 适应编辑器宽度
   fitImageWidth(container) {
+    const before = container.getBoundingClientRect();
     const ew = this._editorContentWidth();
-    container.style.width = Math.floor(ew * 0.95) + 'px';
-    container.style.height = '';
-    const img = container.querySelector('img');
-    const label = container.querySelector('.img-size-label');
-    if (label && img) label.textContent = Math.floor(ew * 0.95) + '\u00D7' + Math.floor((ew * 0.95) / (img.naturalWidth / img.naturalHeight || 1));
-    this.styleUndoStack.push({ container, w: container.offsetWidth, h: null });
+    this._setImageDisplaySize(container, ew * 0.95);
+    this.styleUndoStack.push({ container, w: before.width, h: before.height });
     this._afterChange();
   }
   // 对齐方式
@@ -494,11 +717,20 @@ export class Editor {
     });
   }
 
-  /* ---------- 粘贴：有图片转 base64 插入；富文本清理视觉样式后插入（保留结构） ---------- */
+  /* ---------- 粘贴：有图片转 base64 插入；富文本保留公众号可视样式后插入 ---------- */
   _bindPaste() {
     this.editor.addEventListener('paste', async (e) => {
       const cd = e.clipboardData || window.clipboardData;
       if (!cd) return;
+      const html = cd.getData('text/html');
+      if (html && this._shouldPasteAsHTML(html)) {
+        e.preventDefault();
+        const cleaned = this._cleanPastedHTML(html);
+        document.execCommand('insertHTML', false, cleaned);
+        setTimeout(() => this._afterPasteCleanup(), 60);
+        return;
+      }
+
       const items = cd.items || [];
       let imageItem = null;
       for (let i = 0; i < items.length; i++) {
@@ -523,44 +755,205 @@ export class Editor {
           return;
         }
       }
-      // 无图片 file item：取 text/html 清理视觉样式后插入（去除背景色/字体/颜色等，保留语义结构）
-      const html = cd.getData('text/html');
+      if (!html && this.imageClipboard && this.imageClipboard.html) {
+        e.preventDefault();
+        document.execCommand('insertHTML', false, this.imageClipboard.html);
+        setTimeout(() => this._afterPasteCleanup(), 60);
+        return;
+      }
+      // 无图片 file item：取 text/html，保留公众号编辑器依赖的内联样式
       if (html) {
         e.preventDefault();
         const cleaned = this._cleanPastedHTML(html);
         document.execCommand('insertHTML', false, cleaned);
-        setTimeout(() => { this.fixImageContainers(); this._afterChange(); }, 60);
+        setTimeout(() => this._afterPasteCleanup(), 60);
       } else {
         // 纯文本：放行默认
-        setTimeout(() => { this.fixImageContainers(); this._afterChange(); }, 60);
+        setTimeout(() => this._afterPasteCleanup(), 60);
       }
     });
   }
 
-  /* 清理粘贴 HTML：删除所有内联样式与 class/id，只保留语义标签和必要属性（href/src/alt 等） */
+  _shouldPasteAsHTML(html) {
+    const s = String(html || '');
+    if (!/<[a-z][\s\S]*>/i.test(s)) return false;
+    if (/<(section|div|p|span|h[1-6]|table|ul|ol|blockquote)\b/i.test(s)) return true;
+    if (/\sstyle\s*=|\sclass\s*=|\sdata-/i.test(s)) return true;
+    return false;
+  }
+
+  /* 清理粘贴 HTML：保留视觉样式，移除脚本、事件属性和危险 URL */
   _cleanPastedHTML(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const keepAttrs = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'target']);
+    doc.querySelectorAll('script, iframe, object, embed, link, meta').forEach(n => n.remove());
+    const urlAttrs = new Set(['href', 'src', 'xlink:href']);
     const walk = (node) => {
       if (node.nodeType !== 1) return;
-      // 删除非白名单属性（含 style/class/id/data-*）
       const toRemove = [];
       for (const attr of node.attributes) {
-        if (!keepAttrs.has(attr.name.toLowerCase())) toRemove.push(attr.name);
+        const name = attr.name.toLowerCase();
+        const value = String(attr.value || '').trim();
+        if (name.startsWith('on')) {
+          toRemove.push(attr.name);
+        } else if (urlAttrs.has(name) && /^javascript:/i.test(value)) {
+          toRemove.push(attr.name);
+        } else if (name === 'style') {
+          node.setAttribute('style', this._sanitizeStyle(value));
+          if (!node.getAttribute('style')) toRemove.push(attr.name);
+        }
       }
       toRemove.forEach(a => node.removeAttribute(a));
-      // 移除空 span/font 等纯样式标签，保留内容
-      const tag = node.tagName.toLowerCase();
-      if (['span', 'font', 'div', 'o:p'].includes(tag) && node.attributes.length === 0) {
-        while (node.firstChild) node.parentNode.insertBefore(node.firstChild, node);
-        node.parentNode.removeChild(node);
-        return;
-      }
-      // 递归子节点（注意 live 列表，先拷贝）
       Array.prototype.slice.call(node.childNodes).forEach(walk);
     };
     walk(doc.body);
+    this._postCleanPastedDOM(doc.body);
     return doc.body.innerHTML;
+  }
+
+  _sanitizeStyle(styleText) {
+    return String(styleText || '')
+      .split(';')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .filter(s => !/expression\s*\(/i.test(s))
+      .filter(s => !/url\s*\(\s*['"]?\s*javascript:/i.test(s))
+      .join('; ');
+  }
+
+  /* 粘贴 HTML 后的结构清理：去 style/svg/追踪像素/空行/超宽/懒加载兜底 */
+  _postCleanPastedDOM(body) {
+    // 1. 移除样式标签、SVG 图标、表单元素、noscript 等
+    body.querySelectorAll('style, svg, noscript, template, form, input, button, textarea, select, link').forEach(n => n.remove());
+
+    // 2. 懒加载兜底：公众号常用 data-src，如果 src 为空或占位，提升 data-src 为 src
+    body.querySelectorAll('img').forEach(img => {
+      const src = (img.getAttribute('src') || '').trim();
+      const dataSrc = (img.getAttribute('data-src') || '').trim();
+      if (dataSrc && /^https?:\/\//i.test(dataSrc)) {
+        if (!src || /loading|placeholder|blank|data:image\/gif/i.test(src)) {
+          img.setAttribute('src', dataSrc);
+        }
+      }
+    });
+
+    // 3. 移除追踪像素（1x1 图片或 display:none 的图片）
+    body.querySelectorAll('img').forEach(img => {
+      const w = parseInt(img.getAttribute('width') || '0', 10);
+      const h = parseInt(img.getAttribute('height') || '0', 10);
+      const style = img.getAttribute('style') || '';
+      const isTiny = (w > 0 && w <= 1) || (h > 0 && h <= 1);
+      const isHidden = /display\s*:\s*none|visibility\s*:\s*hidden/i.test(style);
+      if (isTiny || isHidden) img.remove();
+    });
+
+    // 4. 移除空行元素（无文字无图片的 span/div/section/p），迭代直到稳定
+    let changed = true, iter = 0;
+    while (changed && iter < 5) {
+      changed = false; iter++;
+      body.querySelectorAll('span, div, section, p').forEach(el => {
+        if (el.childNodes.length === 0 || (!el.textContent.trim() && !el.querySelector('img'))) {
+          // 保留 <p><br></p> 作为空行占位
+          if (el.tagName === 'P' && el.querySelector('br') && !el.textContent.trim()) return;
+          el.remove();
+          changed = true;
+        }
+      });
+    }
+
+    // 5. 收敛连续空行：3+ 连续 <br> → 1 个 <br>；连续空 <p> → 最多 1 个
+    body.querySelectorAll('br').forEach(br => {
+      let next = br.nextSibling;
+      while (next && next.nodeType === 3 && !next.textContent.trim()) next = next.nextSibling;
+      if (next && next.tagName === 'BR') br.remove();
+    });
+    let emptyCount = 0;
+    body.querySelectorAll('p, div').forEach(b => {
+      if (!b.textContent.trim() && !b.querySelector('img')) {
+        emptyCount++;
+        if (emptyCount > 1) b.remove();
+      } else {
+        emptyCount = 0;
+      }
+    });
+
+    // 6. 限制超宽元素：style 中 width: XXXpx 超过编辑器宽度的缩到 95%
+    const maxW = this._editorContentWidth();
+    body.querySelectorAll('[style]').forEach(el => {
+      const s = el.getAttribute('style') || '';
+      const limited = s.replace(/width\s*:\s*(\d+(?:\.\d+)?)px/g, (match, val) => {
+        const v = parseFloat(val);
+        return v > maxW ? 'width:' + Math.floor(maxW * 0.95) + 'px' : match;
+      });
+      if (limited !== s) el.setAttribute('style', limited);
+    });
+
+    // 7. 清理粘贴内容中的 data-* 追踪属性（保留 data-src 已提升，data-type 是自己的）
+    body.querySelectorAll('*').forEach(el => {
+      const toRemove = [];
+      for (const attr of el.attributes) {
+        if (attr.name.startsWith('data-') && attr.name !== 'data-type' && attr.name !== 'data-src') {
+          toRemove.push(attr.name);
+        }
+      }
+      toRemove.forEach(a => el.removeAttribute(a));
+    });
+  }
+
+  /* 远程图转 base64 固化：粘贴后异步把 http(s) 图片拉回本地，防丢图 */
+  async _convertRemoteImages() {
+    const imgs = Array.from(this.editor.querySelectorAll('img'));
+    const remote = [];
+    for (const img of imgs) {
+      let src = (img.getAttribute('src') || '').trim();
+      // 懒加载兜底
+      const dataSrc = (img.getAttribute('data-src') || '').trim();
+      if (dataSrc && /^https?:\/\//i.test(dataSrc) && (!src || !/^https?:\/\//i.test(src))) {
+        src = dataSrc;
+        img.setAttribute('src', src);
+      }
+      if (/^https?:\/\//i.test(src)) remote.push({ img, src });
+    }
+    if (remote.length === 0) return;
+
+    const total = remote.length;
+    this.onToast('正在固化 ' + total + ' 张远程图片…');
+    let done = 0, failed = 0;
+
+    // 并发 3 张一批，避免阻塞
+    const batchSize = 3;
+    for (let i = 0; i < remote.length; i += batchSize) {
+      const batch = remote.slice(i, i + batchSize);
+      await Promise.all(batch.map(async ({ img, src }) => {
+        try {
+          const r = await fetch('/api/proxy-image?url=' + encodeURIComponent(src), { credentials: 'same-origin' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          if (data.dataUrl) {
+            img.setAttribute('src', data.dataUrl);
+            const container = img.closest('.img-container');
+            if (container) this._attachImgLoad(container);
+            done++;
+          }
+        } catch (err) {
+          failed++;
+          // 远程 URL 保留作兜底，至少在线时能看
+        }
+      }));
+    }
+
+    if (done > 0) {
+      this.onToast('已固化 ' + done + '/' + total + ' 张图片' + (failed > 0 ? '，' + failed + '张失败' : ''));
+      this._afterChange();
+    } else if (failed > 0) {
+      this.onToast('图片固化失败，已保留远程链接');
+    }
+  }
+
+  /* 粘贴后统一清理流程 */
+  _afterPasteCleanup() {
+    this.fixImageContainers();
+    this._afterChange();
+    this._convertRemoteImages(); // 异步 fire-and-forget，完成后会再次 _afterChange
   }
 
   /* ---------- Markdown 快捷输入 ---------- */
@@ -619,13 +1012,76 @@ export class Editor {
     return null;
   }
 
+  _restoreCaretInBlock(block) {
+    if (!block) return;
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  moveCurrentBlock(direction) {
+    const block = this._currentBlock();
+    if (!block || block === this.editor) return false;
+    const parent = block.parentNode;
+    if (!parent) return false;
+    const target = direction < 0 ? block.previousElementSibling : block.nextElementSibling;
+    if (!target) return false;
+    if (direction < 0) parent.insertBefore(block, target);
+    else parent.insertBefore(target, block);
+    this._restoreCaretInBlock(block);
+    this._afterChange();
+    return true;
+  }
+
+  formatBlock(tag) {
+    this.exec('formatBlock', '<' + tag + '>');
+  }
+
   _bindKeydown() {
     this.editor.addEventListener('keydown', (e) => {
       const ctrl = e.ctrlKey || e.metaKey;
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        this._afterChange();
+        return;
+      }
+      if (e.altKey && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        this.moveCurrentBlock(e.key === 'ArrowUp' ? -1 : 1);
+        return;
+      }
       if (!ctrl) return;
       const k = e.key.toLowerCase();
+      const code = e.code || '';
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); this.undo(); }
       else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); this.redo(); }
+      else if (k === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); this.exec('bold'); }
+      else if (k === 'i' && !e.shiftKey && !e.altKey) { e.preventDefault(); this.exec('italic'); }
+      else if (k === 'u' && !e.shiftKey && !e.altKey) { e.preventDefault(); this.exec('underline'); }
+      else if (k === 'x' && e.shiftKey && !e.altKey) { e.preventDefault(); this.exec('strikeThrough'); }
+      else if (k === 'k' && !e.shiftKey && !e.altKey) { e.preventDefault(); this.insertLink(); }
+      else if (k === '\\' && !e.shiftKey && !e.altKey) { e.preventDefault(); this.exec('removeFormat'); }
+      else if (e.altKey && /^[0-6]$/.test(k)) {
+        e.preventDefault();
+        const tags = { '0':'P', '1':'H1', '2':'H2', '3':'H3', '4':'H4', '5':'H5', '6':'H6' };
+        this.formatBlock(tags[k]);
+      }
+      else if (e.altKey && k === 'q') { e.preventDefault(); this.formatBlock('BLOCKQUOTE'); }
+      else if (e.altKey && k === '`') { e.preventDefault(); this.formatBlock('PRE'); }
+      else if (e.shiftKey && (k === '7' || k === '&' || code === 'Digit7') && !e.altKey) { e.preventDefault(); this.exec('insertOrderedList'); }
+      else if (e.shiftKey && (k === '8' || k === '*' || code === 'Digit8') && !e.altKey) { e.preventDefault(); this.exec('insertUnorderedList'); }
+      else if (e.shiftKey && k === 'l' && !e.altKey) { e.preventDefault(); this.exec('justifyLeft'); }
+      else if (e.shiftKey && k === 'e' && !e.altKey) { e.preventDefault(); this.exec('justifyCenter'); }
+      else if (e.shiftKey && k === 'r' && !e.altKey) { e.preventDefault(); this.exec('justifyRight'); }
+      else if (e.shiftKey && k === 'j' && !e.altKey) { e.preventDefault(); this.exec('justifyFull'); }
+      else if (e.shiftKey && k === 'm' && !e.altKey) { e.preventDefault(); this.insertCodeInline(); }
+      else if (e.altKey && k === 'c') { e.preventDefault(); this.insertCodeBlock(); }
+      else if (e.altKey && k === 't') { e.preventDefault(); this.insertTable(3, 3); }
+      else if (e.altKey && k === 'h') { e.preventDefault(); this.insertHR(); }
     });
   }
 
@@ -650,7 +1106,7 @@ export class Editor {
   /* ---------- 统计 ---------- */
   getStats() {
     const text = (this.editor.innerText || '').replace(/\s/g, '');
-    const imgs = this.editor.querySelectorAll('.img-container img, .img-container');
+    const imgs = this.editor.querySelectorAll('.img-container img');
     return { chars: text.length, imgs: imgs.length };
   }
 
@@ -669,7 +1125,7 @@ export class Editor {
 
   /* ---------- 导出 ---------- */
   buildSelfContainedHTML() {
-    const content = this.editor.innerHTML;
+    const content = this._processExportContent();
     return [
 '<!DOCTYPE html>','<html lang="zh-CN"><head><meta charset="UTF-8">','<meta name="viewport" content="width=device-width, initial-scale=1.0">','<title>知著 PenMark 文档</title>','<style>',
 'body{background:#faf8f3;color:#2b2a27;font-family:"Songti SC","Source Han Serif SC","SimSun",Georgia,serif;margin:0;padding:40px 0;}',
@@ -680,8 +1136,7 @@ export class Editor {
 '.doc pre{background:#f0ece0;border:1px solid #d9d2bf;border-radius:6px;padding:14px 16px;overflow-x:auto;font-family:Consolas,monospace;font-size:13.5px;}',
 '.doc code{background:#f0ece0;border-radius:3px;padding:1px 5px;font-family:Consolas,monospace;}',
 '.doc table{border-collapse:collapse;width:100%;margin:.8em 0;}.doc th,.doc td{border:1px solid #e6e0d4;padding:8px 12px;}.doc th{background:#efe9dc;}',
-'.doc .img-container{display:inline-block;position:relative;margin:8px 4px;max-width:100%;}.doc .img-container img{display:block;max-width:100%;height:auto;}',
-'.doc .img-size-label,.doc .rs-handle{display:none;}',
+'.doc .img-container{display:block;text-align:center;margin:8px auto;max-width:100%;}.doc .img-container img{max-width:100%;height:auto;}',
 '</style></head><body><div class="doc">' + content + '</div></body></html>'
     ].join('\n');
   }
@@ -729,8 +1184,73 @@ export class Editor {
     return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
   }
 
+  /* 导出前处理：把图片容器的尺寸转移到 img 上，去掉手柄/标签，grid 转表格 */
+  _processExportContent() {
+    const clone = this.editor.cloneNode(true);
+    const origContainers = Array.from(this.editor.querySelectorAll('.img-container'));
+    // Word A4 页面内容区宽 ≈ 415pt ≈ 553px（96 DPI），留余量后 cap 到 530px
+    const MAX_IMG_W = 530;
+    // img-grid → 表格（Word 不支持 CSS Grid）
+    clone.querySelectorAll('.img-grid').forEach(grid => {
+      const items = Array.from(grid.querySelectorAll(':scope > .img-container'));
+      if (items.length === 0) { grid.remove(); return; }
+      const table = clone.ownerDocument.createElement('table');
+      table.setAttribute('cellspacing', '0');
+      table.setAttribute('cellpadding', '4');
+      table.style.width = '100%';
+      const tr = clone.ownerDocument.createElement('tr');
+      // 每张图最大宽度 = 总宽 / 图数，确保并排不超出页面
+      const cellMax = Math.floor(MAX_IMG_W / items.length);
+      items.forEach(item => {
+        const td = clone.ownerDocument.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.textAlign = 'center';
+        td.style.padding = '4px';
+        const img = item.querySelector('img');
+        if (img) {
+          let w = parseFloat(item.style.width) || 0;
+          if (!w) { const orig = this.editor.querySelector('.img-grid .img-container img'); w = orig ? orig.naturalWidth : 300; }
+          w = Math.min(w, cellMax);
+          const cleanImg = img.cloneNode(true);
+          cleanImg.style.width = Math.floor(w) + 'px';
+          cleanImg.style.height = 'auto';
+          cleanImg.style.maxWidth = '100%';
+          cleanImg.removeAttribute('class');
+          td.appendChild(cleanImg);
+        }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+      grid.parentNode.replaceChild(table, grid);
+    });
+    // 独立 img-container：尺寸转移到 img，容器变为居中 block
+    clone.querySelectorAll('.img-container').forEach((container, i) => {
+      const img = container.querySelector('img');
+      if (!img) { container.remove(); return; }
+      let w = parseFloat(container.style.width) || 0;
+      if (!w && origContainers[i]) {
+        const rect = origContainers[i].getBoundingClientRect();
+        w = rect.width || 0;
+      }
+      if (!w) w = 300;
+      // cap 到 Word 页面内容区宽度，防止图片撑满整页
+      w = Math.min(w, MAX_IMG_W);
+      img.style.width = Math.floor(w) + 'px';
+      img.style.height = 'auto';
+      img.style.maxWidth = '100%';
+      img.removeAttribute('class');
+      container.style.width = '';
+      container.style.height = '';
+      container.style.display = 'block';
+      container.style.textAlign = 'center';
+      container.style.margin = '8px auto';
+      container.querySelectorAll('.rs-handle, .img-size-label').forEach(n => n.remove());
+    });
+    return clone.innerHTML;
+  }
+
   toWordHTML() {
-    const content = this.editor.innerHTML;
+    const content = this._processExportContent();
     return '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">' +
       '<head><meta charset="UTF-8"><title>知著 PenMark 文档</title>' +
       '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]-->' +
@@ -741,17 +1261,20 @@ export class Editor {
       'ul,ol{margin:6pt 0;}hr{border:none;border-top:1pt solid #999;margin:12pt 0;}' +
       'pre{background:#f0ece0;border:1pt solid #d9d2bf;padding:8pt;font-family:Consolas,monospace;font-size:10pt;}' +
       'table{border-collapse:collapse;width:100%;}th,td{border:1pt solid #999;padding:4pt 6pt;}th{background:#efe9dc;}' +
-      '.img-container{display:inline-block;margin:6pt 0;}.img-container img{max-width:100%;height:auto;}' +
-      '.img-size-label,.rs-handle{display:none;}' +
+      '.img-container{display:block;text-align:center;margin:8pt auto;}.img-container img{height:auto;}' +
       '</style></head><body><div class="WordSection1">' + content + '</div></body></html>';
   }
 
   loadFromHTMLString(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const ed = doc.querySelector('#editor') || doc.querySelector('.doc') || doc.body;
-    this.editor.innerHTML = ed ? ed.innerHTML : (doc.body.innerHTML || html);
+    const content = ed ? ed.innerHTML : (doc.body.innerHTML || html);
+    // 同粘贴流程清理 + 固化远程图
+    const cleaned = this._cleanPastedHTML(content);
+    this.editor.innerHTML = cleaned;
     this.fixImageContainers();
     this._afterChange();
+    this._convertRemoteImages();
   }
 
   _escapeHtml(s) {

@@ -6,6 +6,19 @@
     if (saved) document.documentElement.setAttribute('data-theme', saved);
   } catch (_) {}
 
+  /* ---------- 密码显示/隐藏 ---------- */
+  document.querySelectorAll('.pwd-toggle').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var targetId = btn.getAttribute('data-target');
+      var input = document.getElementById(targetId);
+      if (!input) return;
+      var isPwd = input.type === 'password';
+      input.type = isPwd ? 'text' : 'password';
+      btn.querySelector('.eye-open').hidden = isPwd;
+      btn.querySelector('.eye-close').hidden = !isPwd;
+    });
+  });
+
   /* ---------- Tab 切换 ---------- */
   var tabs = document.querySelectorAll('.login-tab');
   var panes = { login: document.getElementById('loginForm'), register: document.getElementById('registerForm') };
@@ -13,11 +26,28 @@
     tab.addEventListener('click', function () {
       var target = tab.getAttribute('data-tab');
       tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
-      Object.keys(panes).forEach(function (k) { panes[k].classList.toggle('active', k === target); });
+      Object.keys(panes).forEach(function (k) {
+        panes[k].classList.toggle('active', k === target);
+        // 切换时清空所有字段错误
+        panes[k].querySelectorAll('.field-error').forEach(function (e) { e.hidden = true; e.textContent = ''; });
+      });
       clearError('loginError'); clearError('regError');
     });
   });
 
+  /* ---------- 字段错误提示 ---------- */
+  function showFieldError(id, msg) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function clearFieldError(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.hidden = true;
+    el.textContent = '';
+  }
   function showError(id, msg) {
     var el = document.getElementById(id);
     el.textContent = msg;
@@ -29,12 +59,64 @@
     el.textContent = '';
   }
 
-  ['loginUsername', 'loginPassword'].forEach(function (id) {
-    document.getElementById(id).addEventListener('input', function () { clearError('loginError'); });
+  /* ---------- 登录字段验证 ---------- */
+  var loginUsername = document.getElementById('loginUsername');
+  var loginPassword = document.getElementById('loginPassword');
+
+  loginUsername.addEventListener('blur', function () {
+    var v = loginUsername.value.trim();
+    if (!v) { showFieldError('loginUsernameError', '请输入用户名'); return; }
+    if (v.length < 2) { showFieldError('loginUsernameError', '用户名至少 2 位'); return; }
+    clearFieldError('loginUsernameError');
   });
-  ['regUsername', 'regNickname', 'regPassword', 'regInvite'].forEach(function (id) {
-    document.getElementById(id).addEventListener('input', function () { clearError('regError'); });
+  loginUsername.addEventListener('input', function () { clearFieldError('loginUsernameError'); clearError('loginError'); });
+
+  loginPassword.addEventListener('blur', function () {
+    var v = loginPassword.value;
+    if (!v) { showFieldError('loginPasswordError', '请输入密码'); return; }
+    if (v.length < 6) { showFieldError('loginPasswordError', '密码至少 6 位'); return; }
+    clearFieldError('loginPasswordError');
   });
+  loginPassword.addEventListener('input', function () { clearFieldError('loginPasswordError'); clearError('loginError'); });
+
+  /* ---------- 注册字段验证 ---------- */
+  var regUsername = document.getElementById('regUsername');
+  var regNickname = document.getElementById('regNickname');
+  var regPassword = document.getElementById('regPassword');
+  var regInvite = document.getElementById('regInvite');
+
+  regUsername.addEventListener('blur', function () {
+    var v = regUsername.value.trim();
+    if (!v) { showFieldError('regUsernameError', '请输入用户名'); return; }
+    if (v.length < 2) { showFieldError('regUsernameError', '用户名至少 2 位'); return; }
+    if (!/^[a-zA-Z0-9_]+$/.test(v)) { showFieldError('regUsernameError', '仅限字母、数字、下划线'); return; }
+    clearFieldError('regUsernameError');
+  });
+  regUsername.addEventListener('input', function () { clearFieldError('regUsernameError'); clearError('regError'); });
+
+  regNickname.addEventListener('blur', function () {
+    var v = regNickname.value.trim();
+    if (!v) { showFieldError('regNicknameError', '请输入昵称'); return; }
+    if (v.length < 2) { showFieldError('regNicknameError', '昵称至少 2 位'); return; }
+    clearFieldError('regNicknameError');
+  });
+  regNickname.addEventListener('input', function () { clearFieldError('regNicknameError'); clearError('regError'); });
+
+  regPassword.addEventListener('blur', function () {
+    var v = regPassword.value;
+    if (!v) { showFieldError('regPasswordError', '请输入密码'); return; }
+    if (v.length < 6) { showFieldError('regPasswordError', '密码至少 6 位'); return; }
+    clearFieldError('regPasswordError');
+  });
+  regPassword.addEventListener('input', function () { clearFieldError('regPasswordError'); clearError('regError'); });
+
+  regInvite.addEventListener('blur', function () {
+    var v = regInvite.value.trim();
+    if (!v) { showFieldError('regInviteError', '请输入邀请码'); return; }
+    if (v.length !== 8) { showFieldError('regInviteError', '邀请码为 8 位'); return; }
+    clearFieldError('regInviteError');
+  });
+  regInvite.addEventListener('input', function () { clearFieldError('regInviteError'); clearError('regError'); });
 
   /* ---------- 登录 ---------- */
   var loginForm = document.getElementById('loginForm');
@@ -42,9 +124,14 @@
   loginForm.addEventListener('submit', function (e) {
     e.preventDefault();
     clearError('loginError');
-    var username = document.getElementById('loginUsername').value.trim();
-    var password = document.getElementById('loginPassword').value;
-    if (!username || !password) { showError('loginError', '请输入用户名和密码'); return; }
+    var username = loginUsername.value.trim();
+    var password = loginPassword.value;
+    var ok = true;
+    if (!username) { showFieldError('loginUsernameError', '请输入用户名'); ok = false; }
+    else if (username.length < 2) { showFieldError('loginUsernameError', '用户名至少 2 位'); ok = false; }
+    if (!password) { showFieldError('loginPasswordError', '请输入密码'); ok = false; }
+    else if (password.length < 6) { showFieldError('loginPasswordError', '密码至少 6 位'); ok = false; }
+    if (!ok) return;
 
     loginSubmit.disabled = true;
     loginSubmit.textContent = '登录中…';
@@ -75,13 +162,21 @@
   regForm.addEventListener('submit', function (e) {
     e.preventDefault();
     clearError('regError');
-    var username = document.getElementById('regUsername').value.trim();
-    var nickname = document.getElementById('regNickname').value.trim();
-    var password = document.getElementById('regPassword').value;
-    var invite = document.getElementById('regInvite').value.trim();
-    if (!username || !nickname || !password || !invite) {
-      showError('regError', '请填写完整信息'); return;
-    }
+    var username = regUsername.value.trim();
+    var nickname = regNickname.value.trim();
+    var password = regPassword.value;
+    var invite = regInvite.value.trim();
+    var ok = true;
+    if (!username) { showFieldError('regUsernameError', '请输入用户名'); ok = false; }
+    else if (username.length < 2) { showFieldError('regUsernameError', '用户名至少 2 位'); ok = false; }
+    else if (!/^[a-zA-Z0-9_]+$/.test(username)) { showFieldError('regUsernameError', '仅限字母、数字、下划线'); ok = false; }
+    if (!nickname) { showFieldError('regNicknameError', '请输入昵称'); ok = false; }
+    else if (nickname.length < 2) { showFieldError('regNicknameError', '昵称至少 2 位'); ok = false; }
+    if (!password) { showFieldError('regPasswordError', '请输入密码'); ok = false; }
+    else if (password.length < 6) { showFieldError('regPasswordError', '密码至少 6 位'); ok = false; }
+    if (!invite) { showFieldError('regInviteError', '请输入邀请码'); ok = false; }
+    else if (invite.length !== 8) { showFieldError('regInviteError', '邀请码为 8 位'); ok = false; }
+    if (!ok) return;
 
     regSubmit.disabled = true;
     regSubmit.textContent = '注册中…';
@@ -107,5 +202,5 @@
   });
 
   // 自动聚焦
-  document.getElementById('loginUsername').focus();
+  loginUsername.focus();
 })();

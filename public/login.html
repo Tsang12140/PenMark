@@ -3,15 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>登录 · 知著 PenMark</title>
+<title>知著 PenMark</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body class="login-body">
 
 <div class="login-card">
-  <div class="login-brand">
-    <span class="brand">知著<small>PenMark</small></span>
-  </div>
+  <div class="login-brand"><span class="brand">知著<small>PenMark</small></span></div>
 
   <div class="login-tabs">
     <button type="button" class="login-tab active" data-tab="login">登录</button>
@@ -19,50 +17,52 @@
   </div>
 
   <!-- 登录 -->
-  <form id="loginForm" class="login-form login-pane active" autocomplete="on">
-    <label class="login-field">
-      <span class="login-label">用户名</span>
-      <input type="text" id="loginUsername" name="username" autocomplete="username"
-             placeholder="4-20 位字母、数字或下划线" required>
-    </label>
-    <label class="login-field">
-      <span class="login-label">密码</span>
-      <input type="password" id="loginPassword" name="password" autocomplete="current-password"
-             placeholder="请输入密码" required>
-    </label>
+  <form id="loginForm" class="login-pane active" autocomplete="on">
+    <div class="login-field">
+      <input type="text" id="loginUsername" name="username" autocomplete="username" placeholder="用户名" maxlength="20" required>
+      <div class="field-error" id="loginUsernameError" hidden></div>
+    </div>
+    <div class="login-field">
+      <div class="pwd-wrap">
+        <input type="password" id="loginPassword" name="password" autocomplete="current-password" placeholder="密码" maxlength="32" required>
+        <button type="button" class="pwd-toggle" data-target="loginPassword" tabindex="-1" title="显示/隐藏密码">
+          <svg class="eye-open" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.2-4.5 6.5-4.5S14.5 8 14.5 8s-2.2 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+          <svg class="eye-close" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M1.5 8s2.2-4.5 6.5-4.5c1.2 0 2.2.3 3.1.8"/><path d="M9.5 9.4a2 2 0 0 1-3.2-1.6"/><path d="M6.1 6.6a2 2 0 0 1 1.3-.6"/><path d="M.8.8l14.4 14.4"/></svg>
+        </button>
+      </div>
+      <div class="field-error" id="loginPasswordError" hidden></div>
+    </div>
     <div id="loginError" class="login-error" hidden></div>
     <button type="submit" class="login-submit" id="loginSubmit">登录</button>
   </form>
 
   <!-- 注册 -->
   <form id="registerForm" class="login-pane" autocomplete="on">
-    <label class="login-field">
-      <span class="login-label">用户名</span>
-      <input type="text" id="regUsername" name="username" autocomplete="username"
-             placeholder="4-20 位字母、数字或下划线" required>
-    </label>
-    <label class="login-field">
-      <span class="login-label">昵称</span>
-      <input type="text" id="regNickname" name="nickname" autocomplete="nickname"
-             placeholder="2-20 个字符，将显示在文档中" required>
-    </label>
-    <label class="login-field">
-      <span class="login-label">密码</span>
-      <input type="password" id="regPassword" name="password" autocomplete="new-password"
-             placeholder="6-16 位" required>
-    </label>
-    <label class="login-field">
-      <span class="login-label">邀请码</span>
-      <input type="text" id="regInvite" name="invite_code"
-             placeholder="8 位邀请码" required>
-    </label>
+    <div class="login-field">
+      <input type="text" id="regUsername" name="username" autocomplete="username" placeholder="用户名" maxlength="20" required>
+      <div class="field-error" id="regUsernameError" hidden></div>
+    </div>
+    <div class="login-field">
+      <input type="text" id="regNickname" name="nickname" autocomplete="nickname" placeholder="昵称" maxlength="20" required>
+      <div class="field-error" id="regNicknameError" hidden></div>
+    </div>
+    <div class="login-field">
+      <div class="pwd-wrap">
+        <input type="password" id="regPassword" name="password" autocomplete="new-password" placeholder="密码" maxlength="32" required>
+        <button type="button" class="pwd-toggle" data-target="regPassword" tabindex="-1" title="显示/隐藏密码">
+          <svg class="eye-open" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.2-4.5 6.5-4.5S14.5 8 14.5 8s-2.2 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>
+          <svg class="eye-close" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M1.5 8s2.2-4.5 6.5-4.5c1.2 0 2.2.3 3.1.8"/><path d="M9.5 9.4a2 2 0 0 1-3.2-1.6"/><path d="M6.1 6.6a2 2 0 0 1 1.3-.6"/><path d="M.8.8l14.4 14.4"/></svg>
+        </button>
+      </div>
+      <div class="field-error" id="regPasswordError" hidden></div>
+    </div>
+    <div class="login-field">
+      <input type="text" id="regInvite" name="invite_code" placeholder="邀请码" maxlength="8" required>
+      <div class="field-error" id="regInviteError" hidden></div>
+    </div>
     <div id="regError" class="login-error" hidden></div>
     <button type="submit" class="login-submit" id="regSubmit">注册</button>
   </form>
-
-  <div class="login-foot">
-    <span>注册需邀请码 · 登录一次长期免登录</span>
-  </div>
 </div>
 
 <script src="login.js"></script>
