@@ -167,7 +167,9 @@ function renderDoc(data) {
     '</div>';
 
   if (canEdit) {
-    html += '<div class="share-editor" id="shareEditor" contenteditable="true" spellcheck="true">' + (doc.content || '<p><br></p>') + '</div>';
+    
+    html += '<div class="share-edit-notice">\u8f7b\u7f16\u8f91\u6a21\u5f0f\uff1a\u9002\u5408\u5c11\u91cf\u6539\u5b57\u548c\u8865\u5145\uff0c\u590d\u6742\u6392\u7248\u3001\u8868\u683c\u548c\u56fe\u7247\u8bf7\u56de\u5230\u4e3b\u7f16\u8f91\u5668\u5904\u7406\u3002</div>';
+html += '<div class="share-editor" id="shareEditor" contenteditable="true" spellcheck="true">' + (doc.content || '<p><br></p>') + '</div>';
     html += '<div class="share-save-bar"><span class="share-save-dot" id="saveDot"></span><span id="shareSaveState">已就绪</span></div>';
   } else {
     html += '<div class="share-reader" id="shareReader">' + (doc.content || '<p><br></p>') + '</div>';

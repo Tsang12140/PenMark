@@ -14,6 +14,10 @@ const dropOverlay = $('dropOverlay');
 const toastStack = $('toastStack');
 const blockStyleSel = $('blockStyle');
 const fontSelectEl = $('fontSelect');
+const aiModal = $('aiModal');
+const aiModalTitle = $('aiModalTitle');
+const aiModalBody = $('aiModalBody');
+const aiModalClose = $('aiModalClose');
 
 let currentDoc = null;
 let saveTimer = null;
@@ -85,6 +89,7 @@ function handleAction(action) {
   switch (action) {
     case 'hr': editor.insertHR(); break;
     case 'quote': editor.insertQuote(); break;
+    case 'link': editor.insertLink(); break;
     case 'code': editor.insertCodeInline(); break;
     case 'codeblock': editor.insertCodeBlock(); break;
     case 'table': editor.insertTable(3, 3); break;
@@ -96,6 +101,9 @@ function handleAction(action) {
     case 'exportMD': exportMarkdown(); break;
     case 'exportDoc': exportWord(); break;
     case 'share': openShareModal(); break;
+    
+    case 'aiLayout': openAiLayoutModal(); break;
+    case 'aiRewrite': openAiRewriteModal(); break;
     case 'reading': toggleReadingMode(); break;
   }
 }
@@ -235,7 +243,7 @@ floatMenu.addEventListener('click', (e) => {
   const action = btn.getAttribute('data-action');
   if (cmd) editor.exec(cmd);
   else if (block) editor.exec('formatBlock', '<' + block + '>');
-  else if (action === 'code') editor.insertCodeInline();
+  else if (action) handleAction(action);
   refreshFloatMenuState();
 });
 
@@ -268,6 +276,160 @@ document.addEventListener('mousedown', (e) => {
     hideFloatMenu();
     floatMenuImg.hidden = true;
   }
+});
+
+/* ---------- 右键上下文菜单（飞书式，精简版） ---------- */
+const ctxMenu = $('ctxMenu');
+let ctxAnchor = null; // 右键命中的链接（若有）
+
+editorEl.addEventListener('contextmenu', (e) => {
+  // 仅在编辑区内有效
+  const block = getCurrentBlockElement();
+  // 命中链接？
+  const a = e.target.closest('a');
+  ctxAnchor = (a && editorEl.contains(a)) ? a : null;
+  e.preventDefault();
+  hideFloatMenu();
+  floatMenuImg.hidden = true;
+  buildCtxMenu(ctxAnchor, block);
+  positionCtxMenu(e.clientX, e.clientY);
+});
+
+function buildCtxMenu(anchor, block) {
+  let html = '';
+  // 链接上下文：优先显示链接相关操作
+  if (anchor) {
+    const isCard = anchor.getAttribute('data-link-card') === '1';
+    if (isCard) {
+      html += ctxBtn('open', '↗', '在新标签打开');
+      html += ctxBtn('delete', '✕', '删除卡片', true);
+    } else {
+      html += ctxBtn('card', '▦', '转为链接卡片');
+      html += ctxBtn('unwrap', '🔗', '取消链接');
+      html += ctxBtn('open', '↗', '在新标签打开');
+    }
+    html += '<div class="ctx-sep"></div>';
+  }
+  // 格式：正文/H1/H2/H3
+  html += '<div class="ctx-grid">';
+  html += ctxGridBtn('P', '正文', currentBlockTag(block) === 'P');
+  html += ctxGridBtn('H1', 'H1', currentBlockTag(block) === 'H1');
+  html += ctxGridBtn('H2', 'H2', currentBlockTag(block) === 'H2');
+  html += ctxGridBtn('H3', 'H3', currentBlockTag(block) === 'H3');
+  html += '</div>';
+  html += '<div class="ctx-sep"></div>';
+  // 列表
+  html += ctxBtn('ul', '•', '无序列表');
+  html += ctxBtn('ol', '1.', '有序列表');
+  html += '<div class="ctx-sep"></div>';
+  // 插入
+  html += ctxBtn('codeblock', '{ }', '代码块');
+  html += ctxBtn('quote', '❝', '引用');
+  html += ctxBtn('hr', '—', '分割线');
+  html += '<div class="ctx-sep"></div>';
+  // 编辑
+  html += ctxBtn('cut', '✂', '剪切');
+  html += ctxBtn('copy', '⎘', '复制');
+  html += ctxBtn('duplicate', '⧉', '复制此段');
+  html += ctxBtn('delete', '✕', '删除', true);
+  ctxMenu.innerHTML = html;
+}
+
+function ctxBtn(action, icon, label, danger) {
+  return '<button class="ctx-btn' + (danger ? ' danger' : '') + '" data-ctx="' + action + '">' +
+    '<span class="ctx-icon">' + icon + '</span><span>' + label + '</span></button>';
+}
+function ctxGridBtn(block, label, active) {
+  return '<button class="ctx-btn' + (active ? ' active' : '') + '" data-ctx="block" data-block="' + block + '">' + label + '</button>';
+}
+function currentBlockTag(block) {
+  if (!block || block === editorEl) return '';
+  return block.tagName.toUpperCase();
+}
+
+function positionCtxMenu(x, y) {
+  ctxMenu.hidden = false;
+  const mw = ctxMenu.offsetWidth, mh = ctxMenu.offsetHeight;
+  let left = x, top = y;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (top + mh > window.innerHeight - 8) top = y - mh;
+  if (top < 8) top = 8;
+  if (left < 8) left = 8;
+  ctxMenu.style.left = left + 'px';
+  ctxMenu.style.top = top + 'px';
+}
+
+function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; }
+
+ctxMenu.addEventListener('mousedown', (e) => e.preventDefault()); // 不失焦
+ctxMenu.addEventListener('click', (e) => {
+  const btn = e.target.closest('.ctx-btn');
+  if (!btn) return;
+  const action = btn.getAttribute('data-ctx');
+  const block = btn.getAttribute('data-block');
+  const anchor = ctxAnchor; // 先捕获，hideCtxMenu 会清空
+  hideCtxMenu();
+  handleCtxAction(action, block, anchor);
+});
+
+async function handleCtxAction(action, block, anchor) {
+  editorEl.focus();
+  switch (action) {
+    case 'block': editor.exec('formatBlock', '<' + block + '>'); break;
+    case 'ul': editor.exec('insertUnorderedList'); break;
+    case 'ol': editor.exec('insertOrderedList'); break;
+    case 'codeblock': editor.insertCodeBlock(); break;
+    case 'quote': editor.exec('formatBlock', '<BLOCKQUOTE>'); break;
+    case 'hr': editor.insertHR(); break;
+    case 'cut': editor.cutCurrentBlock(); break;
+    case 'copy': editor.copyCurrentBlock(); break;
+    case 'duplicate': editor.duplicateCurrentBlock(); break;
+    case 'delete': editor.deleteCurrentBlock(); break;
+    case 'card':
+      if (anchor) await editor.convertLinkToCard(anchor);
+      break;
+    case 'unwrap':
+      if (anchor) editor.unwrapLink(anchor);
+      break;
+    case 'open':
+      if (anchor) window.open(anchor.href, '_blank', 'noopener');
+      break;
+  }
+  updateOutline();
+}
+
+// 点击外部 / 滚动 / Esc 关闭右键菜单
+document.addEventListener('mousedown', (e) => { if (!e.target.closest('.ctx-menu')) hideCtxMenu(); });
+window.addEventListener('scroll', hideCtxMenu, true);
+window.addEventListener('resize', hideCtxMenu);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
+
+function openEditorLink(anchor) {
+  if (!anchor || !anchor.href) return;
+  window.open(anchor.href, '_blank', 'noopener');
+}
+
+// Editing keeps plain links safe from accidental navigation; cards expose an explicit open target.
+editorEl.addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a || !editorEl.contains(a)) return;
+  const isCard = a.getAttribute('data-link-card') === '1';
+  const openTarget = e.target.closest('.lc-open');
+  if ((isCard && openTarget) || e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    openEditorLink(a);
+    return;
+  }
+  e.preventDefault();
+});
+
+editorEl.addEventListener('dblclick', (e) => {
+  const card = e.target.closest('a[data-link-card="1"]');
+  if (!card || !editorEl.contains(card)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openEditorLink(card);
 });
 
 /* ---------- 统计 ---------- */
@@ -352,7 +514,11 @@ async function api(url, method, body) {
     window.location.href = '/login.html';
     throw new Error('need login');
   }
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (!r.ok) {
+    let errBody = null;
+    try { errBody = await r.json(); } catch (e) {}
+    throw new Error((errBody && errBody.error) || ('HTTP ' + r.status));
+  }
   return r.json();
 }
 
@@ -967,8 +1133,297 @@ function exportWord() {
   toast('已导出 Word');
 }
 
+
+
+/* ---------- Table tools ---------- */
+const tableFloatMenu = document.createElement('div');
+tableFloatMenu.className = 'table-float-menu';
+tableFloatMenu.hidden = true;
+tableFloatMenu.innerHTML =
+  '<button class="table-tool" data-table-action="row-before" title="Add row above">+\u2191</button>' +
+  '<button class="table-tool" data-table-action="row-after" title="Add row below">+\u2193</button>' +
+  '<span class="table-tool-sep"></span>' +
+  '<button class="table-tool" data-table-action="col-left" title="Add column left">+\u2190</button>' +
+  '<button class="table-tool" data-table-action="col-right" title="Add column right">+\u2192</button>' +
+  '<span class="table-tool-sep"></span>' +
+  '<button class="table-tool" data-table-action="toggle-header" title="Toggle header">H</button>' +
+  '<button class="table-tool" data-table-action="delete-row" title="Delete row">\u2212\u2194</button>' +
+  '<button class="table-tool" data-table-action="delete-col" title="Delete column">\u2212\u2195</button>' +
+  '<button class="table-tool danger" data-table-action="delete-table" title="Delete table">\u00d7</button>';
+document.body.appendChild(tableFloatMenu);
+
+function updateTableFloatMenu() {
+  const cell = editor.currentTableCell && editor.currentTableCell();
+  const table = cell && cell.closest('table');
+  if (!table || document.body.classList.contains('reading-mode')) { tableFloatMenu.hidden = true; return; }
+  const rect = table.getBoundingClientRect();
+  tableFloatMenu.hidden = false;
+  const width = tableFloatMenu.offsetWidth || 280;
+  let left = rect.left + Math.min(rect.width - width, 0) / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  let top = rect.top - tableFloatMenu.offsetHeight - 8;
+  if (top < 8) top = rect.top + 8;
+  tableFloatMenu.style.left = left + 'px';
+  tableFloatMenu.style.top = top + 'px';
+}
+
+['mouseup', 'keyup'].forEach(type => editorEl.addEventListener(type, () => setTimeout(updateTableFloatMenu, 10)));
+document.addEventListener('selectionchange', () => setTimeout(updateTableFloatMenu, 20));
+window.addEventListener('scroll', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); }, true);
+window.addEventListener('resize', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); });
+tableFloatMenu.addEventListener('mousedown', e => e.preventDefault());
+tableFloatMenu.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-table-action]');
+  if (!btn) return;
+  editor.tableCommand(btn.getAttribute('data-table-action'));
+  setTimeout(updateTableFloatMenu, 10);
+});
+
+/* ---------- AI tools (on-demand) ---------- */
+let savedAiRange = null;
+let pendingAiLayoutHtml = '';
+let pendingAiRewriteText = '';
+let aiStatusPromise = null;
+let aiStatusCache = null;
+
+
+async function getAiStatus(force) {
+  if (aiStatusCache && !force) return aiStatusCache;
+  if (!aiStatusPromise || force) {
+    aiStatusPromise = api('/api/ai/status').then(res => {
+      aiStatusCache = res;
+      return res;
+    }).finally(() => { aiStatusPromise = null; });
+  }
+  return aiStatusPromise;
+}
+
+async function refreshAiStatus(runButtonId) {
+  const note = $('aiStatusNote');
+  const runBtn = $(runButtonId);
+  if (runBtn) runBtn.disabled = true;
+  if (note) {
+    note.hidden = false;
+    note.textContent = '\u6b63\u5728\u68c0\u67e5 AI \u914d\u7f6e...';
+  }
+  try {
+    const status = await getAiStatus(false);
+    if (!status.configured) {
+      if (note) note.textContent = '\u670d\u52a1\u5668\u8fd8\u6ca1\u914d AI key\uff0c\u8bf7\u5728 .env \u91cc\u8bbe\u7f6e AI_API_KEY \u6216 DEEPSEEK_API_KEY\u3002';
+      return false;
+    }
+    if (note) {
+      note.textContent = '\u5df2\u8fde\u63a5 AI\uff1a' + (status.model || 'model');
+      note.classList.add('ok');
+    }
+    if (runBtn) runBtn.disabled = false;
+    return true;
+  } catch (e) {
+    if (note) note.textContent = '\u6682\u65f6\u65e0\u6cd5\u68c0\u67e5 AI \u72b6\u6001\uff1a' + (e.message || e);
+    return false;
+  }
+}
+
+const AI_PRESETS = {
+  share: '\u5206\u4eab\u524d\u6392\u7248',
+  light: '\u8f7b\u5ea6\u6574\u7406',
+  formal: '\u6b63\u5f0f\u6587\u6863',
+  clean: '\u6e05\u7406\u6742\u6837\u5f0f'
+};
+
+const AI_REWRITE_PRESETS = [
+  { label: '\u53ea\u505a\u6392\u7248', value: '\u53ea\u5bf9\u9009\u4e2d\u5185\u5bb9\u505a\u6392\u7248\u548c\u5206\u6bb5\u6574\u7406\uff0c\u4e0d\u5220\u5b57\uff0c\u4e0d\u6539\u5199\u8bcd\u53e5\uff0c\u4e0d\u8865\u5145\u65b0\u5185\u5bb9\u3002' },
+  { label: '\u6da6\u8272', value: '\u5728\u4e0d\u6539\u53d8\u539f\u610f\u548c\u7ec6\u8282\u7684\u524d\u63d0\u4e0b\uff0c\u8ba9\u9009\u4e2d\u6587\u5b57\u66f4\u987a\u3001\u66f4\u81ea\u7136\u3002' },
+  { label: '\u6269\u5199', value: '\u57fa\u4e8e\u9009\u4e2d\u5185\u5bb9\u9002\u5ea6\u6269\u5199\uff0c\u4e0d\u865a\u6784\u4e8b\u5b9e\uff0c\u98ce\u683c\u548c\u5168\u6587\u4fdd\u6301\u4e00\u81f4\u3002' }
+];
+
+function openAiModal(title, bodyHtml) {
+  if (!aiModal) return;
+  aiModalTitle.textContent = title;
+  aiModalBody.innerHTML = bodyHtml;
+  aiModal.hidden = false;
+}
+
+function closeAiModal() {
+  if (aiModal) aiModal.hidden = true;
+  pendingAiLayoutHtml = '';
+  pendingAiRewriteText = '';
+}
+
+if (aiModalClose) aiModalClose.addEventListener('click', closeAiModal);
+if (aiModal) {
+  aiModal.addEventListener('pointerdown', (e) => {
+    if (e.target === aiModal) closeAiModal();
+  });
+}
+
+function getDocumentContextText() {
+  return (docTitleEl.value.trim() + '\n\n' + (editorEl.innerText || '')).trim().slice(0, 24000);
+}
+
+function saveAiSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return '';
+  const range = sel.getRangeAt(0);
+  if (!editorEl.contains(range.commonAncestorContainer)) return '';
+  savedAiRange = range.cloneRange();
+  return sel.toString();
+}
+
+function restoreAiSelection() {
+  if (!savedAiRange) return false;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(savedAiRange);
+  return true;
+}
+
+function textToEditorHtml(text) {
+  return escapeHtml(text).replace(/\r?\n/g, '<br>');
+}
+
+function markEditorChanged() {
+  editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+  updateStats();
+  updateOutline();
+  scheduleAutoSave();
+}
+
+function openAiLayoutModal() {
+  if (!currentDoc) { toast('\u8bf7\u5148\u6253\u5f00\u4e00\u7bc7\u6587\u6863'); return; }
+  const presetButtons = Object.keys(AI_PRESETS).map(key =>
+    '<button class="ai-preset' + (key === 'share' ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key] + '</button>'
+  ).join('');
+  openAiModal('AI \u6392\u7248',
+    '<div class="ai-panel" id="aiLayoutPanel">' +
+      '<div class="ai-note">\u53ea\u8c03\u6574\u7ed3\u6784\u3001\u5206\u6bb5\u3001\u6807\u9898\u3001\u5217\u8868\u548c\u95f4\u8ddd\uff1b\u9ed8\u8ba4\u4e0d\u5220\u5b57\u3001\u4e0d\u6539\u5199\u3002</div>' +
+      '<div class="ai-warning" id="aiStatusNote"></div>' +
+      '<div class="ai-preset-row">' + presetButtons + '</div>' +
+      '<div class="ai-warning" id="aiLayoutWarning" hidden></div>' +
+      '<div class="ai-preview empty" id="aiLayoutPreview">\u70b9\u51fb\u751f\u6210\u540e\u5728\u8fd9\u91cc\u9884\u89c8</div>' +
+      '<div class="ai-actions">' +
+        '<button class="ai-action" id="aiLayoutRun" disabled>\u751f\u6210\u9884\u89c8</button>' +
+        '<button class="ai-action primary" id="aiLayoutApply" disabled>\u5e94\u7528\u5230\u6587\u6863</button>' +
+      '</div>' +
+    '</div>');
+  let currentPreset = 'share';
+  aiModalBody.querySelectorAll('.ai-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentPreset = btn.getAttribute('data-preset');
+      aiModalBody.querySelectorAll('.ai-preset').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+  $('aiLayoutRun').addEventListener('click', () => runAiLayout(currentPreset));
+  refreshAiStatus('aiLayoutRun');
+  $('aiLayoutApply').addEventListener('click', applyAiLayoutResult);
+}
+
+async function runAiLayout(preset) {
+  const runBtn = $('aiLayoutRun');
+  const applyBtn = $('aiLayoutApply');
+  const preview = $('aiLayoutPreview');
+  const warning = $('aiLayoutWarning');
+  runBtn.disabled = true;
+  applyBtn.disabled = true;
+  warning.hidden = true;
+  preview.classList.add('empty');
+  preview.textContent = '\u6b63\u5728\u6392\u7248\uff0c\u7a0d\u7b49\u4e00\u4e0b...';
+  try {
+    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset });
+    pendingAiLayoutHtml = res.html || '';
+    preview.classList.remove('empty');
+    preview.innerHTML = pendingAiLayoutHtml || '';
+    applyBtn.disabled = !pendingAiLayoutHtml;
+    if (!res.textUnchanged) {
+      warning.hidden = false;
+      warning.textContent = '\u6ce8\u610f\uff1aAI \u8fd4\u56de\u7684\u53ef\u89c1\u6587\u5b57\u6570\u548c\u539f\u6587\u4e0d\u5b8c\u5168\u4e00\u81f4\uff08\u539f\u6587 ' + res.beforeChars + ' / \u7ed3\u679c ' + res.afterChars + '\uff09\uff0c\u8bf7\u5148\u5bf9\u6bd4\u518d\u5e94\u7528\u3002';
+    }
+  } catch (e) {
+    preview.classList.add('empty');
+    preview.textContent = '\u751f\u6210\u5931\u8d25\uff1a' + (e.message || e);
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+function applyAiLayoutResult() {
+  if (!pendingAiLayoutHtml) return;
+  editor.setHTML(pendingAiLayoutHtml);
+  markEditorChanged();
+  closeAiModal();
+  toast('AI \u6392\u7248\u5df2\u5e94\u7528');
+}
+
+function openAiRewriteModal() {
+  const selectedText = saveAiSelection();
+  if (!selectedText.trim()) { toast('\u8bf7\u5148\u9009\u4e2d\u8981\u5904\u7406\u7684\u6587\u5b57'); return; }
+  const presetHtml = AI_REWRITE_PRESETS.map((p, i) =>
+    '<button class="ai-preset" data-rewrite-preset="' + i + '">' + p.label + '</button>'
+  ).join('');
+  openAiModal('AI \u6539\u9009\u533a',
+    '<div class="ai-panel" id="aiRewritePanel">' +
+      '<div class="ai-note">AI \u4f1a\u8bfb\u53d6\u5168\u6587\u4f5c\u4e3a\u80cc\u666f\uff0c\u4f46\u53ea\u66ff\u6362\u4f60\u9009\u4e2d\u7684\u8fd9\u6bb5\u3002</div>' +
+      '<div class="ai-preset-row">' + presetHtml + '</div>' +
+      '<div class="ai-warning" id="aiStatusNote"></div>' +
+      '<div class="ai-field"><label>\u6307\u4ee4</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="\u4f8b\u5982\uff1a\u53ea\u505a\u6392\u7248\uff0c\u4e0d\u6539\u5b57"></textarea></div>' +
+      '<div class="ai-preview empty" id="aiRewritePreview">\u70b9\u51fb\u751f\u6210\u540e\u5728\u8fd9\u91cc\u9884\u89c8</div>' +
+      '<div class="ai-actions">' +
+        '<button class="ai-action" id="aiRewriteRun" disabled>\u751f\u6210\u9884\u89c8</button>' +
+        '<button class="ai-action primary" id="aiRewriteApply" disabled>\u66ff\u6362\u9009\u533a</button>' +
+      '</div>' +
+    '</div>');
+  const input = $('aiRewriteInstruction');
+  input.value = AI_REWRITE_PRESETS[0].value;
+  input.focus();
+  aiModalBody.querySelectorAll('[data-rewrite-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      input.value = AI_REWRITE_PRESETS[Number(btn.getAttribute('data-rewrite-preset'))].value;
+      input.focus();
+    });
+  });
+  $('aiRewriteRun').addEventListener('click', () => runAiRewrite(selectedText));
+  refreshAiStatus('aiRewriteRun');
+  $('aiRewriteApply').addEventListener('click', applyAiRewriteResult);
+}
+
+async function runAiRewrite(selectedText) {
+  const runBtn = $('aiRewriteRun');
+  const applyBtn = $('aiRewriteApply');
+  const preview = $('aiRewritePreview');
+  const instruction = $('aiRewriteInstruction').value.trim();
+  runBtn.disabled = true;
+  applyBtn.disabled = true;
+  preview.classList.add('empty');
+  preview.textContent = '\u6b63\u5728\u5904\u7406\uff0c\u7a0d\u7b49\u4e00\u4e0b...';
+  try {
+    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText() });
+    pendingAiRewriteText = res.replacement || '';
+    preview.classList.remove('empty');
+    preview.innerHTML = textToEditorHtml(pendingAiRewriteText);
+    applyBtn.disabled = !pendingAiRewriteText;
+  } catch (e) {
+    preview.classList.add('empty');
+    preview.textContent = '\u751f\u6210\u5931\u8d25\uff1a' + (e.message || e);
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+function applyAiRewriteResult() {
+  if (!pendingAiRewriteText || !restoreAiSelection()) return;
+  document.execCommand('insertHTML', false, textToEditorHtml(pendingAiRewriteText));
+  markEditorChanged();
+  hideFloatMenu();
+  closeAiModal();
+  toast('AI \u5df2\u66ff\u6362\u9009\u533a');
+}
+
 let shortcutHelpEl = null;
 const shortcutGroups = [
+  ['AI', [
+    ['Ctrl/\u2318 + Alt + A', '\u6574\u7bc7 AI \u6392\u7248'],
+    ['Ctrl/\u2318 + Alt + I', '\u9009\u533a AI \u6539\u5199/\u6392\u7248']
+  ]],
   ['文档', [
     ['Ctrl/⌘ + N', '新建文章'],
     ['Ctrl/⌘ + S', '保存当前文章'],
@@ -1038,11 +1493,13 @@ function isNativeField(target) {
 /* ---------- 全局快捷键 ---------- */
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
-  if (e.key === 'Escape') hideShortcutHelp();
+  if (e.key === 'Escape') { hideShortcutHelp(); if (aiModal && !aiModal.hidden) closeAiModal(); }
   if (!ctrl) return;
   if (isNativeField(e.target) && e.target !== docTitleEl && e.target !== searchInput) return;
   const k = e.key.toLowerCase();
   if (k === '/') { e.preventDefault(); showShortcutHelp(); }
+  else if (k === 'a' && e.altKey) { e.preventDefault(); openAiLayoutModal(); }
+  else if (k === 'i' && e.altKey) { e.preventDefault(); openAiRewriteModal(); }
   else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
   else if (k === 'n' && !e.shiftKey) { e.preventDefault(); newDoc(); }
   else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }

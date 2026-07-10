@@ -22,6 +22,7 @@ export class Editor {
     this._bindMarkdownShortcut();
     this._bindInput();
     this._bindKeydown();
+    this._bindTableEditing();
   }
 
   /* ---------- 工具 ---------- */
@@ -82,11 +83,17 @@ export class Editor {
   }
   _afterChange() { this.onUpdate(); }
 
-  /* ---------- 输入监听 ---------- */
+  /* ---------- Input handling ---------- */
   _bindInput() {
-    this.editor.addEventListener('input', () => this._afterChange());
+    this.editor.addEventListener('input', (e) => {
+      this._maybeAutoLink(e);
+      this._afterChange();
+    });
     this.editor.addEventListener('keyup', (e) => {
       if (e.key === 'Delete' || e.key === 'Backspace') this._afterChange();
+    });
+    this.editor.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._maybeAutoLink({ inputType: 'insertText', data: ' ' });
     });
   }
 
@@ -149,33 +156,63 @@ export class Editor {
     this._afterChange();
   }
   insertTable(rows, cols) {
-    rows = rows || 3; cols = cols || 3;
-    let html = '<table><thead><tr>';
-    for (let c = 0; c < cols; c++) html += '<th>列' + (c + 1) + '</th>';
+    rows = rows || 3;
+    cols = cols || 3;
+    let html = '<table data-pm-table="1"><colgroup>';
+    for (let c = 0; c < cols; c++) html += '<col style="width:' + (100 / cols).toFixed(3) + '%">';
+    html += '</colgroup><thead><tr>';
+    for (let c = 0; c < cols; c++) html += '<th><br></th>';
     html += '</tr></thead><tbody>';
-    for (let r = 0; r < rows - 1; r++) { html += '<tr>'; for (let c = 0; c < cols; c++) html += '<td>&nbsp;</td>'; html += '</tr>'; }
+    for (let r = 1; r < rows; r++) {
+      html += '<tr>';
+      for (let c = 0; c < cols; c++) html += '<td><br></td>';
+      html += '</tr>';
+    }
     html += '</tbody></table><p><br></p>';
     this.editor.focus();
     document.execCommand('insertHTML', false, html);
+    setTimeout(() => this.normalizeTables(), 0);
     this._afterChange();
   }
   insertTOC() {
-    const headings = this.editor.querySelectorAll('h1, h2, h3');
-    if (!headings.length) { this.onToast('文档中没有标题，无法生成目录'); return; }
-    let html = '<div class="toc"><div class="toc-title">目录</div><ol>';
+    const existing = this.editor.querySelector('.toc');
+    const html = this._buildTOCHTML();
+    if (!html) { this.onToast('No headings for a table of contents'); return; }
+    if (existing) {
+      existing.outerHTML = html;
+      this.onToast('TOC refreshed');
+      this._afterChange();
+      return;
+    }
+    this.editor.focus();
+    document.execCommand('insertHTML', false, html + '<p><br></p>');
+    this._afterChange();
+  }
+
+  refreshTOC() {
+    const html = this._buildTOCHTML();
+    if (!html) { this.onToast('No headings for a table of contents'); return false; }
+    const tocs = this.editor.querySelectorAll('.toc');
+    if (!tocs.length) { this.insertTOC(); return true; }
+    tocs.forEach(toc => { toc.outerHTML = html; });
+    this._afterChange();
+    return true;
+  }
+
+  _buildTOCHTML() {
+    const headings = Array.from(this.editor.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc'));
+    if (!headings.length) return '';
+    let html = '<div class="toc" data-toc="1"><div class="toc-title">Table of contents</div><ol>';
     headings.forEach((h, i) => {
       const id = h.id || (h.id = 'h-' + i + '-' + this._uid());
       const level = h.tagName.toLowerCase();
       const indent = level === 'h2' ? 'padding-left:1em;' : (level === 'h3' ? 'padding-left:2em;' : '');
       html += '<li style="' + indent + '"><a href="#' + id + '">' + this._escapeHtml(h.textContent) + '</a></li>';
     });
-    html += '</ol></div><p><br></p>';
-    this.editor.focus();
-    document.execCommand('insertHTML', false, html);
-    this._afterChange();
+    html += '</ol></div>';
+    return html;
   }
 
-  /* ---------- 图片插入（span.img-container + onload 自动缩放） ---------- */
   insertImage(src) {
     this.editor.focus();
     // 确保光标在编辑器内
@@ -189,15 +226,16 @@ export class Editor {
     }
     const uid = this._uid();
     // span.img-container 包裹 img + 尺寸标签 + 四角手柄，末尾 \u200B 维持光标
-    const html = '<span class="img-container" contenteditable="false" data-type="image" draggable="true" data-uid="' + uid + '">' +
-      '<img src="' + src + '" alt="图片" draggable="false">' +
+    const html = '<div class="img-container" contenteditable="false" data-type="image" draggable="true" data-uid="' + uid + '">' +
+      '<img src="' + src + '" alt="image" draggable="false">' +
       '<span class="img-size-label"></span>' +
       '<span class="rs-handle rs-nw" data-dir="nw" draggable="false"></span>' +
       '<span class="rs-handle rs-ne" data-dir="ne" draggable="false"></span>' +
       '<span class="rs-handle rs-sw" data-dir="sw" draggable="false"></span>' +
       '<span class="rs-handle rs-se" data-dir="se" draggable="false"></span>' +
-      '</span>\u200B';
-    document.execCommand('insertHTML', false, html);
+      '</div><p><br></p>';
+    const range = this._blockInsertionRangeFromSelection();
+    this._insertHTMLAtRange(range, html);
 
     // 找到新容器，挂 onload 自动缩放
     const container = this.editor.querySelector('[data-uid="' + uid + '"]');
@@ -229,7 +267,7 @@ export class Editor {
   fixImageContainers() {
     this.editor.querySelectorAll('img').forEach(img => {
       if (img.closest('.img-container')) return;
-      const container = document.createElement('span');
+      const container = document.createElement('div');
       container.className = 'img-container';
       container.contentEditable = 'false';
       container.setAttribute('data-type', 'image');
@@ -295,6 +333,183 @@ export class Editor {
   }
 
   /* ---------- 图片事件委托 ---------- */
+  /* ---------- Table editing ---------- */
+  normalizeTables() {
+    this.editor.querySelectorAll('table').forEach(table => this._normalizeTable(table));
+  }
+
+  _normalizeTable(table) {
+    if (!table) return;
+    table.setAttribute('data-pm-table', '1');
+    table.style.tableLayout = 'fixed';
+    table.style.width = table.style.width || '100%';
+    const rows = Array.from(table.rows || []);
+    const maxCols = rows.reduce((m, tr) => Math.max(m, tr.cells.length), 0) || 1;
+    let colgroup = table.querySelector(':scope > colgroup');
+    if (!colgroup) {
+      colgroup = document.createElement('colgroup');
+      table.insertBefore(colgroup, table.firstChild);
+    }
+    while (colgroup.children.length < maxCols) {
+      const col = document.createElement('col');
+      col.style.width = (100 / maxCols).toFixed(3) + '%';
+      colgroup.appendChild(col);
+    }
+    while (colgroup.children.length > maxCols) colgroup.removeChild(colgroup.lastChild);
+    Array.from(colgroup.children).forEach(col => { if (!col.style.width) col.style.width = (100 / maxCols).toFixed(3) + '%'; });
+    rows.forEach(row => Array.from(row.cells).forEach(cell => { if (!cell.innerHTML.trim()) cell.innerHTML = '<br>'; }));
+  }
+
+  currentTableCell() { return this._currentTableCell(); }
+
+  _currentTableCell() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    let node = sel.getRangeAt(0).commonAncestorContainer;
+    if (node.nodeType !== 1) node = node.parentNode;
+    return node && node.closest ? node.closest('td,th') : null;
+  }
+
+  _cellColumnIndex(cell) {
+    if (!cell || !cell.parentNode) return -1;
+    return Array.prototype.indexOf.call(cell.parentNode.cells, cell);
+  }
+
+  tableCommand(action) {
+    const cell = this._currentTableCell();
+    const table = cell ? cell.closest('table') : null;
+    if (!table) { this.onToast('Put the cursor inside a table first'); return false; }
+    this._normalizeTable(table);
+    const row = cell.parentNode;
+    const colIndex = this._cellColumnIndex(cell);
+    switch (action) {
+      case 'row-before': this._insertTableRow(row, -1); break;
+      case 'row-after': this._insertTableRow(row, 1); break;
+      case 'col-left': this._insertTableColumn(table, colIndex); break;
+      case 'col-right': this._insertTableColumn(table, colIndex + 1); break;
+      case 'delete-row': this._deleteTableRow(row); break;
+      case 'delete-col': this._deleteTableColumn(table, colIndex); break;
+      case 'toggle-header': this._toggleTableHeader(table); break;
+      case 'delete-table': this._deleteTable(table); break;
+      default: return false;
+    }
+    this.normalizeTables();
+    this._afterChange();
+    return true;
+  }
+
+  _insertTableRow(row, offset) {
+    const table = row.closest('table');
+    const index = row.rowIndex + (offset > 0 ? 1 : 0);
+    const next = table.insertRow(index);
+    const cols = table.querySelectorAll(':scope > colgroup > col').length || row.cells.length || 1;
+    for (let i = 0; i < cols; i++) next.insertCell(i).innerHTML = '<br>';
+    this._restoreCaretInBlock(next.cells[0]);
+  }
+
+  _insertTableColumn(table, index) {
+    const cols = table.querySelectorAll(':scope > colgroup > col');
+    index = Math.max(0, Math.min(index, cols.length || 0));
+    let colgroup = table.querySelector(':scope > colgroup');
+    if (!colgroup) { colgroup = document.createElement('colgroup'); table.insertBefore(colgroup, table.firstChild); }
+    const col = document.createElement('col');
+    col.style.width = cols[0] && cols[0].style.width ? cols[0].style.width : '';
+    colgroup.insertBefore(col, colgroup.children[index] || null);
+    Array.from(table.rows).forEach((row) => {
+      const sample = row.cells[Math.max(0, index - 1)] || row.cells[0];
+      const cell = document.createElement(sample && sample.tagName === 'TH' ? 'th' : 'td');
+      cell.innerHTML = '<br>';
+      row.insertBefore(cell, row.cells[index] || null);
+    });
+    const target = table.rows[0] && table.rows[0].cells[index];
+    if (target) this._restoreCaretInBlock(target);
+  }
+
+  _deleteTableRow(row) {
+    const table = row.closest('table');
+    if (table.rows.length <= 1) { this._deleteTable(table); return; }
+    const next = row.nextElementSibling || row.previousElementSibling;
+    row.parentNode.removeChild(row);
+    if (next && next.cells[0]) this._restoreCaretInBlock(next.cells[0]);
+  }
+
+  _deleteTableColumn(table, index) {
+    const cols = table.querySelectorAll(':scope > colgroup > col');
+    if (cols.length <= 1) { this._deleteTable(table); return; }
+    Array.from(table.rows).forEach(row => { if (row.cells[index]) row.deleteCell(index); });
+    if (cols[index]) cols[index].remove();
+    const target = table.rows[0] && table.rows[0].cells[Math.max(0, index - 1)];
+    if (target) this._restoreCaretInBlock(target);
+  }
+
+  _deleteTable(table) {
+    const p = document.createElement('p');
+    p.innerHTML = '<br>';
+    table.parentNode.replaceChild(p, table);
+    this._restoreCaretInBlock(p);
+  }
+
+  _toggleTableHeader(table) {
+    const first = table.rows[0];
+    if (!first) return;
+    const makeTd = first.cells.length && first.cells[0].tagName === 'TH';
+    Array.from(first.cells).forEach(cell => {
+      const next = document.createElement(makeTd ? 'td' : 'th');
+      next.innerHTML = cell.innerHTML || '<br>';
+      cell.parentNode.replaceChild(next, cell);
+    });
+  }
+
+  _bindTableEditing() {
+    this.editor.addEventListener('mousemove', (e) => {
+      if (this.tableResizeState) return;
+      const cell = e.target.closest && e.target.closest('td,th');
+      if (!cell || !this.editor.contains(cell)) { this.editor.classList.remove('table-col-resize-hover'); return; }
+      const rect = cell.getBoundingClientRect();
+      this.editor.classList.toggle('table-col-resize-hover', Math.abs(e.clientX - rect.right) <= 5);
+    });
+    this.editor.addEventListener('mousedown', (e) => {
+      const cell = e.target.closest && e.target.closest('td,th');
+      if (!cell || !this.editor.contains(cell)) return;
+      const rect = cell.getBoundingClientRect();
+      if (Math.abs(e.clientX - rect.right) > 5) return;
+      const table = cell.closest('table');
+      this._normalizeTable(table);
+      const cols = Array.from(table.querySelectorAll(':scope > colgroup > col'));
+      const index = this._cellColumnIndex(cell);
+      if (index < 0 || index >= cols.length) return;
+      e.preventDefault();
+      const tableRect = table.getBoundingClientRect();
+      this.tableResizeState = { table, cols, index, startX: e.clientX, tableWidth: tableRect.width, widths: cols.map(col => {
+        const raw = col.style.width || '';
+        if (raw.endsWith('%')) return tableRect.width * parseFloat(raw) / 100;
+        return parseFloat(raw) || tableRect.width / cols.length;
+      }) };
+      document.body.classList.add('table-resizing');
+    });
+    document.addEventListener('mousemove', (e) => {
+      const st = this.tableResizeState;
+      if (!st) return;
+      const nextIndex = Math.min(st.index + 1, st.cols.length - 1);
+      const dx = e.clientX - st.startX;
+      const left = Math.max(40, st.widths[st.index] + dx);
+      if (nextIndex !== st.index) {
+        const right = Math.max(40, st.widths[nextIndex] - dx);
+        st.cols[st.index].style.width = (left / st.tableWidth * 100).toFixed(3) + '%';
+        st.cols[nextIndex].style.width = (right / st.tableWidth * 100).toFixed(3) + '%';
+      } else {
+        st.cols[st.index].style.width = Math.round(left) + 'px';
+      }
+    });
+    document.addEventListener('mouseup', () => {
+      if (!this.tableResizeState) return;
+      this.tableResizeState = null;
+      document.body.classList.remove('table-resizing');
+      this.editor.classList.remove('table-col-resize-hover');
+      this._afterChange();
+    });
+  }
+
   _bindImageDelegation() {
     // 点击选中
     this.editor.addEventListener('click', (e) => {
@@ -408,18 +623,13 @@ export class Editor {
           this._afterChange();
           return;
         }
-        const r = this._caretFromPoint(e.clientX, e.clientY);
+        const r = this._blockInsertionRangeFromPoint(e.clientX, e.clientY);
         if (!r) return;
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(r);
         const oldGrid = container.closest('.img-grid');
         const html = container.outerHTML;
         container.parentNode.removeChild(container);
         this._cleanupImageGrid(oldGrid);
-        document.execCommand('insertHTML', false, html);
-        // 重新绑定 onload（外部插入的 img 可能已加载）
-        const nid = this._uid();
+        this._insertHTMLAtRange(r, html + '<p><br></p>');
         const inserted = this.editor.querySelector('.img-container[data-id="' + id + '"]');
         if (inserted) { inserted.removeAttribute('data-id'); this._attachImgLoad(inserted); }
         this._afterChange();
@@ -612,11 +822,11 @@ export class Editor {
       container.style.marginLeft = 'auto';
       container.style.marginRight = 'auto';
     } else if (align === 'left') {
-      container.style.display = 'inline-block';
+      container.style.display = 'block';
       container.style.marginLeft = '0';
       container.style.marginRight = 'auto';
     } else {
-      container.style.display = 'inline-block';
+      container.style.display = 'block';
       container.style.marginLeft = '';
       container.style.marginRight = '';
     }
@@ -631,6 +841,62 @@ export class Editor {
       if (pos) { const r = document.createRange(); r.setStart(pos.offsetNode, pos.offset); r.collapse(true); return r; }
     }
     return null;
+  }
+
+  _insertHTMLAtRange(range, html) {
+    if (!range) {
+      document.execCommand('insertHTML', false, html);
+      return;
+    }
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertHTML', false, html);
+  }
+
+  _blockInsertionRangeFromSelection() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    return this._blockInsertionRangeFromRange(sel.getRangeAt(0));
+  }
+
+  _blockInsertionRangeFromPoint(x, y) {
+    const range = this._caretFromPoint(x, y);
+    if (!range) return null;
+    return this._blockInsertionRangeFromRange(range, y);
+  }
+
+  _blockInsertionRangeFromRange(range, clientY) {
+    let block = this._blockFromNode(range.startContainer);
+    if (!block || block === this.editor) return range;
+
+    const out = document.createRange();
+    if (block.classList && block.classList.contains('img-container')) {
+      out.setStartAfter(block);
+    } else if (block.classList && block.classList.contains('img-grid')) {
+      out.setStartAfter(block);
+    } else if (clientY != null && block.getBoundingClientRect) {
+      const rect = block.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) out.setStartBefore(block);
+      else out.setStartAfter(block);
+    } else {
+      out.setStartAfter(block);
+    }
+    out.collapse(true);
+    return out;
+  }
+
+  _blockFromNode(node) {
+    if (!node) return null;
+    if (node.nodeType === 3) node = node.parentNode;
+    while (node && node !== this.editor) {
+      if (node.nodeType === 1) {
+        const tag = node.tagName;
+        if (/^(P|DIV|H[1-6]|LI|BLOCKQUOTE|PRE|TABLE|UL|OL|HR)$/.test(tag)) return node;
+      }
+      node = node.parentNode;
+    }
+    return this.editor;
   }
 
   /* ---------- 外部拖入图片文件 ---------- */
@@ -768,8 +1034,17 @@ export class Editor {
         document.execCommand('insertHTML', false, cleaned);
         setTimeout(() => this._afterPasteCleanup(), 60);
       } else {
-        // 纯文本：放行默认
-        setTimeout(() => this._afterPasteCleanup(), 60);
+        // 纯文本：若含 URL 则自动转为超链接，否则放行默认
+        const text = cd.getData('text/plain') || '';
+        if (text && /https?:\/\/\S+/i.test(text)) {
+          e.preventDefault();
+          const html = this._escapeHtml(text).replace(/\n/g, '<br>')
+            .replace(/(https?:\/\/[^\s<]+)/ig, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+          document.execCommand('insertHTML', false, html);
+          setTimeout(() => this._afterPasteCleanup(), 60);
+        } else {
+          setTimeout(() => this._afterPasteCleanup(), 60);
+        }
       }
     });
   }
@@ -1040,10 +1315,209 @@ export class Editor {
     this.exec('formatBlock', '<' + tag + '>');
   }
 
+  /* ---------- 块级操作（右键菜单用） ---------- */
+  selectBlock(block) {
+    if (!block) return;
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  deleteCurrentBlock() {
+    const block = this._currentBlock();
+    if (!block || block === this.editor) return;
+    const p = document.createElement('p');
+    p.innerHTML = '<br>';
+    block.parentNode.replaceChild(p, block);
+    this._restoreCaretInBlock(p);
+    this._afterChange();
+  }
+
+  duplicateCurrentBlock() {
+    const block = this._currentBlock();
+    if (!block || block === this.editor) return;
+    const clone = block.cloneNode(true);
+    // 重新生成图片容器 id，避免重复
+    clone.querySelectorAll('[id^="pm"]').forEach(el => { el.id = this._uid(); });
+    block.parentNode.insertBefore(clone, block.nextSibling);
+    this._restoreCaretInBlock(clone);
+    this._afterChange();
+  }
+
+  cutCurrentBlock() {
+    const block = this._currentBlock();
+    if (!block || block === this.editor) return;
+    this.selectBlock(block);
+    try { document.execCommand('cut'); } catch (_) {}
+    setTimeout(() => this._afterChange(), 30);
+  }
+
+  copyCurrentBlock() {
+    const block = this._currentBlock();
+    if (!block || block === this.editor) return;
+    this.selectBlock(block);
+    try { document.execCommand('copy'); } catch (_) {}
+    // 复制后恢复光标到块内
+    setTimeout(() => this._restoreCaretInBlock(block), 30);
+  }
+
+  /* ---------- 链接卡片 ---------- */
+  // 将一个 <a> 链接转为富卡片：抓取 OG 元数据后替换
+  _maybeAutoLink(e) {
+    if (e && e.inputType && !/^insert(Text|Paragraph|LineBreak)$/.test(e.inputType)) return;
+    if (e && e.inputType === 'insertText' && e.data && !/[\s\u00a0]/.test(e.data)) return;
+
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    let node = range.startContainer;
+    let offset = range.startOffset;
+    if (node.nodeType !== 3) return;
+    if (this._closest(node, 'a, code, pre, .link-card')) return;
+
+    const before = node.textContent.slice(0, offset);
+    const suffixMatch = before.match(/[\s\u00a0]+$/);
+    const suffix = suffixMatch ? suffixMatch[0] : '';
+    const body = suffix ? before.slice(0, -suffix.length) : before;
+    const match = body.match(/(?:^|[\s([{])((?:https?:\/\/|www\.)[^\s<>'"]{3,})$/i);
+    if (!match) return;
+
+    const rawUrl = match[1].replace(/[.,!?;:]+$/g, '');
+    if (!rawUrl || /^https?:\/\/$/i.test(rawUrl)) return;
+    const urlStart = body.length - match[1].length;
+    const urlEnd = urlStart + rawUrl.length;
+    const href = this._normalizeUrl(rawUrl);
+    if (!href) return;
+
+    const linkRange = document.createRange();
+    linkRange.setStart(node, urlStart);
+    linkRange.setEnd(node, urlEnd);
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = rawUrl;
+    linkRange.deleteContents();
+    linkRange.insertNode(a);
+
+    const after = a.nextSibling;
+    const caret = document.createRange();
+    if (after && after.nodeType === 3) caret.setStart(after, Math.min(suffix.length, after.textContent.length));
+    else caret.setStartAfter(a);
+    caret.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(caret);
+  }
+
+  _normalizeUrl(raw) {
+    const text = String(raw || '').trim();
+    if (/^https?:\/\//i.test(text)) return text;
+    if (/^www\./i.test(text)) return 'https://' + text;
+    return '';
+  }
+
+  _closest(node, selector) {
+    if (!node) return null;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    return el && el.closest ? el.closest(selector) : null;
+  }
+
+  async convertLinkToCard(anchor) {
+    if (!anchor || anchor.tagName !== 'A') return;
+    const url = anchor.getAttribute('href');
+    if (!url) return;
+    this.onToast('正在生成链接卡片…');
+    try {
+      const r = await fetch('/api/og?url=' + encodeURIComponent(url), { credentials: 'same-origin' });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'HTTP ' + r.status); }
+      const meta = await r.json();
+      const card = this._buildLinkCard(meta);
+      // 用卡片替换链接；若链接独占一个块则替换整块，否则替换链接节点
+      const block = this._currentBlock();
+      if (block && block.textContent.trim() === anchor.textContent.trim()) {
+        block.parentNode.replaceChild(card, block);
+      } else {
+        anchor.parentNode.replaceChild(card, anchor);
+      }
+      this._afterChange();
+      this.onToast('已生成卡片');
+    } catch (e) {
+      this.onToast('卡片生成失败：' + (e.message || e));
+    }
+  }
+
+  _buildLinkCard(meta) {
+    const card = document.createElement('a');
+    card.className = 'link-card';
+    card.href = meta.url;
+    card.target = '_blank';
+    card.rel = 'noopener noreferrer';
+    card.setAttribute('contenteditable', 'false');
+    card.setAttribute('data-link-card', '1');
+    const main = document.createElement('div');
+    main.className = 'lc-main';
+    const title = document.createElement('div');
+    title.className = 'lc-title';
+    title.textContent = meta.title || meta.domain;
+    main.appendChild(title);
+    if (meta.description) {
+      const desc = document.createElement('div');
+      desc.className = 'lc-desc';
+      desc.textContent = meta.description;
+      main.appendChild(desc);
+    }
+    const dom = document.createElement('div');
+    dom.className = 'lc-domain';
+    dom.textContent = meta.domain;
+    main.appendChild(dom);
+    card.appendChild(main);
+    const open = document.createElement('span');
+    open.className = 'lc-open';
+    open.title = 'Open link';
+    open.textContent = '\u2197';
+    open.setAttribute('aria-label', 'Open link');
+    card.appendChild(open);
+    if (meta.image) {
+      const thumb = document.createElement('div');
+      thumb.className = 'lc-thumb';
+      const img = document.createElement('img');
+      img.src = meta.image;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = () => { thumb.remove(); if (!card.querySelector('.lc-thumb')) card.classList.add('no-thumb'); };
+      thumb.appendChild(img);
+      card.appendChild(thumb);
+    } else {
+      card.classList.add('no-thumb');
+    }
+    return card;
+  }
+
+  // 取消链接：保留文字，去掉 <a>
+  unwrapLink(anchor) {
+    if (!anchor || anchor.tagName !== 'A') return;
+    const parent = anchor.parentNode;
+    while (anchor.firstChild) parent.insertBefore(anchor.firstChild, anchor);
+    parent.removeChild(anchor);
+    this._afterChange();
+  }
+
   _bindKeydown() {
     this.editor.addEventListener('keydown', (e) => {
       const ctrl = e.ctrlKey || e.metaKey;
       if (e.key === 'Tab') {
+        const cell = this._currentTableCell();
+        if (cell) {
+          e.preventDefault();
+          const cells = Array.from(cell.closest('table').querySelectorAll('th,td'));
+          let idx = cells.indexOf(cell) + (e.shiftKey ? -1 : 1);
+          if (idx < 0) idx = 0;
+          if (idx >= cells.length) { this._insertTableRow(cell.parentNode, 1); this._afterChange(); return; }
+          this._restoreCaretInBlock(cells[idx]);
+          return;
+        }
         e.preventDefault();
         document.execCommand(e.shiftKey ? 'outdent' : 'indent');
         this._afterChange();
@@ -1115,6 +1589,7 @@ export class Editor {
   setHTML(html) {
     this.editor.innerHTML = html || '<p><br></p>';
     this.fixImageContainers();
+    this.normalizeTables();
     this._afterChange();
   }
   clear() {
@@ -1144,6 +1619,7 @@ export class Editor {
   toMarkdown() {
     const lines = [];
     const innerText = n => n.textContent || '';
+    const tableToMarkdown = table => this._tableToMarkdown(table);
     function walk(node) {
       let n = node.firstChild;
       while (n) {
@@ -1162,6 +1638,8 @@ export class Editor {
           case 'ol': lines.push(''); let i = 1; Array.prototype.forEach.call(n.querySelectorAll(':scope > li'), li => lines.push((i++) + '. ' + innerText(li).trim())); lines.push(''); break;
           case 'hr': lines.push('\n---\n'); break;
           case 'pre': lines.push('\n```\n' + innerText(n) + '\n```\n'); break;
+          case 'table': lines.push(tableToMarkdown(n)); break;
+          case 'div':
           case 'span':
             if (n.classList.contains('img-container')) {
               const im = n.querySelector('img');
@@ -1185,6 +1663,19 @@ export class Editor {
   }
 
   /* 导出前处理：把图片容器的尺寸转移到 img 上，去掉手柄/标签，grid 转表格 */
+  _tableToMarkdown(table) {
+    const rows = Array.from(table.rows || []);
+    if (!rows.length) return '';
+    const matrix = rows.map(row => Array.from(row.cells).map(cell => (cell.textContent || '').trim().replace(/\|/g, '\\|')));
+    const cols = matrix.reduce((m, row) => Math.max(m, row.length), 0);
+    if (!cols) return '';
+    const pad = row => Array.from({ length: cols }, (_, i) => row[i] || '');
+    const header = pad(matrix[0]);
+    const sep = header.map(() => '---');
+    const body = matrix.slice(1).map(pad);
+    return '\n| ' + header.join(' | ') + ' |\n| ' + sep.join(' | ') + ' |' + (body.length ? '\n' + body.map(row => '| ' + row.join(' | ') + ' |').join('\n') : '') + '\n';
+  }
+
   _processExportContent() {
     const clone = this.editor.cloneNode(true);
     const origContainers = Array.from(this.editor.querySelectorAll('.img-container'));

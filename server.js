@@ -8,6 +8,7 @@ const https = require('https');
 const db = require('./db');
 const auth = require('./auth');
 const invites = require('./invites');
+const ai = require('./ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -147,6 +148,106 @@ app.delete('/api/invites/:code', auth.adminOnly, (req, res) => {
   const ok = invites.remove(req.params.code);
   if (!ok) return res.status(400).json({ error: '无法删除（不存在或已被使用）' });
   res.json({ deleted: true });
+});
+
+/* ---------- 链接卡片元数据抓取（编辑时用，需登录） ---------- */
+const ogCache = new Map();
+function fetchOG(url, depth) {
+  depth = depth || 0;
+  if (depth > 3) return Promise.reject(new Error('重定向过多'));
+  if (ogCache.has(url)) {
+    const c = ogCache.get(url);
+    if (Date.now() - c.t < 3600000) return Promise.resolve(c.data);
+  }
+  let u;
+  try { u = new URL(url); } catch (_) { return Promise.reject(new Error('无效链接')); }
+  if (!/^https?:$/.test(u.protocol)) return Promise.reject(new Error('仅支持 http/https'));
+  const lib = u.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.get(url, { headers: { 'User-Agent': 'PenMark/1.0' }, timeout: 6000 }, (resp) => {
+      if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+        const loc = new URL(resp.headers.location, url).href;
+        resp.resume();
+        fetchOG(loc, depth + 1).then(resolve).catch(reject);
+        return;
+      }
+      if (resp.statusCode !== 200) { resp.resume(); reject(new Error('HTTP ' + resp.statusCode)); return; }
+      const ct = resp.headers['content-type'] || '';
+      if (!/text\/html|application\/xhtml/i.test(ct)) { resp.resume(); reject(new Error('非 HTML 页面')); return; }
+      let buf = '', size = 0, tooBig = false;
+      resp.on('data', d => { size += d.length; if (size > 1048576) { tooBig = true; resp.destroy(); return; } buf += d; });
+      resp.on('end', () => {
+        if (tooBig) { reject(new Error('页面过大')); return; }
+        const meta = parseOG(buf, url);
+        ogCache.set(url, { t: Date.now(), data: meta });
+        resolve(meta);
+      });
+      resp.on('error', reject);
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('请求超时')); });
+    req.on('error', reject);
+  });
+}
+function parseOG(html, url) {
+  const attr = (tag, name) => {
+    const re = new RegExp(name + "\\s*=\\s*([\"'])(.*?)\\1", 'i');
+    const m = String(tag || '').match(re);
+    return m ? decodeEntities(m[2]) : '';
+  };
+  const findMeta = (keys) => {
+    for (const key of keys) {
+      const tags = html.match(/<meta\b[^>]*>/gi) || [];
+      for (const tag of tags) {
+        const prop = (attr(tag, 'property') || attr(tag, 'name') || attr(tag, 'itemprop')).toLowerCase();
+        if (prop === key.toLowerCase()) {
+          const value = attr(tag, 'content');
+          if (value) return value;
+        }
+      }
+    }
+    return '';
+  };
+  const findLink = (rels) => {
+    const tags = html.match(/<link\b[^>]*>/gi) || [];
+    for (const tag of tags) {
+      const rel = (attr(tag, 'rel') || '').toLowerCase();
+      if (rels.some(r => rel.split(/\s+/).includes(r))) {
+        const href = attr(tag, 'href');
+        if (href) return href;
+      }
+    }
+    return '';
+  };
+  const resolveAsset = (asset) => {
+    if (!asset) return '';
+    try { return new URL(asset, url).href; } catch (_) { return ''; }
+  };
+
+  const title = findMeta(['og:title', 'twitter:title'])
+    || (() => { const m = html.match(/<title[^>]*>([^<]*)<\/title>/i); return m ? decodeEntities(m[1]) : ''; })();
+  const desc = findMeta(['og:description', 'twitter:description', 'description']);
+  const image = findMeta(['og:image', 'og:image:url', 'twitter:image', 'twitter:image:src', 'image'])
+    || findLink(['image_src'])
+    || findLink(['apple-touch-icon', 'apple-touch-icon-precomposed', 'icon', 'shortcut']);
+  let domain;
+  try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch (_) { domain = url; }
+  const fallbackIcon = resolveAsset('/favicon.ico');
+  return {
+    url,
+    title: (title || domain).slice(0, 200),
+    description: desc.slice(0, 300),
+    image: resolveAsset(image) || fallbackIcon,
+    domain
+  };
+}
+function decodeEntities(s) {
+  return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
+app.get('/api/og', (req, res) => {
+  const url = String(req.query.url || '').trim();
+  if (!url) return res.status(400).json({ error: '缺少 url' });
+  fetchOG(url).then(meta => res.json(meta)).catch(e => res.status(502).json({ error: '抓取失败：' + (e.message || e) }));
 });
 
 /* ---------- 文档 CRUD（按 user_id 隔离） ---------- */
@@ -295,6 +396,78 @@ function makeSnippet(text, q, len = 120) {
   return (start > 0 ? '…' : '') + text.slice(start, start + len) + (start + len < text.length ? '…' : '');
 }
 
+
+/* ---------- AI helpers (on-demand only) ---------- */
+function normalizeVisibleText(text) {
+  return String(text || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function protectAiAssets(html) {
+  const assets = [];
+  const protectedHtml = String(html || '').replace(/<img\b[^>]*>/gi, (tag) => {
+    const index = assets.push(tag) - 1;
+    return '<img data-penmark-ai-asset="' + index + '">';
+  });
+  return { html: protectedHtml, assets };
+}
+
+function restoreAiAssets(html, assets) {
+  return String(html || '').replace(/<img\b[^>]*data-penmark-ai-asset=["']?(\d+)["']?[^>]*>/gi, (match, raw) => {
+    const index = Number(raw);
+    return assets[index] || match;
+  });
+}
+
+function sanitizeAiHtmlFragment(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+=(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s(?:href|src)=(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*'|\s*javascript:[^\s>]+)/gi, '');
+}
+app.get('/api/ai/status', (req, res) => {
+  res.json({ configured: ai.configured(), model: process.env.AI_MODEL || 'deepseek-chat' });
+});
+
+app.post('/api/ai/layout', async (req, res) => {
+  try {
+    const rawHtml = String(req.body && req.body.html || '');
+    const preset = String(req.body && req.body.preset || 'share');
+    if (!rawHtml.trim()) return res.status(400).json({ error: 'empty html' });
+    const protectedInput = protectAiAssets(rawHtml);
+    if (protectedInput.html.length > Number(process.env.AI_LAYOUT_MAX_INPUT || 120000)) {
+      return res.status(413).json({ error: 'document is too large for one AI layout request' });
+    }
+    const aiHtml = await ai.layoutHtml(protectedInput.html, preset);
+    const restoredHtml = sanitizeAiHtmlFragment(restoreAiAssets(aiHtml, protectedInput.assets));
+    const beforeText = normalizeVisibleText(stripHtml(rawHtml));
+    const afterText = normalizeVisibleText(stripHtml(restoredHtml));
+    res.json({
+      html: restoredHtml,
+      textUnchanged: beforeText === afterText,
+      beforeChars: beforeText.length,
+      afterChars: afterText.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post('/api/ai/rewrite-selection', async (req, res) => {
+  try {
+    const selectedText = String(req.body && req.body.selectedText || '');
+    const instruction = String(req.body && req.body.instruction || '');
+    const contextText = String(req.body && req.body.contextText || '').slice(0, Number(process.env.AI_CONTEXT_MAX_CHARS || 24000));
+    if (!selectedText.trim()) return res.status(400).json({ error: 'empty selection' });
+    const replacement = await ai.rewriteSelection(selectedText, instruction, contextText);
+    res.json({ replacement });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) return res.json([]);
@@ -432,8 +605,13 @@ app.delete('/api/admin/sensitive-words/:id', auth.adminOnly, (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- 分享管理（仅管理员） ---------- */
-// 查询某文档的分享设置
+/* ---------- Share management: admins or authorized users ---------- */
+function shareAllowed(req, res, next) {
+  if (req.user && (req.user.isAdmin || req.user.can_share)) return next();
+  return res.status(403).json({ error: 'No share permission' });
+}
+
+// Query share settings for the current user's document
 app.get('/api/documents/:id/share', (req, res) => {
   const row = db.prepare(
     'SELECT token, permission, password_hash IS NOT NULL AS has_password, expire_at, created_at, theme FROM shares WHERE doc_id = ? AND owner_id = ?'
@@ -442,8 +620,8 @@ app.get('/api/documents/:id/share', (req, res) => {
   res.json({ share: { ...row, url: '/s/' + row.token } });
 });
 
-// 创建/更新分享（仅管理员，支持部分更新：只传需要改的字段）
-app.post('/api/documents/:id/share', auth.adminOnly, (req, res) => {
+// Create or update share settings for the current user's document
+app.post('/api/documents/:id/share', shareAllowed, (req, res) => {
   const docId = Number(req.params.id);
   const doc = db.prepare('SELECT id FROM documents WHERE id = ? AND user_id = ?').get(docId, req.user.id);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
@@ -496,14 +674,14 @@ app.post('/api/documents/:id/share', auth.adminOnly, (req, res) => {
   res.json({ token, permission, has_password: !!passwordHash, expire_at: expireAt, theme, url: '/s/' + token });
 });
 
-// 撤销分享（仅管理员）
-app.delete('/api/documents/:id/share', auth.adminOnly, (req, res) => {
+// Revoke share for the current user's document
+app.delete('/api/documents/:id/share', shareAllowed, (req, res) => {
   const info = db.prepare('DELETE FROM shares WHERE doc_id = ? AND owner_id = ?').run(req.params.id, req.user.id);
   res.json({ deleted: info.changes });
 });
 
 // 更新分享主题
-app.put('/api/documents/:id/share/theme', auth.adminOnly, (req, res) => {
+app.put('/api/documents/:id/share/theme', shareAllowed, (req, res) => {
   const theme = String(req.body.theme || 'light');
   db.prepare('UPDATE shares SET theme = ? WHERE doc_id = ? AND owner_id = ?').run(theme, req.params.id, req.user.id);
   res.json({ ok: true });
