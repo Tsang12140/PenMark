@@ -144,6 +144,23 @@ function updateTextFloatMenu() {
     return;
   }
 
+  // 移动端：不设置位置，CSS 固定在底部
+  if (isMobile()) {
+    if (!sel.isCollapsed) {
+      // 有选区：显示完整菜单
+      floatMenu.classList.remove('compact');
+      floatMenu.hidden = false;
+      refreshFloatMenuState();
+    } else if (mobileKeyboardOpen) {
+      // 键盘弹出 + 光标定位：显示精简菜单（标题层级），跟随键盘上方
+      floatMenu.classList.add('compact');
+      floatMenu.hidden = false;
+    } else {
+      hideFloatMenu();
+    }
+    return;
+  }
+
   if (!sel.isCollapsed) {
     // 有选区：显示完整菜单
     floatMenu.classList.remove('compact');
@@ -190,6 +207,11 @@ function updateImageFloatMenu(container) {
   if (!container) { floatMenuImg.hidden = true; return; }
   // 隐藏文字菜单
   floatMenu.hidden = true;
+  // 移动端：不设置位置，CSS 固定在底部
+  if (isMobile()) {
+    floatMenuImg.hidden = false;
+    return;
+  }
   // 等一帧让 selected 样式生效，再取位置
   requestAnimationFrame(() => {
     const rect = container.getBoundingClientRect();
@@ -1549,6 +1571,7 @@ async function init() {
     currentUser = meBody.user;
     updateUserBadge();
     updateShareButton();
+    updateMobileNav();
 
     const docs = await api('/api/documents');
     if (docs.length) {
@@ -2229,5 +2252,333 @@ document.addEventListener('keydown', (e) => {
     toggleReadingMode();
   }
 });
+
+/* ---------- 移动端交互 ---------- */
+const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
+let mobileKeyboardOpen = false;
+
+// 底部导航栏
+const mobileBottomNav = $('mobileBottomNav');
+const mbnMenu = $('mbnMenu');
+const mbnNew = $('mbnNew');
+const mbnTitle = $('mbnTitle');
+const mobileMoreIcon = $('mobileMoreIcon');
+
+function updateMobileNav() {
+  if (isMobile() && currentUser) {
+    mobileBottomNav.hidden = false;
+    mobileMoreIcon.hidden = false;
+  } else {
+    mobileBottomNav.hidden = true;
+    mobileMoreIcon.hidden = true;
+  }
+}
+
+// 响应 resize（旋转设备等）
+window.addEventListener('resize', () => {
+  clearTimeout(window._resizeTimer);
+  window._resizeTimer = setTimeout(updateMobileNav, 150);
+});
+
+// 更新底部导航标题
+function updateMobileNavTitle() {
+  if (mbnTitle) mbnTitle.textContent = docTitleEl.value.trim() || '无标题';
+}
+docTitleEl.addEventListener('input', updateMobileNavTitle);
+
+mbnMenu.addEventListener('click', () => {
+  sidebarEl.classList.toggle('open');
+  mobileBackdrop.classList.toggle('show', sidebarEl.classList.contains('open'));
+});
+
+mbnNew.addEventListener('click', () => {
+  newDoc();
+});
+
+// 点击标题区聚焦标题输入
+mbnTitle.addEventListener('click', () => {
+  docTitleEl.focus();
+  docTitleEl.select();
+});
+
+// kebab 按钮打开更多操作
+mobileMoreIcon.addEventListener('click', () => {
+  $('msShare').style.display = (currentUser && (currentUser.isAdmin || currentUser.can_share)) ? '' : 'none';
+  $('msSettings').style.display = (currentUser && currentUser.isAdmin) ? '' : 'none';
+  $('mobileMoreSheet').hidden = false;
+});
+
+$('mobileMoreClose').addEventListener('click', () => {
+  $('mobileMoreSheet').hidden = true;
+});
+
+// 更多操作 sheet：点击内容区域外关闭
+$('mobileMoreSheet').addEventListener('click', (e) => {
+  if (!e.target.closest('.ms-body') && !e.target.closest('.ms-head') && !e.target.closest('.ms-handle')) {
+    $('mobileMoreSheet').hidden = true;
+  }
+});
+
+// 更多操作按钮
+$('msImport').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('importHtml'); });
+$('msExport').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('exportDoc'); });
+$('msReading').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('reading'); });
+$('msShare').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('share'); });
+$('msTrash').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('trashBtn')) $('trashBtn').click(); });
+$('msSettings').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('settingsBtn')) $('settingsBtn').click(); });
+$('msTheme').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('themeToggle')) $('themeToggle').click(); });
+
+// 格式 sheet（保留，可通过浮动菜单或其他方式触发）
+$('mobileFormatClose').addEventListener('click', () => {
+  $('mobileFormatSheet').hidden = true;
+});
+$('mobileFormatSheet').addEventListener('click', (e) => {
+  const btn = e.target.closest('.ms-grid-btn');
+  if (btn) {
+    const cmd = btn.getAttribute('data-cmd');
+    const block = btn.getAttribute('data-block');
+    const action = btn.getAttribute('data-action');
+    if (cmd) editor.exec(cmd);
+    else if (block) editor.exec('formatBlock', '<' + block + '>');
+    else if (action) handleAction(action);
+    $('mobileFormatSheet').hidden = true;
+    refreshToolbar();
+    return;
+  }
+  // 点击内容区域外关闭
+  if (!e.target.closest('.ms-body') && !e.target.closest('.ms-head') && !e.target.closest('.ms-handle')) {
+    $('mobileFormatSheet').hidden = true;
+  }
+});
+
+// 移动端侧边栏仅通过按钮打开（避免边缘手势与 Android 返回冲突）
+// 侧边栏滚动不穿透到背景
+sidebarEl.addEventListener('touchmove', (e) => {
+  if (sidebarEl.classList.contains('open')) {
+    const docList = $('docList');
+    if (docList && docList.contains(e.target)) return;
+    if (e.target.closest('.doc-list') || e.target.closest('.sidebar-extra') || e.target.closest('.search-box') || e.target.closest('.new-row') || e.target.closest('.sidebar-foot')) return;
+    e.preventDefault();
+  }
+}, { passive: false });
+
+// 长按上下文菜单（文档列表项）
+(function initLongPress() {
+  let longPressTimer = null;
+  let longPressTarget = null;
+  let savedCoords = { x: 0, y: 0 };
+
+  docListEl.addEventListener('touchstart', (e) => {
+    const item = e.target.closest('.doc-item');
+    if (!item) return;
+    longPressTarget = item;
+    const touch = e.touches[0];
+    savedCoords = { x: touch.clientX, y: touch.clientY };
+    longPressTimer = setTimeout(() => {
+      if (longPressTarget === item) {
+        if (navigator.vibrate) navigator.vibrate(50);
+        showDocContextMenu(item, savedCoords);
+      }
+    }, 500);
+  }, { passive: true });
+
+  docListEl.addEventListener('touchmove', () => {
+    clearTimeout(longPressTimer);
+    longPressTarget = null;
+  }, { passive: true });
+
+  docListEl.addEventListener('touchend', () => {
+    clearTimeout(longPressTimer);
+    longPressTarget = null;
+  }, { passive: true });
+})();
+
+function showDocContextMenu(item, coords) {
+  const docId = parseInt(item.getAttribute('data-id'));
+  const menu = document.createElement('div');
+  menu.className = 'mobile-context-menu';
+  menu.innerHTML =
+    '<button class="mcm-btn" data-act="open">打开</button>' +
+    '<button class="mcm-btn" data-act="rename">重命名</button>' +
+    '<button class="mcm-btn mcm-danger" data-act="delete">删除</button>';
+  menu.style.cssText = 'position:fixed;z-index:3000;background:var(--bg-editor);border:1px solid var(--line);border-radius:14px;padding:4px;box-shadow:0 8px 32px rgba(0,0,0,.2);min-width:140px;animation:msFadeIn .15s ease;';
+
+  menu.style.left = Math.min(coords.x, window.innerWidth - 160) + 'px';
+  menu.style.top = Math.min(coords.y, window.innerHeight - 200) + 'px';
+
+  document.body.appendChild(menu);
+
+  const removeMenu = () => { if (menu.parentNode) menu.remove(); };
+
+  menu.querySelectorAll('.mcm-btn').forEach(btn => {
+    btn.style.cssText = 'display:block;width:100%;padding:14px 18px;border:none;background:transparent;color:var(--ink);font-size:14px;font-family:var(--sans);text-align:left;cursor:pointer;border-radius:10px;min-height:44px;';
+    if (btn.classList.contains('mcm-danger')) btn.style.color = '#c44';
+    btn.addEventListener('click', () => {
+      const act = btn.getAttribute('data-act');
+      if (act === 'open') item.click();
+      else if (act === 'rename') { docTitleEl.focus(); docTitleEl.select(); }
+      else if (act === 'delete') { confirmDelete({ id: docId, title: item.querySelector('.doc-title') ? item.querySelector('.doc-title').textContent : '' }); }
+      removeMenu();
+    });
+  });
+
+  setTimeout(() => {
+    document.addEventListener('click', removeMenu, { once: true });
+  }, 100);
+}
+
+// 图片查看器
+(function initImageViewer() {
+  const viewer = $('imgViewer');
+  const ivTrack = $('ivTrack');
+  const ivCounter = $('ivCounter');
+  const ivClose = $('ivClose');
+
+  editorEl.addEventListener('click', (e) => {
+    if (!isMobile()) return;
+    const container = e.target.closest('.img-container');
+    if (!container) return;
+    const clickedImg = container.querySelector('img');
+    if (!clickedImg) return;
+
+    const allImgs = Array.from(editorEl.querySelectorAll('.img-container img')).filter(img => img.src);
+    if (!allImgs.length) return;
+
+    const clickedIndex = allImgs.indexOf(clickedImg);
+
+    ivTrack.innerHTML = '';
+    allImgs.forEach((img) => {
+      const slide = document.createElement('div');
+      slide.className = 'iv-slide';
+      const clone = img.cloneNode();
+      clone.src = img.src;
+      slide.appendChild(clone);
+      ivTrack.appendChild(slide);
+    });
+
+    viewer.hidden = false;
+    updateCounter(clickedIndex + 1, allImgs.length);
+    ivTrack.scrollTo({ left: clickedIndex * window.innerWidth, behavior: 'instant' });
+
+    let scrollTimer = null;
+    ivTrack.onscroll = () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        const idx = Math.round(ivTrack.scrollLeft / window.innerWidth);
+        updateCounter(idx + 1, allImgs.length);
+      }, 100);
+    };
+  });
+
+  function updateCounter(cur, total) {
+    ivCounter.textContent = cur + ' / ' + total;
+    ivCounter.hidden = total <= 1;
+  }
+
+  ivClose.addEventListener('click', () => { viewer.hidden = true; ivTrack.innerHTML = ''; });
+
+  viewer.addEventListener('click', (e) => {
+    if (e.target === viewer || e.target.classList.contains('iv-slide')) {
+      viewer.hidden = true;
+      ivTrack.innerHTML = '';
+    }
+  });
+})();
+
+// Bottom Sheet 拖拽关闭
+(function initSheetDrag() {
+  document.querySelectorAll('.mobile-sheet').forEach(sheet => {
+    const handle = sheet.querySelector('.ms-handle');
+    if (!handle) return;
+    let startY = 0, currentY = 0, dragging = false;
+
+    handle.addEventListener('touchstart', (e) => {
+      startY = e.touches[0].clientY;
+      dragging = true;
+      sheet.style.transition = 'none';
+    }, { passive: true });
+
+    handle.addEventListener('touchmove', (e) => {
+      if (!dragging) return;
+      currentY = e.touches[0].clientY - startY;
+      if (currentY > 0) sheet.style.transform = 'translateY(' + currentY + 'px)';
+    }, { passive: true });
+
+    handle.addEventListener('touchend', () => {
+      if (!dragging) return;
+      dragging = false;
+      sheet.style.transition = '';
+      sheet.style.transform = '';
+      if (currentY > 100) sheet.hidden = true;
+      currentY = 0;
+    }, { passive: true });
+  });
+
+  // 弹窗也支持拖拽关闭（modal）
+  document.querySelectorAll('.modal-overlay .modal').forEach(modal => {
+    const head = modal.querySelector('.modal-head');
+    if (!head) return;
+    let startY = 0, currentY = 0, dragging = false;
+
+    head.addEventListener('touchstart', (e) => {
+      if (!isMobile()) return;
+      startY = e.touches[0].clientY;
+      dragging = true;
+      modal.style.transition = 'none';
+    }, { passive: true });
+
+    head.addEventListener('touchmove', (e) => {
+      if (!dragging || !isMobile()) return;
+      currentY = e.touches[0].clientY - startY;
+      if (currentY > 0) modal.style.transform = 'translateY(' + currentY + 'px)';
+    }, { passive: true });
+
+    head.addEventListener('touchend', () => {
+      if (!dragging) return;
+      dragging = false;
+      modal.style.transition = '';
+      modal.style.transform = '';
+      if (currentY > 100) {
+        const overlay = modal.closest('.modal-overlay');
+        if (overlay) overlay.hidden = true;
+      }
+      currentY = 0;
+    }, { passive: true });
+  });
+})();
+
+// 键盘适配
+(function initKeyboardAdapt() {
+  if (!window.visualViewport) return;
+  const editorWrap = $('editorWrap');
+
+  window.visualViewport.addEventListener('resize', () => {
+    if (!isMobile()) return;
+    const keyboardHeight = window.innerHeight - window.visualViewport.height;
+    if (keyboardHeight > 100) {
+      mobileKeyboardOpen = true;
+      document.body.style.setProperty('--kb-height', keyboardHeight + 'px');
+      // 键盘弹出时隐藏底部导航栏，让浮动菜单（含 compact 标题层级）独占键盘上方
+      mobileBottomNav.style.transform = 'translateY(calc(100% + env(safe-area-inset-bottom)))';
+      if (editorWrap) editorWrap.style.paddingBottom = '12px';
+      // 键盘弹出后刷新浮动菜单（可能在 tap 时还未标记 keyboardOpen）
+      updateTextFloatMenu();
+      // 浮动菜单上移到键盘上方（先显示再定位，确保 compact 菜单也覆盖）
+      document.querySelectorAll('.float-menu, .float-menu-img').forEach(m => {
+        if (m.hidden) return;
+        m.style.bottom = 'calc(' + keyboardHeight + 'px + 12px)';
+      });
+    } else {
+      mobileKeyboardOpen = false;
+      mobileBottomNav.style.transform = '';
+      if (editorWrap) editorWrap.style.paddingBottom = '';
+      document.querySelectorAll('.float-menu, .float-menu-img').forEach(m => {
+        m.style.bottom = '';
+      });
+      // 键盘收起后隐藏 compact 菜单（仅光标定位态）
+      if (floatMenu.classList.contains('compact')) hideFloatMenu();
+    }
+  });
+})();
 
 init();

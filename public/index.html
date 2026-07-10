@@ -114,9 +114,12 @@
     <div class="editor-wrap" id="editorWrap">
       <div class="document-shell">
         <div class="doc-title-bar">
-          <button class="mobile-menu-btn" id="mobileMenuBtn" title="文档列表">☰</button>
-          <input type="text" id="docTitle" placeholder="无标题">
-        </div>
+      <button class="mobile-menu-btn" id="mobileMenuBtn" title="文档列表">☰</button>
+      <input type="text" id="docTitle" placeholder="无标题">
+      <button class="mobile-more-icon" id="mobileMoreIcon" title="更多操作" hidden>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="4" r="1.6"/><circle cx="9" cy="9" r="1.6"/><circle cx="9" cy="14" r="1.6"/></svg>
+      </button>
+    </div>
         <div class="editor" id="editor" contenteditable="true" spellcheck="true" data-placeholder="在这里开始写作……"></div>
       </div>
     </div>
@@ -230,6 +233,74 @@
 
 <!-- 阅读模式退出按钮 -->
 <button class="reading-exit" id="readingExit" title="退出阅读模式（Esc）" hidden>✕ 退出阅读</button>
+
+<!-- 移动端底部导航栏 -->
+<nav class="mobile-bottom-nav" id="mobileBottomNav" hidden>
+  <button class="mbn-btn mbn-icon" id="mbnMenu" title="文档列表">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 7h16M3 11h16M3 15h16"/></svg>
+  </button>
+  <div class="mbn-title" id="mbnTitle" title="点击编辑标题">无标题</div>
+  <button class="mbn-btn mbn-new" id="mbnNew" title="新建文档">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4v14M4 11h14"/></svg>
+  </button>
+</nav>
+
+<!-- 移动端格式工具栏（bottom sheet） -->
+<div class="mobile-sheet" id="mobileFormatSheet" hidden>
+  <div class="ms-handle"></div>
+  <div class="ms-head">
+    <span class="ms-title">格式</span>
+    <button class="ms-close" id="mobileFormatClose">×</button>
+  </div>
+  <div class="ms-body">
+    <div class="ms-grid">
+      <button class="ms-grid-btn" data-cmd="bold"><b>B</b><span>加粗</span></button>
+      <button class="ms-grid-btn" data-cmd="italic"><i>I</i><span>斜体</span></button>
+      <button class="ms-grid-btn" data-cmd="underline"><u>U</u><span>下划线</span></button>
+      <button class="ms-grid-btn" data-cmd="strikeThrough"><s>S</s><span>删除线</span></button>
+      <button class="ms-grid-btn" data-block="H1"><span style="font-size:16px;font-weight:700">H1</span><span>标题1</span></button>
+      <button class="ms-grid-btn" data-block="H2"><span style="font-size:15px;font-weight:700">H2</span><span>标题2</span></button>
+      <button class="ms-grid-btn" data-block="H3"><span style="font-size:14px;font-weight:700">H3</span><span>标题3</span></button>
+      <button class="ms-grid-btn" data-block="P"><span style="font-size:14px">正文</span><span>正文</span></button>
+      <button class="ms-grid-btn" data-cmd="insertUnorderedList"><span style="font-size:18px">•</span><span>无序列表</span></button>
+      <button class="ms-grid-btn" data-cmd="insertOrderedList"><span style="font-size:14px">1.</span><span>有序列表</span></button>
+      <button class="ms-grid-btn" data-block="BLOCKQUOTE"><span style="font-size:16px">❝</span><span>引用</span></button>
+      <button class="ms-grid-btn" data-action="code"><span style="font-size:13px">&lt;/&gt;</span><span>行内代码</span></button>
+      <button class="ms-grid-btn" data-action="codeblock"><span style="font-size:14px;font-weight:700">{ }</span><span>代码块</span></button>
+      <button class="ms-grid-btn" data-action="table"><span style="font-size:15px">▦</span><span>表格</span></button>
+      <button class="ms-grid-btn" data-action="hr"><span style="font-size:15px">—</span><span>分隔线</span></button>
+      <button class="ms-grid-btn" data-action="toc"><span style="font-size:15px">≡</span><span>目录</span></button>
+      <button class="ms-grid-btn" data-action="undo"><span style="font-size:14px">↶</span><span>撤销</span></button>
+      <button class="ms-grid-btn" data-action="redo"><span style="font-size:14px">↷</span><span>重做</span></button>
+      <button class="ms-grid-btn" data-cmd="removeFormat"><span style="font-size:14px">⌫</span><span>清除格式</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- 移动端更多操作（bottom sheet） -->
+<div class="mobile-sheet" id="mobileMoreSheet" hidden>
+  <div class="ms-handle"></div>
+  <div class="ms-head">
+    <span class="ms-title">更多操作</span>
+    <button class="ms-close" id="mobileMoreClose">×</button>
+  </div>
+  <div class="ms-body">
+    <button class="ms-action-btn" id="msImport">导入 HTML 文件</button>
+    <button class="ms-action-btn" id="msExport">导出文档</button>
+    <button class="ms-action-btn" id="msReading">阅读模式</button>
+    <button class="ms-action-btn" id="msShare" style="display:none">分享文档</button>
+    <button class="ms-action-btn" id="msTrash">回收站</button>
+    <button class="ms-action-btn" id="msSettings" style="display:none">设置</button>
+    <button class="ms-action-btn" id="msTheme">切换主题</button>
+  </div>
+</div>
+
+<!-- 图片查看器 -->
+<div class="img-viewer" id="imgViewer" hidden>
+  <div class="iv-counter" id="ivCounter"></div>
+  <button class="iv-close" id="ivClose" title="关闭">×</button>
+  <div class="iv-track" id="ivTrack"></div>
+</div>
 
 <script type="module" src="app.js"></script>
 </body>

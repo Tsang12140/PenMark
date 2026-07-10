@@ -2405,3 +2405,345 @@ body.table-resizing *{cursor:col-resize!important;user-select:none!important;}
   font-size:13px;
   line-height:1.55;
 }
+
+/* ============================================================
+   移动端深度优化（≤760px）
+   ============================================================ */
+
+/* 桌面端隐藏移动端专属元素 */
+.mobile-bottom-nav,.mobile-more-icon{display:none;}
+
+/* 移动端 Bottom Sheet 和图片查看器 — 始终用 hidden 属性控制 */
+.mobile-sheet{display:none;}
+.mobile-sheet[hidden]{display:none;}
+.img-viewer{display:none;}
+.img-viewer[hidden]{display:none;}
+
+@media (max-width:760px){
+  /* 基础触控优化 */
+  *{-webkit-tap-highlight-color:transparent;}
+  body{touch-action:manipulation;overscroll-behavior-y:contain;}
+
+  /* ---- 底部导航栏 ---- */
+  .mobile-bottom-nav{
+    display:flex;align-items:center;
+    position:fixed;bottom:0;left:0;right:0;z-index:200;
+    height:52px;
+    background:var(--bg-panel);
+    padding:0 6px;
+    padding-bottom:env(safe-area-inset-bottom);
+    box-shadow:0 -1px 0 var(--line),0 -2px 12px rgba(0,0,0,.06);
+  }
+  .mobile-bottom-nav[hidden]{display:none;}
+  .mbn-btn{
+    flex:0 0 auto;height:44px;min-width:44px;
+    display:flex;align-items:center;justify-content:center;
+    background:none;border:none;cursor:pointer;
+    color:var(--ink-soft);
+    border-radius:10px;
+    padding:0 8px;
+    transition:background .12s,transform .1s;
+  }
+  .mbn-btn:active{background:var(--bg-hover);transform:scale(.92);}
+  .mbn-icon svg{display:block;}
+  .mbn-title{
+    flex:1 1 auto;min-width:0;
+    text-align:center;
+    font-family:var(--sans);font-size:14px;font-weight:600;
+    color:var(--ink);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    padding:0 6px;
+    cursor:pointer;
+    line-height:44px;
+    border-radius:8px;
+  }
+  .mbn-title:active{background:var(--bg-hover);}
+  .mbn-new{
+    flex:0 0 40px;
+    width:40px;height:40px;
+    background:var(--accent);color:#fff;
+    border-radius:12px;
+    box-shadow:0 3px 10px rgba(51,112,255,.28);
+  }
+  .mbn-new:active{transform:scale(.9);}
+
+  /* 标题栏右侧 ⋮ 按钮 */
+  .mobile-more-icon{
+    display:flex;align-items:center;justify-content:center;
+    width:38px;height:38px;
+    background:none;border:none;cursor:pointer;
+    color:var(--ink-soft);
+    border-radius:10px;
+    flex:0 0 auto;
+    transition:background .12s,transform .1s;
+  }
+  .mobile-more-icon:active{background:var(--bg-hover);transform:scale(.9);}
+
+  /* 显示底部导航 + 右上更多按钮，隐藏顶部桌面工具栏 */
+  .toolbar{display:none !important;}
+  .mobile-menu-btn{display:none !important;}
+
+/* 移动端 Bottom Sheet 通用 */
+.mobile-sheet{
+  position:fixed;inset:0;z-index:1500;
+  background:rgba(0,0,0,.35);
+  backdrop-filter:blur(3px);
+  display:flex;flex-direction:column;justify-content:flex-end;
+  animation:msFadeIn .2s ease;
+}
+.mobile-sheet[hidden]{display:none;}
+@keyframes msFadeIn{from{opacity:0;}to{opacity:1;}}
+.ms-handle{
+  background:var(--bg-editor);
+  border-radius:16px 16px 0 0;
+  height:30px;
+  display:flex;align-items:center;justify-content:center;
+  cursor:grab;
+  -webkit-user-select:none;user-select:none;
+}
+.ms-handle::after{
+  content:'';width:36px;height:4px;border-radius:2px;background:var(--line);
+}
+.ms-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 18px 10px;
+  background:var(--bg-editor);
+}
+.ms-title{font-family:var(--serif);font-size:15px;font-weight:600;color:var(--ink);}
+.ms-close{
+  width:30px;height:30px;border:none;background:transparent;
+  color:var(--ink-faint);font-size:22px;cursor:pointer;
+  border-radius:6px;display:flex;align-items:center;justify-content:center;
+}
+.ms-close:active{background:var(--bg-hover);}
+.ms-body{
+  padding:0 18px calc(20px + env(safe-area-inset-bottom));
+  background:var(--bg-editor);
+  max-height:60vh;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+}
+/* 格式网格 */
+.ms-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;
+  padding:8px 0;
+}
+.ms-grid-btn{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  height:64px;border:1px solid var(--line);background:var(--bg);
+  border-radius:10px;cursor:pointer;
+  font-family:var(--sans);font-size:10px;color:var(--ink-soft);
+  -webkit-tap-highlight-color:transparent;
+  min-width:44px;min-height:44px;
+  transition:background .1s,transform .1s;
+}
+.ms-grid-btn:active{background:var(--bg-hover);transform:scale(.94);}
+.ms-grid-btn span:last-child{font-size:10px;}
+/* 操作列表 */
+.ms-action-btn{
+  display:block;width:100%;
+  padding:14px 16px;margin-bottom:8px;
+  border:none;background:var(--bg);
+  border-radius:10px;cursor:pointer;
+  font-family:var(--sans);font-size:14px;font-weight:500;color:var(--ink);
+  text-align:left;
+  -webkit-tap-highlight-color:transparent;
+  min-height:44px;
+  transition:background .1s,transform .1s;
+}
+.ms-action-btn:active{background:var(--bg-hover);transform:scale(.98);}
+
+/* 图片查看器 */
+.img-viewer{
+  position:fixed;inset:0;z-index:2000;
+  background:rgba(0,0,0,.92);
+  display:flex;align-items:center;justify-content:center;
+  animation:ivFadeIn .2s ease;
+}
+.img-viewer[hidden]{display:none;}
+@keyframes ivFadeIn{from{opacity:0;}to{opacity:1;}}
+.iv-track{
+  display:flex;width:100%;height:100%;
+  overflow-x:auto;overflow-y:hidden;
+  scroll-snap-type:x mandatory;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+}
+.iv-track::-webkit-scrollbar{display:none;}
+.iv-slide{
+  flex:0 0 100%;height:100%;
+  scroll-snap-align:center;
+  display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+  touch-action:pan-x pinch-zoom;
+}
+.iv-slide img{
+  max-width:100%;max-height:100%;
+  object-fit:contain;
+  -webkit-user-drag:none;
+}
+.iv-counter{
+  position:fixed;top:calc(env(safe-area-inset-top,0px) + 14px);
+  left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.8);font-size:13px;
+  z-index:2001;
+  background:rgba(0,0,0,.4);padding:4px 12px;border-radius:12px;
+}
+.iv-close{
+  position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);right:16px;
+  width:36px;height:36px;
+  background:rgba(0,0,0,.4);color:rgba(255,255,255,.9);
+  border:none;border-radius:50%;cursor:pointer;
+  font-size:20px;z-index:2001;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-tap-highlight-color:transparent;
+}
+
+  /* ---- 侧边栏动画 ---- */
+  .sidebar{
+    transition:transform .3s cubic-bezier(0.4,0,0.2,1);
+    box-shadow:4px 0 24px rgba(0,0,0,.12);
+    border-right:1px solid var(--line);
+  }
+  .mobile-backdrop{
+    background:rgba(0,0,0,.3);
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+    transition:opacity .3s;
+  }
+
+  /* 标题栏适配 */
+  .doc-title-bar{padding:16px 14px 6px;}
+  .doc-title-bar input{font-size:22px;padding:6px 0;flex:1;}
+
+  /* 编辑器底部留白给导航栏 */
+  .editor-wrap{padding:0 0 calc(54px + env(safe-area-inset-bottom) + 16px) !important;}
+  .editor{padding:12px 16px 40px;font-size:16px;line-height:1.8;}
+
+  /* 状态栏简化 */
+  .statusbar{padding:4px 12px;font-size:11px;gap:8px;padding-bottom:calc(4px + env(safe-area-inset-bottom));}
+  .statusbar .right{display:none;}
+
+  /* 触控目标：所有交互元素最小 44px */
+  .tb-btn,.fm-btn,.dropdown-item,.seg-btn,.new-btn,.new-folder-btn,
+  .sidebar-link,.doc-item,.folder-head,.ms-action-btn,.ms-grid-btn{
+    min-height:44px;
+  }
+  .modal-close{width:36px;height:36px;}
+  .icon-btn{width:36px;height:36px;}
+
+  /* 弹窗 → Bottom Sheet */
+  .modal-overlay{
+    align-items:flex-end;
+    background:rgba(0,0,0,.3);
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+  }
+  .modal{
+    width:100% !important;max-width:100% !important;
+    border-radius:16px 16px 0 0;
+    border:none;
+    max-height:82vh;
+    animation:sheetSlideUp .3s cubic-bezier(0.4,0,0.2,1) !important;
+  }
+  @keyframes sheetSlideUp{
+    from{transform:translateY(100%);opacity:0;}
+    to{transform:translateY(0);opacity:1;}
+  }
+  .modal-head{padding:12px 18px 10px;}
+  .modal-body{padding:14px 18px calc(20px + env(safe-area-inset-bottom));}
+  .settings-tabs{padding:0 12px;}
+  .settings-tab{padding:10px 12px;font-size:12px;}
+
+  /* 浮动菜单 → 底部弹出 */
+  .float-menu{
+    position:fixed !important;
+    bottom:calc(54px + env(safe-area-inset-bottom)) !important;
+    top:auto !important;
+    left:8px !important;right:8px !important;
+    width:auto !important;
+    justify-content:space-around;
+    border-radius:14px;
+    padding:4px;
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
+    animation:fmSlideUp .2s cubic-bezier(0.4,0,0.2,1) !important;
+  }
+  /* compact 菜单（标题层级）在移动端跟随键盘上方显示，不再隐藏 */
+  .float-menu-img{
+    position:fixed !important;
+    bottom:calc(54px + env(safe-area-inset-bottom)) !important;
+    top:auto !important;
+    left:8px !important;right:8px !important;
+    width:auto !important;
+    justify-content:space-around;
+    border-radius:14px;
+    animation:fmSlideUp .2s cubic-bezier(0.4,0,0.2,1) !important;
+  }
+  @keyframes fmSlideUp{
+    from{transform:translateY(30px);opacity:0;}
+    to{transform:translateY(0);opacity:1;}
+  }
+  .fm-btn{
+    min-width:44px;min-height:44px;
+    font-size:14px;
+  }
+  .fm-divider{display:none;}
+
+  /* 图片容器触控 */
+  .img-container{touch-action:auto;}
+  .rs-handle{width:24px;height:24px;border-radius:50%;}
+
+  /* 侧边栏适配 */
+  .sidebar{width:280px;}
+  .doc-item,.folder-head{min-height:48px;}
+  .doc-item .doc-title{font-size:14px;}
+
+  /* 按钮微缩放反馈 */
+  .tb-btn,.fm-btn,.mbn-btn,.ms-grid-btn,.ms-action-btn,
+  .new-btn,.new-folder-btn,.sidebar-link,.dropdown-item{
+    transition:transform .1s cubic-bezier(0.4,0,0.2,1),background .12s;
+  }
+  .tb-btn:active,.fm-btn:active,.mbn-btn:active,.ms-grid-btn:active,
+  .ms-action-btn:active,.new-btn:active,.new-folder-btn:active,
+  .sidebar-link:active,.dropdown-item:active{
+    transform:scale(.92);
+  }
+
+  /* 文档卡片圆角和阴影 */
+  .document-shell{border-radius:12px;box-shadow:0 2px 16px rgba(0,0,0,.06);}
+
+  /* 空状态 */
+  .doc-list:empty::after,
+  .doc-list .empty-hint{
+    content:'还没有文档';
+    display:block;
+    text-align:center;
+    color:var(--ink-faint);
+    font-size:14px;
+    padding:48px 20px;
+  }
+
+  /* 阅读模式 */
+  body.reading-mode .mobile-bottom-nav{display:none;}
+  body.reading-mode .mobile-more-icon{display:none;}
+  body.reading-mode .editor-wrap{padding-bottom:40px !important;}
+
+  /* 分享页底部导航不显示 */
+  body.share-page .mobile-bottom-nav{display:none;}
+
+  /* 用户管理表滚动 */
+  .settings-modal .modal-body{overflow-x:auto;}
+
+  /* 邀请码表滚动 */
+  .invite-table-wrap{overflow-x:auto;}
+
+/* iOS 横屏适配：保持导航栏可读 */
+@media (max-width:760px) and (orientation:landscape){
+  .mobile-bottom-nav{height:44px;}
+  .mbn-btn{padding:0 6px;}
+  .mbn-new{width:36px;height:36px;border-radius:12px;}
+  .mbn-title{font-size:13px;}
+  .ms-body{max-height:50vh;}
+  .modal{max-height:72vh;}
+}

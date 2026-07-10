@@ -290,7 +290,7 @@ export class Editor {
       img.removeAttribute('height');
       img.setAttribute('draggable', 'false');
 
-      if (!img.parentNode) continue;
+      if (!img.parentNode) return;
       img.parentNode.insertBefore(container, img);
       container.appendChild(img);
       container.appendChild(sizeLabel);
