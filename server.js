@@ -50,7 +50,13 @@ app.post('/api/auth/register', (req, res) => {
   const r = auth.register(String(username).trim(), String(nickname).trim(), String(password), inv.record);
   if (!r.ok) return res.status(409).json({ error: r.error });
   // 标记邀请码已使用
-  invites.markUsed(String(invite_code).trim(), r.user.username, r.user.nickname);
+  const marked = invites.markUsed(String(invite_code).trim(), r.user.username, r.user.nickname);
+  if (!marked) {
+    // 竞态：邀请码已被另一个请求抢先使用，回滚注册
+    db.prepare('DELETE FROM users WHERE id = ?').run(r.user.id);
+    auth.clearCookie(res);
+    return res.status(409).json({ error: '邀请码已被使用' });
+  }
   auth.setCookie(res, r.token);
   res.json({ user: r.user });
 });
@@ -79,12 +85,26 @@ app.use('/api', (req, res, next) => {
   auth.authMiddleware(req, res, next);
 });
 
+/* ---------- 防 SSRF：拦截内网地址 ---------- */
+function isPrivateHost(hostname) {
+  // 直接匹配内网域名
+  const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '169.254.169.254', 'metadata.google.internal'];
+  if (blocked.includes(hostname)) return true;
+  // 匹配内网 IP 段：10.x, 172.16-31.x, 192.168.x
+  if (/^10\./.test(hostname)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
+  if (/^192\.168\./.test(hostname)) return true;
+  if (hostname === '0.0.0.0') return true;
+  return false;
+}
+
 /* ---------- 远程图片代理（粘贴公众号/企微图时转 base64 固化，绕 CORS） ---------- */
 function fetchImageAsBase64(url, maxRedirects, cb) {
   if (maxRedirects < 0) { cb(new Error('too many redirects')); return; }
   let parsed;
   try { parsed = new URL(url); } catch (_) { cb(new Error('invalid url')); return; }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { cb(new Error('bad protocol')); return; }
+  if (isPrivateHost(parsed.hostname)) { cb(new Error('blocked host')); return; }
   const lib = parsed.protocol === 'https:' ? https : http;
   const req = lib.get(url, {
     headers: {
@@ -162,6 +182,7 @@ function fetchOG(url, depth) {
   let u;
   try { u = new URL(url); } catch (_) { return Promise.reject(new Error('无效链接')); }
   if (!/^https?:$/.test(u.protocol)) return Promise.reject(new Error('仅支持 http/https'));
+  if (isPrivateHost(u.hostname)) return Promise.reject(new Error('不支持内网地址'));
   const lib = u.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
     const req = lib.get(url, { headers: { 'User-Agent': 'PenMark/1.0' }, timeout: 6000 }, (resp) => {
@@ -271,17 +292,19 @@ app.get('/api/documents/:id', (req, res) => {
 app.post('/api/documents', (req, res) => {
   const now = Date.now();
   const folderId = req.body.folder_id || null;
+  const title = String(req.body.title || '无标题').slice(0, 500);
+  const content = String(req.body.content || '');
   const info = db.prepare(
     'INSERT INTO documents (title, content, created_at, updated_at, user_id, folder_id) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(req.body.title || '无标题', req.body.content || '', now, now, req.user.id, folderId);
+  ).run(title, content, now, now, req.user.id, folderId);
   res.json({ id: info.lastInsertRowid });
 });
 
 // 更新（content/title 走主路径；folder_id 单独处理，0 表示移到根）
 app.put('/api/documents/:id', (req, res) => {
   const now = Date.now();
-  const title = req.body.title;
-  const content = req.body.content;
+  const title = String(req.body.title || '').slice(0, 500);
+  const content = String(req.body.content || '');
   const info = db.prepare(
     'UPDATE documents SET title = ?, content = ?, updated_at = ? WHERE id = ? AND user_id = ?'
   ).run(title, content, now, req.params.id, req.user.id);
@@ -299,7 +322,7 @@ app.put('/api/documents/:id', (req, res) => {
         const contentLower = (String(title || '') + ' ' + String(content || '')).toLowerCase();
         const matched = sensitiveWords.some(w => contentLower.includes(w.toLowerCase()));
         if (matched) {
-          db.prepare("UPDATE documents SET flagged = 1, flag_reason = '命中敏感词' WHERE id = ?").run(req.params.id);
+          db.prepare("UPDATE documents SET flagged = 1, flag_reason = '命中敏感词' WHERE id = ? AND flagged = 0").run(req.params.id);
         }
       }
     } catch (e) { console.warn('敏感词检查跳过：', e.message); }
@@ -309,8 +332,10 @@ app.put('/api/documents/:id', (req, res) => {
 
 // 仅移动文档到文件夹（不触碰 content，避免前端拖拽时丢失正文）
 app.post('/api/documents/:id/move', (req, res) => {
-  const fid = req.body.folder_id === 0 || req.body.folder_id === null || req.body.folder_id === undefined
-    ? null : req.body.folder_id;
+  const raw = req.body.folder_id;
+  const fid = (raw === 0 || raw === null || raw === undefined || raw === '')
+    ? null : Number(raw);
+  if (fid !== null && !Number.isInteger(fid)) return res.status(400).json({ error: '无效的文件夹ID' });
   const info = db.prepare('UPDATE documents SET folder_id = ? WHERE id = ? AND user_id = ?')
     .run(fid, req.params.id, req.user.id);
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
@@ -340,12 +365,20 @@ app.post('/api/folders', (req, res) => {
 // 排序：接收有序 id 数组（需在 :id 路由之前定义，避免 'sort' 被当成 id）
 app.put('/api/folders/sort', (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
-  const stmt = db.prepare('UPDATE folders SET sort_order = ? WHERE id = ? AND user_id = ?');
-  const tx = db.transaction(() => {
-    ids.forEach((id, i) => stmt.run(i, id, req.user.id));
-  });
-  tx();
-  res.json({ updated: ids.length });
+  try {
+    const stmt = db.prepare('UPDATE folders SET sort_order = ? WHERE id = ? AND user_id = ?');
+    const tx = db.transaction(() => {
+      ids.forEach((id, i) => {
+        const num = Number(id);
+        if (!Number.isInteger(num)) throw new Error('invalid id: ' + id);
+        stmt.run(i, num, req.user.id);
+      });
+    });
+    tx();
+    res.json({ updated: ids.length });
+  } catch (e) {
+    res.status(400).json({ error: '排序更新失败: ' + e.message });
+  }
 });
 
 app.put('/api/folders/:id', (req, res) => {
@@ -500,7 +533,8 @@ app.put('/api/admin/users/:id', auth.adminOnly, (req, res) => {
   if (admin_note !== undefined) { updates.push('admin_note = ?'); values.push(admin_note); }
   if (updates.length === 0) return res.json({ ok: true });
   values.push(req.params.id);
-  db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const info = db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  if (info.changes === 0) return res.status(404).json({ error: '用户不存在' });
   res.json({ ok: true });
 });
 
@@ -638,7 +672,7 @@ app.post('/api/documents/:id/share', shareAllowed, (req, res) => {
   if (req.body.password !== undefined) {
     const pwd = String(req.body.password);
     if (pwd) {
-      if (!/^[A-Za-z0-9]{4}$/.test(pwd)) return res.status(400).json({ error: '密码须为4位字母或数字' });
+      if (!/^[A-Za-z0-9]{6,}$/.test(pwd)) return res.status(400).json({ error: '密码须为6位或以上字母或数字' });
       passwordSalt = crypto.randomBytes(16).toString('hex');
       passwordHash = auth.hashPassword(pwd, passwordSalt);
     } else {
@@ -704,6 +738,13 @@ app.get('/api/public/share/:token/info', (req, res) => {
 });
 
 // 提交密码校验，换取分享 session
+/* ---------- 分享密码验证速率限制（防暴力破解） ---------- */
+const shareRateLimit = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of shareRateLimit) { if (now > v.reset) shareRateLimit.delete(k); }
+}, 60000);
+
 app.post('/api/public/share/:token/auth', (req, res) => {
   const share = db.prepare('SELECT * FROM shares WHERE token = ?').get(req.params.token);
   if (!share) return res.status(404).json({ error: '链接无效' });
@@ -714,10 +755,23 @@ app.post('/api/public/share/:token/auth', (req, res) => {
     auth.setShareCookie(res, ss);
     return res.json({ ok: true });
   }
+  // 速率限制：每个 IP+token 每分钟最多 5 次尝试
+  const limitKey = req.ip + ':' + req.params.token;
+  let limit = shareRateLimit.get(limitKey);
+  const now = Date.now();
+  if (limit && limit.count >= 5 && now < limit.reset) {
+    return res.status(429).json({ error: '尝试次数过多，请稍后再试' });
+  }
+  if (!limit || now > limit.reset) {
+    limit = { count: 0, reset: now + 60000 };
+  }
   const password = String(req.body.password || '');
   if (!auth.verifyPassword(password, share.password_salt, share.password_hash)) {
+    limit.count++;
+    shareRateLimit.set(limitKey, limit);
     return res.status(401).json({ error: '密码错误' });
   }
+  shareRateLimit.delete(limitKey);
   const ss = auth.signShareSession({ token: share.token, authed: true });
   auth.setShareCookie(res, ss);
   res.json({ ok: true });

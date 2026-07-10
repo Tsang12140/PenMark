@@ -25,6 +25,7 @@ let switching = false; // 切换文档时屏蔽自动保存
 
 /* ---------- Toast ---------- */
 function toast(msg) {
+  if (!toastStack) return;
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
@@ -109,7 +110,8 @@ function handleAction(action) {
 }
 
 function refreshToolbar() {
-  const btns = document.querySelectorAll('.tb-btn[data-cmd]');
+  const toolbar = $('toolbar');
+  const btns = toolbar ? toolbar.querySelectorAll('.tb-btn[data-cmd]') : [];
   editor.refreshToolbarState(btns, blockStyleSel);
 }
 
@@ -219,6 +221,12 @@ function showFloatMenu(menu, rect, prefer) {
 
 function hideFloatMenu() { floatMenu.hidden = true; }
 
+function hideAllFloatMenus() {
+  hideFloatMenu();
+  floatMenuImg.hidden = true;
+  tableFloatMenu.hidden = true;
+}
+
 function refreshFloatMenuState() {
   const cmds = ['bold', 'italic', 'underline', 'strikeThrough'];
   floatMenu.querySelectorAll('.fm-btn').forEach(btn => {
@@ -269,12 +277,13 @@ floatMenuImg.addEventListener('click', (e) => {
 editorEl.addEventListener('scroll', hideFloatMenu);
 window.addEventListener('scroll', hideFloatMenu, true);
 window.addEventListener('resize', () => { hideFloatMenu(); floatMenuImg.hidden = true; });
-// 点击编辑器外隐藏
+// 点击编辑器外隐藏所有浮动菜单
 document.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.float-menu')) return;
+  if (e.target.closest('.float-menu') || e.target.closest('.table-float-menu')) return;
   if (!editorEl.contains(e.target) && !e.target.closest('.img-container')) {
     hideFloatMenu();
     floatMenuImg.hidden = true;
+    tableFloatMenu.hidden = true;
   }
 });
 
@@ -283,6 +292,7 @@ const ctxMenu = $('ctxMenu');
 let ctxAnchor = null; // 右键命中的链接（若有）
 
 editorEl.addEventListener('contextmenu', (e) => {
+  if (readingMode) return; // 阅读模式禁用右键编辑菜单
   // 仅在编辑区内有效
   const block = getCurrentBlockElement();
   // 命中链接？
@@ -1168,7 +1178,9 @@ function updateTableFloatMenu() {
 }
 
 ['mouseup', 'keyup'].forEach(type => editorEl.addEventListener(type, () => setTimeout(updateTableFloatMenu, 10)));
-document.addEventListener('selectionchange', () => setTimeout(updateTableFloatMenu, 20));
+document.addEventListener('selectionchange', () => {
+  if (document.activeElement === editorEl) setTimeout(updateTableFloatMenu, 20);
+});
 window.addEventListener('scroll', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); }, true);
 window.addEventListener('resize', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); });
 tableFloatMenu.addEventListener('mousedown', e => e.preventDefault());
@@ -1239,6 +1251,7 @@ const AI_REWRITE_PRESETS = [
 
 function openAiModal(title, bodyHtml) {
   if (!aiModal) return;
+  hideAllFloatMenus();
   aiModalTitle.textContent = title;
   aiModalBody.innerHTML = bodyHtml;
   aiModal.hidden = false;
@@ -1509,9 +1522,15 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'w' && e.shiftKey && !e.altKey) { e.preventDefault(); exportWord(); }
 });
 
-// 离开前保存
+// 离开前保存（使用 sendBeacon 确保请求不被中断）
 window.addEventListener('beforeunload', () => {
-  if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveCurrent(); }
+  if (currentDoc && saveTimer) {
+    clearTimeout(saveTimer);
+    const title = docTitleEl.value.trim() || '无标题';
+    const content = editor.getHTML();
+    const body = JSON.stringify({ title, content });
+    navigator.sendBeacon('/api/documents/' + currentDoc.id, new Blob([body], { type: 'application/json' }));
+  }
 });
 
 /* ---------- 工具 ---------- */
@@ -1591,6 +1610,7 @@ $('settingsTabs').addEventListener('click', (e) => {
 });
 
 function openSettings() {
+  hideAllFloatMenus();
   settingsModal.hidden = false;
   loadSettingsTab(settingsTab);
 }
@@ -1839,6 +1859,7 @@ $('trashModalClose').addEventListener('click', () => trashModal.hidden = true);
 trashModal.addEventListener('click', (e) => { if (e.target === trashModal) trashModal.hidden = true; });
 
 async function openTrash() {
+  hideAllFloatMenus();
   trashModal.hidden = false;
   trashModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
   try {
@@ -1910,6 +1931,7 @@ $('shareModalClose').addEventListener('click', () => shareModal.hidden = true);
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.hidden = true; });
 
 async function openShareModal() {
+  hideAllFloatMenus();
   if (!currentDoc) { toast('请先选择文档'); return; }
   if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { toast('无分享权限'); return; }
   shareModal.hidden = false;
@@ -2087,17 +2109,21 @@ function setupPinInputs() {
   if (!pinRow) return;
   const inputs = pinRow.querySelectorAll('.pin-input');
   inputs.forEach((input, i) => {
-    input.addEventListener('input', () => {
+    if (input.dataset.pinBound) return; // 避免重复绑定
+    input.dataset.pinBound = '1';
+    const onInput = () => {
       input.value = input.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
       if (input.value && i < inputs.length - 1) inputs[i + 1].focus();
       if (Array.prototype.every.call(inputs, inp => inp.value)) {
         const pwd = Array.prototype.map.call(inputs, inp => inp.value).join('');
         updateShare({ password: pwd }).then(() => toast('密码已保存')).catch(() => {});
       }
-    });
-    input.addEventListener('keydown', (e) => {
+    };
+    const onKeydown = (e) => {
       if (e.key === 'Backspace' && !input.value && i > 0) inputs[i - 1].focus();
-    });
+    };
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKeydown);
   });
 }
 
@@ -2187,17 +2213,16 @@ let readingMode = false;
 function toggleReadingMode() {
   readingMode = !readingMode;
   document.body.classList.toggle('reading-mode', readingMode);
-  readingExitBtn.hidden = !readingMode;
+  if (readingExitBtn) readingExitBtn.hidden = !readingMode;
+  hideAllFloatMenus();
   if (readingMode) {
-    hideFloatMenu();
-    floatMenuImg.hidden = true;
     editorEl.contentEditable = 'false';
   } else {
     editorEl.contentEditable = 'true';
   }
 }
 
-readingExitBtn.addEventListener('click', toggleReadingMode);
+if (readingExitBtn) readingExitBtn.addEventListener('click', toggleReadingMode);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && readingMode) {
     e.preventDefault();

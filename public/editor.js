@@ -89,9 +89,6 @@ export class Editor {
       this._maybeAutoLink(e);
       this._afterChange();
     });
-    this.editor.addEventListener('keyup', (e) => {
-      if (e.key === 'Delete' || e.key === 'Backspace') this._afterChange();
-    });
     this.editor.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._maybeAutoLink({ inputType: 'insertText', data: ' ' });
     });
@@ -293,6 +290,7 @@ export class Editor {
       img.removeAttribute('height');
       img.setAttribute('draggable', 'false');
 
+      if (!img.parentNode) continue;
       img.parentNode.insertBefore(container, img);
       container.appendChild(img);
       container.appendChild(sizeLabel);
@@ -366,8 +364,11 @@ export class Editor {
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return null;
     let node = sel.getRangeAt(0).commonAncestorContainer;
+    if (!node) return null;
     if (node.nodeType !== 1) node = node.parentNode;
-    return node && node.closest ? node.closest('td,th') : null;
+    if (!node || !node.closest) return null;
+    const cell = node.closest('td,th');
+    return cell && this.editor.contains(cell) ? cell : null;
   }
 
   _cellColumnIndex(cell) {
@@ -469,10 +470,17 @@ export class Editor {
       this.editor.classList.toggle('table-col-resize-hover', Math.abs(e.clientX - rect.right) <= 5);
     });
     this.editor.addEventListener('mousedown', (e) => {
+      startTableResize.call(this, e, e.clientX);
+    });
+    this.editor.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      startTableResize.call(this, e, e.touches[0].clientX);
+    }, { passive: false });
+    function startTableResize(e, clientX) {
       const cell = e.target.closest && e.target.closest('td,th');
       if (!cell || !this.editor.contains(cell)) return;
       const rect = cell.getBoundingClientRect();
-      if (Math.abs(e.clientX - rect.right) > 5) return;
+      if (Math.abs(clientX - rect.right) > 8) return;
       const table = cell.closest('table');
       this._normalizeTable(table);
       const cols = Array.from(table.querySelectorAll(':scope > colgroup > col'));
@@ -480,18 +488,19 @@ export class Editor {
       if (index < 0 || index >= cols.length) return;
       e.preventDefault();
       const tableRect = table.getBoundingClientRect();
-      this.tableResizeState = { table, cols, index, startX: e.clientX, tableWidth: tableRect.width, widths: cols.map(col => {
+      this.tableResizeState = { table, cols, index, startX: clientX, tableWidth: tableRect.width, widths: cols.map(col => {
         const raw = col.style.width || '';
         if (raw.endsWith('%')) return tableRect.width * parseFloat(raw) / 100;
         return parseFloat(raw) || tableRect.width / cols.length;
       }) };
       document.body.classList.add('table-resizing');
-    });
-    document.addEventListener('mousemove', (e) => {
+    }
+    function onTableResizeMove(e, clientX) {
       const st = this.tableResizeState;
       if (!st) return;
+      e.preventDefault();
       const nextIndex = Math.min(st.index + 1, st.cols.length - 1);
-      const dx = e.clientX - st.startX;
+      const dx = clientX - st.startX;
       const left = Math.max(40, st.widths[st.index] + dx);
       if (nextIndex !== st.index) {
         const right = Math.max(40, st.widths[nextIndex] - dx);
@@ -500,14 +509,22 @@ export class Editor {
       } else {
         st.cols[st.index].style.width = Math.round(left) + 'px';
       }
-    });
-    document.addEventListener('mouseup', () => {
+    }
+    document.addEventListener('mousemove', (e) => { onTableResizeMove.call(this, e, e.clientX); });
+    document.addEventListener('touchmove', (e) => {
+      if (!this.tableResizeState) return;
+      if (e.touches.length !== 1) return;
+      onTableResizeMove.call(this, e, e.touches[0].clientX);
+    }, { passive: false });
+    document.addEventListener('mouseup', onTableResizeEnd.bind(this));
+    document.addEventListener('touchend', onTableResizeEnd.bind(this));
+    function onTableResizeEnd() {
       if (!this.tableResizeState) return;
       this.tableResizeState = null;
       document.body.classList.remove('table-resizing');
       this.editor.classList.remove('table-col-resize-hover');
       this._afterChange();
-    });
+    }
   }
 
   _bindImageDelegation() {
@@ -524,14 +541,14 @@ export class Editor {
       }
     });
 
-    // 缩放手柄 mousedown
-    this.editor.addEventListener('mousedown', (e) => {
+    // 缩放手柄 mousedown / touchstart
+    function startImageResize(e, clientX, clientY) {
       const handle = e.target.closest('.rs-handle');
-      if (!handle) return;
+      if (!handle) return false;
       e.preventDefault();
       e.stopPropagation();
       const container = handle.closest('.img-container');
-      if (!container) return;
+      if (!container) return false;
       this._selectImage(container);
       const dir = handle.getAttribute('data-dir');
       const rect = container.getBoundingClientRect();
@@ -539,16 +556,16 @@ export class Editor {
       const aspect = (img && img.naturalWidth) ? img.naturalWidth / img.naturalHeight : 1;
       this.resizeState = {
         container, dir,
-        startX: e.clientX, startY: e.clientY,
+        startX: clientX, startY: clientY,
         startW: rect.width, startH: rect.height, aspect
       };
-    });
-
-    // 缩放 mousemove / mouseup（绑 document 一次）
-    document.addEventListener('mousemove', (e) => {
+      return true;
+    }
+    function onImageResizeMove(e, clientX, clientY) {
       if (!this.resizeState) return;
+      e.preventDefault();
       const s = this.resizeState;
-      const dx = e.clientX - s.startX;
+      const dx = clientX - s.startX;
       let newW;
       if (s.dir === 'se' || s.dir === 'ne') newW = s.startW + dx;
       else newW = s.startW - dx;
@@ -558,16 +575,32 @@ export class Editor {
       const maxW = this._editorContentWidth();
       if (newW > maxW * 0.95) newW = maxW * 0.95;
       this._setImageDisplaySize(s.container, newW);
-    });
-    document.addEventListener('mouseup', () => {
+    }
+    function onImageResizeEnd() {
       if (this.resizeState) {
         const s = this.resizeState;
-        // 缩放前尺寸入栈，供 undo 补偿
         this.styleUndoStack.push({ container: s.container, w: s.startW, h: s.startH });
         this.resizeState = null;
         this._afterChange();
       }
+    }
+    this.editor.addEventListener('mousedown', (e) => {
+      startImageResize.call(this, e, e.clientX, e.clientY);
     });
+    this.editor.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      startImageResize.call(this, e, e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    document.addEventListener('mousemove', (e) => {
+      onImageResizeMove.call(this, e, e.clientX, e.clientY);
+    });
+    document.addEventListener('touchmove', (e) => {
+      if (!this.resizeState) return;
+      if (e.touches.length !== 1) return;
+      onImageResizeMove.call(this, e, e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    document.addEventListener('mouseup', () => { onImageResizeEnd.call(this); });
+    document.addEventListener('touchend', () => { onImageResizeEnd.call(this); });
 
     // 删除键
     this.editor.addEventListener('keydown', (e) => {
@@ -764,7 +797,15 @@ export class Editor {
           'text/plain': new Blob([src], { type: 'text/plain' })
         };
         if (/^data:image\/png/i.test(src)) {
-          try { items['image/png'] = await (await fetch(src)).blob(); } catch (_) {}
+          try {
+            const base64 = src.split(',')[1];
+            if (base64) {
+              const byteChars = atob(base64);
+              const byteNums = new Uint8Array(byteChars.length);
+              for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+              items['image/png'] = new Blob([byteNums], { type: 'image/png' });
+            }
+          } catch (_) {}
         }
         await navigator.clipboard.write([new ClipboardItem(items)]);
         return true;
@@ -916,27 +957,25 @@ export class Editor {
       if (depth <= 0) { depth = 0; if (this.dropOverlay) this.dropOverlay.classList.remove('show'); }
     });
     window.addEventListener('drop', async (e) => {
-      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-        const imgs = [];
-        for (let i = 0; i < e.dataTransfer.files.length; i++) {
-          const f = e.dataTransfer.files[i];
-          if (f.type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name)) imgs.push(f);
+      if (!this.editor.contains(e.target)) return;
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      const imgs = [];
+      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+        const f = e.dataTransfer.files[i];
+        if (f.type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name)) imgs.push(f);
+      }
+      if (imgs.length) {
+        e.preventDefault();
+        if (this.dropOverlay) this.dropOverlay.classList.remove('show');
+        depth = 0;
+        const r = this._caretFromPoint(e.clientX, e.clientY);
+        if (r) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+        else this._placeCaretAtEnd();
+        for (const f of imgs) {
+          try { const url = await this._readAsDataURL(f); this.insertImage(url); }
+          catch (err) { this.onToast('图片插入失败：' + f.name); }
         }
-        if (imgs.length) {
-          e.preventDefault();
-          if (this.dropOverlay) this.dropOverlay.classList.remove('show');
-          depth = 0;
-          const inEditor = this.editor.contains(e.target);
-          if (inEditor) {
-            const r = this._caretFromPoint(e.clientX, e.clientY);
-            if (r) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
-          } else this._placeCaretAtEnd();
-          for (const f of imgs) {
-            try { const url = await this._readAsDataURL(f); this.insertImage(url); }
-            catch (err) { this.onToast('图片插入失败：' + f.name); }
-          }
-          this.onToast('已插入 ' + imgs.length + ' 张图片');
-        }
+        this.onToast('已插入 ' + imgs.length + ' 张图片');
       }
       if (this.dropOverlay) this.dropOverlay.classList.remove('show');
       depth = 0;
@@ -964,7 +1003,7 @@ export class Editor {
     return new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(r.result);
-      r.onerror = reject;
+      r.onerror = () => reject(new Error('读取文件失败'));
       r.readAsDataURL(blob);
     });
   }
@@ -1700,7 +1739,7 @@ export class Editor {
         const img = item.querySelector('img');
         if (img) {
           let w = parseFloat(item.style.width) || 0;
-          if (!w) { const orig = this.editor.querySelector('.img-grid .img-container img'); w = orig ? orig.naturalWidth : 300; }
+          if (!w) { w = img.naturalWidth || 300; }
           w = Math.min(w, cellMax);
           const cleanImg = img.cloneNode(true);
           cleanImg.style.width = Math.floor(w) + 'px';

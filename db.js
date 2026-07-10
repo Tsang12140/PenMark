@@ -117,6 +117,20 @@ CREATE TABLE IF NOT EXISTS sensitive_words (
 );
 `);
 
+// 邀请码表
+db.exec(`
+CREATE TABLE IF NOT EXISTS invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0,
+  used_at INTEGER,
+  registered_username TEXT,
+  registered_nickname TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invites_code ON invites(code);
+`);
+
 // shares 表增量迁移：加 theme 列
 try {
   const shareCols = db.prepare("PRAGMA table_info(shares)").all();
