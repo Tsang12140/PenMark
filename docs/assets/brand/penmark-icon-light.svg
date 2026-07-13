@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="256" height="256"
+     viewBox="0 0 256 256">
+  
+  
+    <g transform="translate(0,0) scale(1)">
+      <path
+        d="M78 30 H164 Q196 30 196 62 V174 H168 V220 H78
+           Q42 220 42 184 V66 Q42 30 78 30 Z"
+        fill="none"
+        stroke="#20292E"
+        stroke-width="18"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+      <path
+        d="M168 174 H222 L168 228 Z"
+        fill="#8BA393"/>
+      <line
+        x1="82" y1="154" x2="82" y2="192"
+        stroke="#8BA393"
+        stroke-width="14"
+        stroke-linecap="round"/>
+    </g>
+    
+</svg>

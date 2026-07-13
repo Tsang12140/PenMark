@@ -14,10 +14,13 @@ const token = (function() {
 let shareInfo = null;
 let shareTheme = 'light';
 const SHARE_THEMES = ['light', 'feishu', 'dark'];
-const THEME_LABELS = { light: '纸张', feishu: '飞书', dark: '暗色' };
+const THEME_LABELS = { light: '纸墨', feishu: '雾纸', dark: '夜墨' };
+const THEME_COLORS = { light: '#F4F2ED', feishu: '#F4F6F4', dark: '#171B1C' };
 
 function applyShareTheme(theme) {
   shareTheme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', THEME_COLORS[theme] || THEME_COLORS.light);
   document.documentElement.setAttribute('data-theme', theme);
   try { localStorage.setItem('penmark_share_theme', theme); } catch(_) {}
 }
@@ -162,7 +165,10 @@ function renderDoc(data) {
       '<div class="share-doc-title">' + escapeHtml(doc.title || '无标题') + '</div>' +
       '<div class="share-doc-info">' + badge +
         '<span class="share-date">更新于 ' + relativeTime(doc.updated_at) + '</span>' +
-        '<span class="share-brand">知著 PenMark</span>' +
+        '<span class="share-brand" aria-label="知著 PenMark">' +
+          '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
+          '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
+        '</span>' +
       '</div>' +
     '</div>';
 

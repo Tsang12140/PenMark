@@ -3,7 +3,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.PENMARK_DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(path.join(dataDir, 'penmark.db'));
@@ -65,17 +65,14 @@ try {
 
 // 注意：users 表与 documents.user_id 列由 auth.js 在 require 时迁移创建
 
-// users 表增量迁移：审核相关字段（users 表由 auth.js 创建，这里只加列）
+// users 表增量迁移：仅在 users 表已经存在时执行；首次启动由 auth.js 建表。
 try {
-  const userCols = db.prepare("PRAGMA table_info(users)").all();
-  if (!userCols.some(c => c.name === 'is_banned')) {
-    db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!userCols.some(c => c.name === 'can_share')) {
-    db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!userCols.some(c => c.name === 'admin_note')) {
-    db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
+  const usersExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (usersExists) {
+    const userCols = db.prepare("PRAGMA table_info(users)").all();
+    if (!userCols.some(c => c.name === 'is_banned')) db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
+    if (!userCols.some(c => c.name === 'can_share')) db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
+    if (!userCols.some(c => c.name === 'admin_note')) db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
   }
 } catch (e) { console.warn('users 迁移跳过：', e.message); }
 

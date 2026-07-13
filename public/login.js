@@ -3,7 +3,11 @@
   // 应用本地保存的主题
   try {
     var saved = localStorage.getItem('penmark_theme');
-    if (saved) document.documentElement.setAttribute('data-theme', saved);
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', saved === 'dark' ? '#171B1C' : (saved === 'feishu' ? '#F4F6F4' : '#F4F2ED'));
+    }
   } catch (_) {}
 
   /* ---------- 密码显示/隐藏 ---------- */

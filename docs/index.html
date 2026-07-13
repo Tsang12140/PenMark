@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知著 PenMark — 本地优先的个人长期记录软件</title>
+<meta name="description" content="知著 PenMark 是一款本地优先、打开就能写、擅长富文本和图文粘贴的个人长期记录软件。数据始终属于用户，内容永远可以带走。">
+<meta name="author" content="Tsang12140">
+<link rel="canonical" href="https://tsang12140.github.io/PenMark/">
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="assets/brand/favicon.svg">
+<link rel="icon" type="image/png" sizes="512x512" href="assets/brand/penmark-app-icon-512.png">
+<link rel="shortcut icon" href="assets/brand/favicon.ico">
+<link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
+
+<!-- Open Graph -->
+<meta property="og:title" content="知著 PenMark — 本地优先的个人长期记录软件">
+<meta property="og:description" content="打开就写，内容永远带得走。记录读书心得、摘抄、梦境与随笔，富文本和图片留在本地。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tsang12140.github.io/PenMark/">
+<meta property="og:image" content="https://tsang12140.github.io/PenMark/screenshots/penmark-brand-preview.png">
+<meta property="og:site_name" content="知著 PenMark">
+<meta property="og:locale" content="zh_CN">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="知著 PenMark — 本地优先的个人长期记录软件">
+<meta name="twitter:description" content="打开就写，内容永远带得走。">
+<meta name="twitter:image" content="https://tsang12140.github.io/PenMark/screenshots/penmark-brand-preview.png">
+
+<meta name="theme-color" content="#F7F4EC">
+<meta name="color-scheme" content="light">
+
+<style>
+:root{
+  --bg:#F7F4EC;
+  --bg-soft:#EFEAD9;
+  --bg-panel:#FBFAF7;
+  --ink:#20292E;
+  --ink-soft:#626B6A;
+  --ink-faint:#969C98;
+  --line:#DDDCD5;
+  --line-soft:#E9E7E1;
+  --accent:#3B6B8C;
+  --accent-soft:#D4E1ED;
+  --accent-deep:#2A4D65;
+  --gold:#C4A053;
+  --surface:#FFFFFF;
+  --radius:20px;
+  --radius-sm:12px;
+  --maxw:1080px;
+  --ease:cubic-bezier(.22,1,.36,1);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;}
+body{
+  font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif;
+  background:var(--bg);
+  color:var(--ink);
+  line-height:1.65;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%;display:block;}
+a{color:inherit;text-decoration:none;}
+.container{max-width:var(--maxw);margin:0 auto;padding:0 28px;}
+
+/* ---------- Nav ---------- */
+header{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:saturate(160%) blur(14px);
+  background:rgba(247,244,236,.82);
+  border-bottom:1px solid rgba(32,41,46,.06);
+}
+.nav{display:flex;align-items:center;justify-content:space-between;height:64px;}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;letter-spacing:.2px;}
+.brand img{height:28px;width:auto;}
+nav.links{display:flex;gap:28px;font-size:14px;color:var(--ink-soft);}
+nav.links a{transition:color .2s;}
+nav.links a:hover{color:var(--ink);}
+.nav-cta{
+  display:inline-flex;align-items:center;gap:6px;
+  background:var(--ink);color:var(--bg);
+  padding:8px 18px;border-radius:999px;font-size:13px;font-weight:600;
+  transition:transform .25s var(--ease),background .25s;
+}
+.nav-cta:hover{transform:translateY(-2px);background:var(--accent-deep);}
+.mobile-toggle{display:none;background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink);padding:4px;}
+
+/* ---------- Buttons ---------- */
+.btn{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:13px 26px;border-radius:999px;font-weight:700;font-size:14.5px;
+  transition:transform .25s var(--ease),box-shadow .25s var(--ease);
+  border:1px solid transparent;cursor:pointer;
+}
+.btn-primary{
+  background:var(--ink);color:#fff;
+  box-shadow:0 12px 28px -12px rgba(32,41,46,.5);
+}
+.btn-primary:hover{transform:translateY(-3px);box-shadow:0 18px 36px -10px rgba(32,41,46,.55);background:var(--accent-deep);}
+.btn-ghost{
+  background:rgba(255,255,255,.5);border-color:rgba(32,41,46,.14);color:var(--ink);
+  backdrop-filter:blur(6px);
+}
+.btn-ghost:hover{transform:translateY(-3px);border-color:var(--ink);}
+.btn-accent{
+  background:var(--accent);color:#fff;
+  box-shadow:0 12px 28px -12px rgba(59,107,140,.5);
+}
+.btn-accent:hover{transform:translateY(-3px);background:var(--accent-deep);}
+
+/* ---------- Reveal ---------- */
+.reveal{opacity:0;transform:translateY(22px);transition:opacity .8s var(--ease),transform .8s var(--ease);}
+.reveal.is-visible{opacity:1;transform:translateY(0);}
+
+/* ---------- Hero ---------- */
+.hero{position:relative;z-index:1;padding:110px 0 0;text-align:center;overflow:hidden;}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12.5px;color:var(--ink);background:var(--surface);
+  border:1px solid rgba(32,41,46,.1);
+  padding:6px 14px;border-radius:999px;font-weight:600;letter-spacing:.3px;
+  margin-bottom:26px;
+}
+.eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(59,107,140,.18);}
+h1{
+  font-size:clamp(38px,6.5vw,72px);text-wrap:balance;
+  line-height:1.08;letter-spacing:-1.5px;margin:0 auto 22px;font-weight:800;max-width:760px;
+}
+.lead{
+  font-size:clamp(15px,1.5vw,18px);line-height:1.7;text-wrap:balance;
+  color:var(--ink-soft);max-width:480px;margin:0 auto 36px;
+}
+.cta-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-bottom:60px;}
+.hero-visual{position:relative;max-width:900px;margin:0 auto;padding:0 28px 80px;}
+.hero-visual img{
+  width:100%;border-radius:var(--radius);border:1px solid rgba(32,41,46,.08);
+  box-shadow:0 40px 90px -30px rgba(32,41,46,.35);
+}
+
+/* ---------- Sections ---------- */
+section{position:relative;z-index:1;}
+.section-pad{padding:90px 0;}
+.section-pad.alt{background:var(--bg-soft);}
+.section-head{text-align:center;margin-bottom:50px;}
+.kicker{
+  display:inline-flex;align-items:center;gap:7px;
+  font-size:12.5px;font-weight:700;color:var(--accent-deep);
+  background:var(--accent-soft);
+  padding:5px 14px;border-radius:999px;margin-bottom:16px;
+}
+.kicker::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent);}
+.section-head h2{
+  font-size:clamp(26px,4vw,42px);text-wrap:balance;line-height:1.15;
+  margin:0 auto 14px;letter-spacing:-.8px;font-weight:800;max-width:580px;
+}
+.section-head p{font-size:16px;color:var(--ink-soft);max-width:520px;margin:0 auto;}
+
+/* ---------- Feature Grid ---------- */
+.feature-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:20px;}
+.feature-card{
+  background:var(--surface);border:1px solid var(--line-soft);
+  border-radius:var(--radius-sm);padding:28px 24px;
+  transition:transform .3s var(--ease),box-shadow .3s var(--ease);
+}
+.feature-card:hover{transform:translateY(-4px);box-shadow:0 16px 36px -14px rgba(32,41,46,.15);}
+.feature-icon{
+  width:40px;height:40px;display:flex;align-items:center;justify-content:center;
+  background:var(--accent-soft);border-radius:10px;margin-bottom:14px;color:var(--accent-deep);
+}
+.feature-card h3{font-size:15.5px;font-weight:700;margin-bottom:6px;}
+.feature-card p{font-size:13.5px;color:var(--ink-soft);line-height:1.55;}
+
+/* ---------- Scenario Cards ---------- */
+.scenario-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:18px;}
+.scenario-card{
+  text-align:center;padding:32px 20px;
+  background:var(--surface);border:1px solid var(--line-soft);border-radius:var(--radius-sm);
+  transition:transform .3s var(--ease);
+}
+.scenario-card:hover{transform:translateY(-3px);}
+.scenario-icon{width:44px;height:44px;margin:0 auto 14px;color:var(--accent);}
+.scenario-card h3{font-size:15px;font-weight:700;margin-bottom:4px;}
+.scenario-card p{font-size:13px;color:var(--ink-soft);}
+
+/* ---------- Data Section ---------- */
+.data-banner{
+  background:var(--ink);color:var(--bg);border-radius:var(--radius);
+  padding:60px 48px;text-align:center;
+}
+.data-banner h2{font-size:clamp(24px,3.5vw,36px);font-weight:800;margin-bottom:16px;text-wrap:balance;max-width:580px;margin-left:auto;margin-right:auto;}
+.data-banner p{font-size:15px;color:rgba(247,244,236,.7);max-width:520px;margin:0 auto 32px;}
+.data-points{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:20px;margin-top:36px;}
+.data-point{text-align:left;padding:18px;background:rgba(255,255,255,.05);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.08);}
+.data-point h4{font-size:14px;font-weight:700;margin-bottom:4px;color:var(--bg);}
+.data-point p{font-size:12.5px;color:rgba(247,244,236,.6);margin:0;}
+
+/* ---------- Comparison ---------- */
+.compare-table{max-width:680px;margin:0 auto;border-collapse:collapse;}
+.compare-table th,.compare-table td{padding:14px 20px;text-align:left;font-size:14px;border-bottom:1px solid var(--line);}
+.compare-table th{font-weight:700;color:var(--ink);background:var(--bg-soft);}
+.compare-table td:first-child{color:var(--ink-soft);font-weight:600;}
+.compare-table tr:last-child td{border-bottom:none;}
+
+/* ---------- Download ---------- */
+.download-card{
+  max-width:560px;margin:0 auto;text-align:center;
+  background:var(--surface);border:1px solid var(--line-soft);
+  border-radius:var(--radius);padding:48px 36px;
+}
+.download-version{font-size:13px;color:var(--accent-deep);font-weight:700;margin-bottom:8px;}
+.download-card h3{font-size:22px;font-weight:800;margin-bottom:8px;}
+.download-card .note{font-size:13px;color:var(--ink-soft);margin-top:16px;}
+
+/* ---------- Star CTA ---------- */
+.star-cta{text-align:center;padding:70px 0;}
+.star-cta h2{font-size:clamp(22px,3vw,32px);font-weight:800;margin-bottom:12px;text-wrap:balance;max-width:520px;margin-left:auto;margin-right:auto;}
+.star-cta p{font-size:15px;color:var(--ink-soft);margin-bottom:24px;}
+
+/* ---------- Footer ---------- */
+footer{
+  background:var(--ink);color:rgba(247,244,236,.7);
+  padding:48px 0 32px;font-size:13.5px;
+}
+.footer-grid{display:flex;flex-wrap:wrap;justify-content:space-between;gap:32px;margin-bottom:32px;}
+.footer-col h4{font-size:13px;font-weight:700;color:var(--bg);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px;}
+.footer-col a{display:block;padding:3px 0;color:rgba(247,244,236,.6);transition:color .2s;}
+.footer-col a:hover{color:var(--bg);}
+.footer-brand{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
+.footer-brand img{height:26px;}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.08);padding-top:20px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;font-size:12.5px;color:rgba(247,244,236,.45);}
+
+/* ---------- Privacy section ---------- */
+.privacy-list{max-width:580px;margin:0 auto;}
+.privacy-list li{list-style:none;padding:12px 0;border-bottom:1px solid var(--line-soft);font-size:14.5px;display:flex;gap:10px;}
+.privacy-list li:last-child{border-bottom:none;}
+.privacy-list .check{color:var(--accent);flex:none;font-weight:700;}
+
+/* ---------- Responsive ---------- */
+@media(max-width:768px){
+  nav.links{display:none;}
+  .mobile-toggle{display:block;}
+  nav.links.open{
+    display:flex;position:absolute;top:64px;left:0;right:0;
+    flex-direction:column;background:var(--bg);padding:16px 28px;gap:14px;
+    border-bottom:1px solid var(--line);
+  }
+  .data-banner{padding:40px 24px;}
+  .section-pad{padding:60px 0;}
+  .hero{padding:70px 0 0;}
+  .compare-table{font-size:13px;}
+  .compare-table th,.compare-table td{padding:10px 12px;}
+}
+
+/* ---------- Reduced motion ---------- */
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important;}
+  .reveal{opacity:1;transform:none;}
+  html{scroll-behavior:auto;}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ Nav ============ -->
+<header>
+  <div class="container nav">
+    <a href="#" class="brand">
+      <img src="assets/brand/penmark-logo-horizontal-light.svg" alt="知著 PenMark">
+    </a>
+    <nav class="links" id="navLinks">
+      <a href="#features">特点</a>
+      <a href="#scenarios">场景</a>
+      <a href="#data">数据</a>
+      <a href="#download">下载</a>
+      <a href="https://github.com/Tsang12140/PenMark" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+    <a href="https://github.com/Tsang12140/PenMark/releases" target="_blank" rel="noopener" class="nav-cta">下载 Windows 版</a>
+    <button class="mobile-toggle" id="mobileToggle" aria-label="菜单">☰</button>
+  </div>
+</header>
+
+<!-- ============ Hero ============ -->
+<section class="hero">
+  <div class="container">
+    <div class="eyebrow reveal"><span class="dot"></span> v1.0.0 · 本地优先 · MIT 开源</div>
+    <h1 class="reveal reveal-delay-1">打开就写，<br>内容永远带得走。</h1>
+    <p class="lead reveal reveal-delay-2">记录读书心得、摘抄、梦境与随笔。富文本和图片留在本地，不被账号、广告和设备数量绑住。</p>
+    <div class="cta-row reveal reveal-delay-2">
+      <a href="https://github.com/Tsang12140/PenMark/releases" target="_blank" rel="noopener" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3"/><path d="M5 8l3 3 3-3"/><path d="M3 13v1.5h10V13"/></svg>
+        下载 Windows 版
+      </a>
+      <a href="https://github.com/Tsang12140/PenMark" target="_blank" rel="noopener" class="btn btn-ghost">查看源代码</a>
+    </div>
+  </div>
+  <div class="hero-visual reveal reveal-delay-2">
+    <img src="screenshots/penmark-brand-preview.png" alt="知著 PenMark 编辑器界面" loading="lazy">
+  </div>
+</section>
+
+<!-- ============ Why ============ -->
+<section class="section-pad alt">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">为什么是 PenMark</div>
+      <h2>它不是另一套在线协作文档。</h2>
+      <p>它是一张属于个人的长期纸张。富文本友好，本地优先，内容可迁移。</p>
+    </div>
+    <div style="max-width:620px;margin:0 auto;text-align:center;font-size:15.5px;line-height:1.8;color:var(--ink-soft);" class="reveal">
+      <p>印象笔记、有道云等产品可能存在广告、设备和产品策略限制。Obsidian 本地可靠，但 Markdown 和同步有学习成本。Notion、飞书更偏云端结构化或协作。</p>
+      <p style="margin-top:14px;">PenMark 希望提供一张本地优先、富文本友好的个人纸张——打开就能写，内容永远带得走。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Scenarios ============ -->
+<section class="section-pad" id="scenarios">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">核心场景</div>
+      <h2>为长期记录而生</h2>
+    </div>
+    <div class="scenario-grid">
+      <div class="scenario-card reveal">
+        <div class="scenario-icon">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8h22a4 4 0 0 1 4 4v24l-5-3-5 3-5-3-5 3-5-3-1-22z"/><path d="M14 16h14M14 22h14M14 28h10"/></svg>
+        </div>
+        <h3>读书摘抄与心得</h3>
+        <p>粘贴原文，写下思考</p>
+      </div>
+      <div class="scenario-card reveal reveal-delay-1">
+        <div class="scenario-icon">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M30 18a8 8 0 1 0-16 0c0 4-2 6-4 8h24c-2-2-4-4-4-8z"/><path d="M18 30a4 4 0 0 0 8 0"/><path d="M22 10v-2"/></svg>
+        </div>
+        <h3>梦境与随笔</h3>
+        <p>随时记录，不拘格式</p>
+      </div>
+      <div class="scenario-card reveal reveal-delay-2">
+        <div class="scenario-icon">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="10" width="32" height="24" rx="3"/><path d="M6 16h32"/><path d="M12 22h8M12 28h6"/><circle cx="30" cy="25" r="3"/></svg>
+        </div>
+        <h3>网页资料收藏</h3>
+        <p>富文本粘贴，保留样式</p>
+      </div>
+      <div class="scenario-card reveal">
+        <div class="scenario-icon">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="8" width="32" height="28" rx="3"/><circle cx="17" cy="19" r="3"/><path d="M6 30l8-6 6 4 8-8 10 8"/></svg>
+        </div>
+        <h3>图片与图文档案</h3>
+        <p>拖入即存，排列自由</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Features ============ -->
+<section class="section-pad alt" id="features">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">功能亮点</div>
+      <h2>该有的都有，不该挡的不挡</h2>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h14M11 4v14M7 18h8"/></svg></div>
+        <h3>打开就写</h3>
+        <p>双击启动，无需登录、联网或初始化。新建文档目标 &lt; 100ms。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="16" height="14" rx="2"/><path d="M3 9h16M8 4v14"/></svg></div>
+        <h3>富文本粘贴</h3>
+        <p>公众号、飞书、网页图文粘贴尽量保真，图片自动修复。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="16" height="14" rx="2"/><circle cx="8" cy="9" r="2"/><path d="M3 15l5-3 4 2 7-5"/></svg></div>
+        <h3>图片拖入与缩放</h3>
+        <p>拖入即插入，支持缩放、对齐、复制和排列。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 5h14M4 11h10M4 17h7"/></svg></div>
+        <h3>文件夹与大纲</h3>
+        <p>文件夹分类管理，标题自动生成目录大纲。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l-3 3 3 3"/><path d="M13 12l3 3-3 3"/><path d="M11 4l-2 14"/></svg></div>
+        <h3>链接卡片</h3>
+        <p>自动抓取链接元数据，生成可视化卡片。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V7a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H8l-4 3z"/></svg></div>
+        <h3>本地数据</h3>
+        <p>数据保存在本机，不依赖云服务，可随时备份。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3v12"/><path d="M7 11l4 4 4-4"/><path d="M4 18h14"/></svg></div>
+        <h3>多格式导出</h3>
+        <p>支持 Word、HTML、Markdown、长图导出和资料库批量导出。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="11" cy="11" rx="8" ry="3"/><path d="M3 11v4c0 1.7 3.6 3 8 3s8-1.3 8-3v-4"/></svg></div>
+        <h3>旧数据导入</h3>
+        <p>支持旧版 PenMark SQLite 数据库安全导入，只新增不覆盖。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="6" width="14" height="12" rx="2"/><path d="M8 10h6M8 14h4"/></svg></div>
+        <h3>快捷键</h3>
+        <p>对齐飞书/在线文档肌肉记忆，Ctrl+/ 查看全部快捷键。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Data Section ============ -->
+<section class="section-pad" id="data">
+  <div class="container">
+    <div class="data-banner reveal">
+      <h2>软件可以更换，内容不该被锁住。</h2>
+      <p>桌面数据保存在本机，可以备份数据库，可以导出整个资料库。Markdown 用于通用阅读和迁移，原始 HTML 用于保留复杂图文。</p>
+      <div class="data-points">
+        <div class="data-point">
+          <h4>本地存储</h4>
+          <p>数据保存在 %APPDATA%\PenMark\，不依赖云服务</p>
+        </div>
+        <div class="data-point">
+          <h4>一键备份</h4>
+          <p>菜单备份 SQLite 数据库，含 WAL 日志</p>
+        </div>
+        <div class="data-point">
+          <h4>资料库导出</h4>
+          <p>导出为 Markdown + Frontmatter 文件夹</p>
+        </div>
+        <div class="data-point">
+          <h4>原始 HTML</h4>
+          <p>数据库保留原始 HTML，复杂内容不丢失</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Comparison ============ -->
+<section class="section-pad alt">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">两种运行方式</div>
+      <h2>桌面版与 Node 版</h2>
+    </div>
+    <table class="compare-table reveal">
+      <thead>
+        <tr><th></th><th>桌面版</th><th>Node 版</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>适合</td><td>个人本地使用</td><td>开发、自托管</td></tr>
+        <tr><td>Node.js</td><td>不需要</td><td>需要</td></tr>
+        <tr><td>登录</td><td>不需要</td><td>可保留用户和分享</td></tr>
+        <tr><td>数据位置</td><td>%APPDATA%\PenMark\</td><td>项目 data/ 目录</td></tr>
+        <tr><td>端口</td><td>动态（仅 127.0.0.1）</td><td>3001</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ Privacy ============ -->
+<section class="section-pad">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">隐私与网络</div>
+      <h2>核心编辑不需要联网</h2>
+    </div>
+    <ul class="privacy-list reveal">
+      <li><span class="check">✓</span> 核心本地编辑不需要联网，普通笔记不会自动上传</li>
+      <li><span class="check">✓</span> 链接卡片需要访问目标网页抓取元数据</li>
+      <li><span class="check">✓</span> AI 功能需要用户自行配置 API Key 并主动使用</li>
+      <li><span class="check">✓</span> GitHub 下载和版本检查会访问网络</li>
+      <li><span class="check">✓</span> 不内置广告和跟踪器</li>
+    </ul>
+    <div style="text-align:center;margin-top:28px;" class="reveal">
+      <a href="https://github.com/Tsang12140/PenMark/blob/main/PRIVACY.md" target="_blank" rel="noopener" class="btn btn-ghost">查看完整隐私说明</a>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Download ============ -->
+<section class="section-pad alt" id="download">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">下载</div>
+      <h2>开始使用 PenMark</h2>
+    </div>
+    <div class="download-card reveal">
+      <div class="download-version">v1.0.0 · Windows 64 位</div>
+      <h3>PenMark Windows 安装包</h3>
+      <p style="font-size:14px;color:var(--ink-soft);margin-bottom:24px;">从 GitHub Releases 下载安装包，双击即可安装。</p>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+        <a href="https://github.com/Tsang12140/PenMark/releases" target="_blank" rel="noopener" class="btn btn-accent">前往 Releases 下载</a>
+        <a href="https://github.com/Tsang12140/PenMark" target="_blank" rel="noopener" class="btn btn-ghost">从源码运行</a>
+      </div>
+      <p class="note">安装包尚未数字签名，Windows 可能提示"未知发布者"。<br>点击"仍要运行"即可继续。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ Star CTA ============ -->
+<section class="star-cta">
+  <div class="container reveal">
+    <h2>如果 PenMark 帮你留下了值得保存的东西，<br>欢迎在 GitHub 留一颗星。</h2>
+    <p>开源不易，你的支持是持续维护的动力。</p>
+    <a href="https://github.com/Tsang12140/PenMark" target="_blank" rel="noopener" class="btn btn-primary">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg>
+      GitHub Star
+    </a>
+  </div>
+</section>
+
+<!-- ============ Footer ============ -->
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <div class="footer-brand">
+          <img src="assets/brand/penmark-logo-horizontal-light.svg" alt="知著 PenMark">
+        </div>
+        <p style="max-width:260px;">本地优先的个人长期记录软件。打开就写，内容永远带得走。</p>
+      </div>
+      <div class="footer-col">
+        <h4>产品</h4>
+        <a href="#features">特点</a>
+        <a href="#download">下载</a>
+        <a href="https://github.com/Tsang12140/PenMark/releases" target="_blank" rel="noopener">Releases</a>
+      </div>
+      <div class="footer-col">
+        <h4>开发</h4>
+        <a href="https://github.com/Tsang12140/PenMark" target="_blank" rel="noopener">GitHub 仓库</a>
+        <a href="https://github.com/Tsang12140/PenMark/blob/main/README.md" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/Tsang12140/PenMark/issues" target="_blank" rel="noopener">提交 Issue</a>
+      </div>
+      <div class="footer-col">
+        <h4>法律</h4>
+        <a href="https://github.com/Tsang12140/PenMark/blob/main/PRIVACY.md" target="_blank" rel="noopener">隐私说明</a>
+        <a href="https://github.com/Tsang12140/PenMark/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2026 Tsang12140 · MIT License</span>
+      <span>知著 PenMark · 本地优先</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Mobile nav toggle
+document.getElementById('mobileToggle')?.addEventListener('click',function(){
+  document.getElementById('navLinks').classList.toggle('open');
+});
+// Close mobile nav on link click
+document.querySelectorAll('#navLinks a').forEach(function(a){
+  a.addEventListener('click',function(){
+    document.getElementById('navLinks').classList.remove('open');
+  });
+});
+// Reveal on scroll
+var io=new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if(e.isIntersecting){e.target.classList.add('is-visible');io.unobserve(e.target);}
+  });
+},{threshold:0.1,rootMargin:'0px 0px -40px 0px'});
+document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+</script>
+</body>
+</html>

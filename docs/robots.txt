@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tsang12140.github.io/PenMark/sitemap.xml

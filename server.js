@@ -12,6 +12,16 @@ const ai = require('./ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.PENMARK_HOST || '0.0.0.0';
+
+// 桌面模式拒绝异常 Host，避免通过 DNS rebinding 访问本地管理接口。
+app.use((req, res, next) => {
+  if (process.env.PENMARK_DESKTOP === '1') {
+    const expectedHost = `127.0.0.1:${req.socket.localPort}`;
+    if (req.headers.host !== expectedHost) return res.status(403).send('Forbidden');
+  }
+  next();
+});
 
 // 允许大体积富文本（图片 base64 内嵌会很大）
 app.use(express.json({ limit: '100mb' }));
@@ -63,6 +73,11 @@ app.post('/api/auth/register', (req, res) => {
 
 // 当前用户
 app.get('/api/auth/me', (req, res) => {
+  // 桌面模式也要求主进程注入的一次性 HttpOnly 会话。
+  if (process.env.PENMARK_DESKTOP === '1') {
+    if (!auth.isDesktopRequestAuthorized(req)) return res.status(401).json({ error: 'unauthorized' });
+    return res.json({ user: auth.ensureDesktopUser() });
+  }
   const token = readCookieRaw(req, auth.COOKIE_NAME);
   const payload = token ? auth.verifyToken(token) : null;
   if (!payload) return res.status(401).json({ error: 'unauthorized' });
@@ -832,6 +847,28 @@ function readCookieRaw(req, name) {
   return null;
 }
 
-app.listen(PORT, () => {
-  console.log(`知著 PenMark 运行于 http://localhost:${PORT}`);
-});
+// 可编程启动：桌面主进程调用，返回实际端口（port=0 表示动态空闲端口）
+function startServer(opts) {
+  opts = opts || {};
+  const host = opts.host || HOST;
+  const port = opts.port != null ? opts.port : PORT;
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      const actualPort = server.address().port;
+      const display = host === '127.0.0.1' ? '127.0.0.1' : 'localhost';
+      console.log(`知著 PenMark 运行于 http://${display}:${actualPort}`);
+      resolve({ server, port: actualPort, host });
+    });
+    server.on('error', reject);
+  });
+}
+
+// 直接运行时自动启动（npm start 或 node server.js）
+if (require.main === module) {
+  startServer().catch(err => {
+    console.error('启动失败：', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { app, startServer };

@@ -2,14 +2,34 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="256x256" href="/favicon-256.png">
+<link rel="shortcut icon" href="/favicon.ico">
+
+<!-- iOS Web App -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="知著">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+<!-- PWA -->
+<meta name="application-name" content="知著 PenMark">
+<meta name="theme-color" content="#F7F4EC">
+<link rel="manifest" href="/manifest.json">
+
 <title>知著 PenMark</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body class="login-body">
 
 <div class="login-card">
-  <div class="login-brand"><span class="brand">知著<small>PenMark</small></span></div>
+  <div class="login-brand" aria-label="知著 PenMark">
+    <img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="login-logo-img brand-logo-light">
+    <img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="login-logo-img brand-logo-dark">
+  </div>
 
   <div class="login-tabs">
     <button type="button" class="login-tab active" data-tab="login">登录</button>

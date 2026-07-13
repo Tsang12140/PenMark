@@ -7,6 +7,7 @@ const db = require('./db');
 
 const SECRET = process.env.PENMARK_SECRET || 'penmark-default-secret-change-me-in-production-2026';
 const TOKEN_EXPIRE_DAYS = 90; // 长期免登录
+const DESKTOP_COOKIE_NAME = 'penmark_desktop_session';
 
 /* ---------- 用户表 ---------- */
 db.exec(`
@@ -55,8 +56,31 @@ try {
   console.warn('documents.user_id 迁移跳过：', e.message);
 }
 
+/* ---------- 桌面本地用户（桌面模式专用，不要求登录） ---------- */
+let _desktopUser = null;
+function ensureDesktopUser() {
+  if (_desktopUser) return _desktopUser;
+  let u = db.prepare('SELECT id, username, nickname, is_admin FROM users WHERE username = ?').get('desktop');
+  if (!u) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt); // 随机密码，无人能登录
+    const info = db.prepare(
+      'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)'
+    ).run('desktop', 'desktop', '本地用户', hash, salt, Date.now());
+    u = { id: info.lastInsertRowid, username: 'desktop', nickname: '本地用户', is_admin: 1 };
+    console.log('已创建桌面本地用户');
+  }
+  _desktopUser = { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin };
+  return _desktopUser;
+}
+
 /* ---------- 自动初始化/同步管理员账号（从 .env 读取） ---------- */
 function seedAdmin() {
+  // 桌面模式：创建本地用户，不走 .env 管理员逻辑
+  if (process.env.PENMARK_DESKTOP === '1') {
+    ensureDesktopUser();
+    return;
+  }
   const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
   const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me';
   const ADMIN_NICKNAME = process.env.ADMIN_NICKNAME || '管理员';
@@ -188,6 +212,13 @@ function getUserById(id) {
   return publicUser(u);
 }
 
+function isDesktopRequestAuthorized(req) {
+  if (process.env.PENMARK_DESKTOP !== '1') return false;
+  const expected = process.env.PENMARK_DESKTOP_TOKEN || '';
+  const actual = readCookie(req, DESKTOP_COOKIE_NAME) || '';
+  if (!expected || actual.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+}
 /* ---------- Express 中间件：从 cookie 解析 token ---------- */
 const COOKIE_NAME = 'penmark_token';
 
@@ -195,6 +226,12 @@ function authMiddleware(req, res, next) {
   const token = readCookie(req, COOKIE_NAME);
   const payload = token ? verifyToken(token) : null;
   if (!payload) {
+    // 桌面模式：自动以本地用户身份通过，不要求登录
+    if (isDesktopRequestAuthorized(req)) {
+      const u = ensureDesktopUser();
+      req.user = u;
+      return next();
+    }
     return res.status(401).json({ error: 'unauthorized', needLogin: true });
   }
   const user = getUserById(payload.uid);
@@ -294,6 +331,7 @@ module.exports = {
   authMiddleware, setCookie, clearCookie,
   COOKIE_NAME, TOKEN_EXPIRE_DAYS,
   validateUsername, validateNickname, validatePassword,
+  ensureDesktopUser, isDesktopRequestAuthorized, DESKTOP_COOKIE_NAME,
   // 分享相关
   generateShareToken, signShareSession, verifyShareSession,
   setShareCookie, clearShareCookie, readShareCookie,

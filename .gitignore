@@ -3,3 +3,8 @@ data/
 .env
 *.log
 .workbuddy/
+dist-desktop/
+.electron-cache/
+.electron-gyp/
+.electron-builder-cache/
+.github/
