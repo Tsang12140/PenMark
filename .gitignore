@@ -2,6 +2,7 @@ node_modules/
 data/
 .env
 *.log
+logs/
 .workbuddy/
 dist-desktop/
 .electron-cache/

@@ -1,659 +1,696 @@
-你正在维护「知著 PenMark」项目。请在一次任务内尽可能完整地完成开源发布准备、MIT License、专业 README 和 PenMark 官方展示主页。
+你说的 “P SQL” 应该是 **PostgreSQL**。下面这份提示词可以整段复制给另一个 AI，目标是让它直接实施，不只分析或写计划。
 
-工作区：
+```text
+你现在负责完整改造「知著 PenMark」项目的网页版数据库、登录认证和生产部署能力。请直接读取项目、实施修改、运行测试并修复发现的问题，不要只输出方案、伪代码、建议或待办清单。
+
+项目目录：
 
 D:\personal\cc\PenMark
 
-参考项目的展示主页位于：
+开始后必须先完整阅读：
 
-D:\personal\cc\AI\picmark\index.html
+- AGENTS.md
+- package.json
+- server.js
+- db.js
+- auth.js
+- invites.js
+- env.js
+- public/login.html
+- public/login.js
+- public/app.js
+- public/styles.css
+- desktop/main.cjs
+- desktop/preload.cjs
+- desktop/test-security.cjs
+- deploy/README.md
+- deploy/nginx.conf
+- .env.example
 
-PicMark 主页相关素材位于：
+然后搜索整个项目中所有数据库调用、认证调用、Cookie 处理、登录跳转、用户隔离、桌面模式判断和部署配置。不要只修改最容易看到的几个文件。
 
-D:\personal\cc\AI\picmark\
-├─ index.html
-├─ PRIVACY.md
-├─ assets/
-├─ fonts/
-└─ screenshots/
+# 一、不可违反的产品原则
 
-PenMark GitHub 仓库：
+PenMark 是本地优先的写作工具。必须严格区分以下两种运行模式。
 
-https://github.com/Tsang12140/PenMark
+## 1. 桌面版
 
-本任务要求实际检查、设计、实现、截图、验证，不要只给方案。只要还能安全推进，就继续工作，不要做完一个 LICENSE 或简单 README 就停止。
+桌面版继续使用本地 SQLite：
 
-除非遇到可能删除用户数据、需要付费凭据或必须由用户作出法律身份选择的问题，否则不要频繁询问。尽量根据以下要求一次完成。
+- 正式版数据库：`%APPDATA%\PenMark\penmark.db`
+- 开发版数据库：`%APPDATA%\PenMark-Dev\penmark.db`
+- 桌面版完全离线可用
+- 桌面版不要求注册或账号登录
+- 启动后必须直接进入编辑器
+- PostgreSQL、网络、账号系统、分享系统不得成为桌面版新建、输入、粘贴、切换、保存文档的前置条件
+- 不得为了网页版 PostgreSQL 改造而破坏桌面版 SQLite、导入、导出、备份和现有测试
+- 桌面版认证只用于保护本机回环服务，不能把用户带到网页登录页
+- 如果桌面专用会话初始化失败，应安全重试或显示明确的启动错误，不能跳入一个永远无法完成的登录死循环
 
-# 一、首先理解产品
+## 2. 网页版
 
-PenMark 不是企业协作文档，也不是简单模仿飞书。
+网页版改为正式使用 PostgreSQL：
 
-PenMark 的核心用途包括：
+- 网页生产模式不得继续使用项目目录下的 SQLite 作为主数据库
+- 使用环境变量 `DATABASE_URL` 连接 PostgreSQL
+- 使用连接池
+- 支持数据库迁移
+- 支持可靠的事务
+- 支持多用户数据隔离
+- 支持注册、登录、退出、登录持久化、封禁、分享、邀请码、管理员等现有能力
+- PostgreSQL 不可用时，生产网页版必须启动失败并输出明确错误，不能静默回退到一个新的空 SQLite 数据库
+- 本地网页版开发可以通过明确配置选择 PostgreSQL，但不能通过模糊的自动回退掩盖配置错误
 
-- 读书心得
-- 原文摘抄
-- 梦境记录
-- 随笔
-- 网页资料
-- 图片资料
-- 图文混合笔记
-- 个人长期档案
+# 二、当前已知问题和事实
 
-产品主旨：
+当前项目是 Node.js + Express + 原生 HTML/CSS/JS，没有前端框架。
 
-> 一款本地优先、打开就能写、擅长富文本和图文粘贴、数据始终属于用户、内容永远可以带走的个人长期记录软件。
+当前数据库是 `better-sqlite3`，数据库调用大量分布在：
 
-核心价值：
+- db.js
+- auth.js
+- invites.js
+- server.js
+- desktop/exporter.cjs
+- desktop/importer.cjs
+- 各种 desktop/test-*.cjs
 
-1. 数据属于用户。
-2. 打开就能写。
-3. 核心编辑离线可用。
-4. 网页、飞书、公众号等富文本粘贴尽量保真。
-5. 图片可以方便地拖入、缩放和排列。
-6. 不依赖特定云服务。
-7. 支持 Word、HTML、Markdown 等迁移方式。
-8. 桌面版无需账号和联网即可写作。
-9. AI、分享、同步只能是可选增强层。
-10. 即使 PenMark 停止维护，用户仍能带走和读取内容。
+当前登录流程大致是：
 
-建议品牌表达：
+1. `POST /api/auth/login`
+2. 服务端校验用户名和密码
+3. 写入 `penmark_token`
+4. 前端跳转 `/`
+5. 首页调用 `GET /api/auth/me`
+6. `/api/auth/me` 失败时又跳转 `/login.html`
 
-> 打开就写，内容永远带得走。
+当前还存在桌面专用 Cookie：
 
-可以润色，但不要变成企业软件、AI 笔记或知识管理营销套话。
+`penmark_desktop_session`
 
-# 二、保护现有工作区
+已观察到的严重故障是：
 
-开始前必须：
+- 登录页 Logo 被渲染成两张超大图片
+- 输入正确账号密码后看似跳转成功，但马上又返回登录页
+- 桌面模式一旦缺少 `penmark_desktop_session`，会进入登录页
+- 普通登录写入的是 `penmark_token`
+- 桌面模式的 `/api/auth/me` 只接受桌面 Cookie
+- 因此可能形成“登录成功后马上又回登录页”的死循环
+- 桌面版和网页版使用不同 SQLite 文件，账号和文档并不天然共享
+- 当前管理员初始化逻辑可能在每次服务启动时根据 `.env` 重新覆盖管理员密码哈希，这不是安全、稳定的生产行为，必须检查并修复
 
-1. 阅读 AGENTS.md。
-2. 检查 git status。
-3. 阅读 package.json、README.md、desktop/、server.js 和当前品牌资源。
-4. 检查现有未提交修改。
-5. 保留所有用户已有修改。
-6. 不执行 git reset --hard、git checkout -- 或清理工作区。
-7. 不删除数据库、文档、安装包和用户数据。
-8. 不重写当前编辑器。
-9. 本任务主要处理开源资料和展示主页，不要擅自扩展编辑器功能。
+不要预设只有一个原因。请通过实际请求、响应状态、Set-Cookie、Cookie 作用域、数据库查询和前端跳转行为验证完整链路。
 
-如果发现当前代码、README 和实际功能有差异，以实际代码和测试结果为准，不要在文档或主页中夸大未实现功能。
+# 三、PostgreSQL 改造要求
 
-# 三、添加 MIT License
+## 1. 技术选择
 
-在仓库根目录创建标准 MIT License：
+优先使用官方、轻量的 PostgreSQL Node.js 驱动：
 
-LICENSE
+`pg`
 
-版权信息使用：
+除非项目已有充分理由，不要引入庞大的 ORM。
 
-Copyright (c) 2026 Tsang12140
+可以建立清晰的数据库层，例如：
 
-使用标准 MIT License 全文，不要改写条款，不要创建自定义限制，不要增加“禁止商用”“必须署名展示”等与 MIT 冲突的限制。
+- `database/index.js`
+- `database/postgres.js`
+- `database/sqlite.js`
+- `database/migrations/`
+- `repositories/`
 
-同时完成：
+具体目录可以根据项目实际结构调整，但必须做到：
 
-- README 中增加 MIT License 说明和链接。
-- 展示主页页脚增加 MIT License 链接。
-- package.json 增加：
+- 网页 PostgreSQL 与桌面 SQLite 的选择清晰、显式
+- 业务代码不能继续假设所有数据库查询都是 `better-sqlite3` 的同步 API
+- PostgreSQL 查询使用参数化占位符 `$1`、`$2`
+- 不得通过简单字符串替换把 `?` 改成 `$1`
+- 所有异步查询必须被正确 `await`
+- Express 异步路由必须有统一错误处理，不能产生未处理的 Promise rejection
+- 事务必须使用同一个 PostgreSQL client，并在异常时 rollback
+- client 必须在 finally 中释放
+- 不得在每次请求时新建连接池
 
-```json
-"license": "MIT"
-如果 package.json 缺少合理的 author，可以设置为：
-"author": "Tsang12140"
-MIT 仅适用于 PenMark 自己的源代码和有权授权的品牌素材。不要错误声称所有第三方依赖、Electron、字体和 vendor 文件都由 PenMark 重新以 MIT 授权。
-检查第三方字体、图标、依赖和 vendor 资源：
-保留第三方原许可证。
-不删除 Electron、Chromium、npm 依赖附带的许可证。
-如果仓库中存在需要额外说明的第三方素材，创建 THIRD_PARTY_NOTICES.md。
-不要凭空给未知来源素材标注 MIT。
-如果某项素材授权无法确认，优先不用它，不要编造授权信息。
-四、重写专业 README
-当前 README 已有桌面构建、数据目录、导出和迁移说明。请基于实际代码进行系统整理，写成适合 GitHub 开源项目首页的高质量 README。
-README 以中文为主，结构清晰，避免过度冗长，但必须包含重要信息。
-建议结构：
-顶部
-PenMark 横版品牌 Logo。
-产品名称：知著 PenMark。
-一句话定位。
-简短介绍。
-合理的徽章：License MIT
-Windows
-Node.js
-Electron
-Local First
-Latest Release（只有链接真实有效时使用）
+如果保留双数据库适配层，接口应保持明确，例如：
 
-下载按钮。
-官方展示主页按钮。
-GitHub Releases 按钮。
-不要堆十几个无意义徽章。
-产品截图
-至少展示一张真实 PenMark 桌面版截图。
-如果能够真实启动应用：
-使用打包版或桌面开发版。
-使用隔离测试资料库。
-创建一份具有代表性的测试文档。
-截图中展示：文件夹和文档列表
-文档标题
-正文标题与段落
-图片
-普通链接或链接卡片
-大纲
-编辑工具栏
+- query
+- one
+- many
+- execute
+- transaction
 
-不要截图用户真实文档。
-不要泄露本机路径、账号、Token 或其他隐私。
-截图保存到：
-docs/screenshots/
-对图片合理压缩，避免 Git 仓库中出现数十 MB 的截图。
-不要用假的 UI mockup 冒充实际软件截图。
-如果 GUI 环境确实无法截图，先使用已有真实素材；必须在最终报告中说明，不得伪造。
-为什么做 PenMark
-用简短自然的文字说明：
-印象笔记、有道云等产品可能存在广告、设备和产品策略限制。
-Obsidian 本地可靠，但 Markdown 和同步有学习成本。
-Notion、飞书更偏云端结构化或协作。
-PenMark 希望提供一张本地优先、富文本友好的个人纸张。
-不要攻击或贬低其他产品，不要写成情绪化竞品控诉。
-核心特点
-准确描述已经实现的能力：
-富文本编辑
-本地桌面版
-核心离线可用
-文档与文件夹
-大纲导航
-图片拖入和缩放
-链接和链接卡片
-富文本粘贴
-Word、HTML、Markdown、图片导出
-资料库批量导出
-原始 HTML 无损副本
-旧版 SQLite 数据安全导入
-网页模式与桌面模式
-本地数据备份
-中文界面
-快捷键
-不得把“未来计划”写成“已经实现”。
-例如：
-Markdown 文件暂时还不是唯一正式数据源。
-文件监听尚未实现时不能声称“像 Obsidian 一样自动联动”。
-没有云同步时不能声称已经支持多设备同步。
-没有数字签名时要说明 Windows 可能提示未知发布者。
-未实际验证的兼容系统不能擅自写支持。
-快速下载
-说明普通用户应该去 GitHub Releases 下载 Windows 安装包。
-GitHub 仓库：
-https://github.com/Tsang12140/PenMark
-Releases：
-https://github.com/Tsang12140/PenMark/releases
-直接下载链接必须与真实存在的 Release 和资产名称一致。
-如果当前 GitHub Release 尚未发布，不要编造一个必然 404 的链接。此时按钮指向 Releases 页面，并在文案中写“前往 Releases 下载”。
-不要把 EXE 提交进 Git 历史。EXE 应放 GitHub Releases。
-两种运行方式
-清晰解释：
-Windows 桌面版
-适合普通个人用户：
-无需 Node.js。
-无需浏览器。
-核心编辑无需登录。
-数据保存在 %APPDATA%\PenMark。
-从 Releases 下载 EXE。
-Node 网页版
-适合开发者、自托管和多用户部署：
-npm install
-npm start
-确认实际端口，目前预计是 3001，不要继续写错成 3000。
-开发与构建
-根据实际 package.json 写：
-npm install
-npm test
-npm run desktop:dev
-npm run desktop:dist
-解释：
-Electron 版本。
-better-sqlite3 的 ABI 切换脚本。
-构建产物位置。
-Windows 安装包构建方法。
-为什么不建议提交 dist-desktop。
-数据与隐私
-写清楚：
-桌面数据目录。
-开发数据目录。
-网页版数据目录。
-数据库备份方式。
-旧版数据库导入方式。
-整个资料库导出方式。
-图片和原始 HTML 的保存方式。
-外部链接卡片可能访问目标网页。
-AI 功能只有配置相应服务后才会发起请求。
-核心本地写作不依赖 AI。
-不要笼统承诺“任何情况下绝不联网”，因为链接卡片、更新检查、AI 等功能可能联网。
-Markdown 资料库阶段
-准确说明：
-当前：
-SQLite + HTML 是正式数据源。
-Markdown 是批量导出和迁移格式。
-每篇文档另有原始 HTML 无损副本。
-支持旧 SQLite 数据导入。
-未来目标：
-.md 文件成为正式数据。
-SQLite 退化为缓存和索引。
-文件夹就是分类。
-图片成为普通附件。
-支持外部文件监听。
-可使用 OneDrive、Syncthing、Git 等同步。
-项目状态
-明确写：
-当前处于早期版本或个人项目阶段。
-建议先备份再升级。
-欢迎提交 Issue。
-不要承诺企业级稳定性。
-Roadmap
-按真实优先级：
-Markdown 资料库导入
-文件监听
-文件即真相
-更完整的数据迁移
-搜索与回顾
-可选的轻量同步
-性能和稳定性
-代码签名
-不要把协作、CRDT 和复杂云服务放到最高优先级。
-贡献
-增加简短贡献说明：
-Fork
-新建分支
-测试
-PR
-不要提交真实数据库、Token、.env 和用户笔记
-修改写作热路径时遵守 AGENTS.md
-License
-MIT，链接到 LICENSE。
-五、参考 PicMark 制作 PenMark 展示主页
-参考：
-D:\personal\cc\AI\picmark\index.html
-可以学习 PicMark 的这些方面：
-单页静态展示主页。
-顶部吸附导航。
-Hero 大标题和下载按钮。
-真实产品截图。
-分段介绍产品能力。
-本地、隐私和适配说明。
-下载区。
-GitHub Star CTA。
-页脚包含 GitHub、Releases、隐私和 License。
-轻量滚动动画。
-响应式布局。
-无框架、无追踪器、可直接部署到 GitHub Pages。
-不要直接复制 PicMark 的品牌风格。
-PicMark 使用的是绿色、深色图片工作台和“见微”视觉；PenMark 应使用自己的品牌资产、纸张感、墨色和蓝色强调色。
-PenMark 品牌资源位于：
-public/PenMark_Brand_Assets/
-请检查并优先复用：
-横版 Logo
-堆叠 Logo
-App Icon
-favicon
-品牌预览
-深浅色版本
-不要重新生成低质量 Logo，不要把 PicMark Logo 用到 PenMark。
-六、主页目录结构
-建议将 GitHub Pages 静态主页放在：
-docs/
-├─ index.html
-├─ privacy.html 或 privacy.md
-├─ assets/
-│  ├─ brand/
-│  └─ 主页需要的少量资源
-└─ screenshots/
-   ├─ penmark-editor.png
-   ├─ penmark-images.png
-   └─ 其他真实截图
-如果项目已有更合理的 Pages 目录或配置，可以沿用，但最终必须清楚说明。
-主页不应依赖 Node 服务，应是完全静态的 HTML、CSS 和少量 JavaScript，可直接通过 GitHub Pages 托管。
-不要引入 React、Vue、Next.js 或大型构建工具。
-优先：
-一个 docs/index.html
-本地图片和 SVG
-少量原生 JavaScript
-无第三方 CDN
-无统计追踪
-无 Cookie Banner
-无网络字体依赖
-如果要使用字体：
-优先系统字体。
-只有授权明确时才提交本地字体。
-不要从 PicMark 复制字体，除非授权文件明确允许重新分发且保留相应说明。
-七、主页内容设计
-主页至少包括以下区域。
-7.1 导航
-左侧：
-PenMark Logo
-知著 PenMark
-中间或右侧：
-特点
-界面
-数据与隐私
-下载
-GitHub
-CTA：
-下载 Windows 版
-移动端合理折叠，不要让导航拥挤。
-7.2 Hero
-建议方向：
-小标签：
-v1.0.0 · 本地优先 · MIT 开源
-实际版本必须从 package.json 获取，不要写死错误版本。
-主标题可以参考：
-打开就写，
-内容永远带得走。
-说明：
-记录读书心得、摘抄、梦境与随笔。
-富文本和图片留在本地，不被账号、广告和设备数量绑住。
-文案可以润色，但必须克制、自然，不要像企业 SaaS 广告。
-按钮：
-下载 Windows 版
-查看源代码
-如果直接下载资产不存在，第一按钮指向 Releases 页面，不要制造死链。
-Hero 下方放一张最有代表性的真实 PenMark 桌面版截图。
-7.3 为什么是 PenMark
-用简短段落解释：
-它不是另一套在线协作文档。
-它是一张属于个人的长期纸张。
-富文本友好。
-本地优先。
-内容可迁移。
-7.4 核心场景
-展示：
-读书摘抄与心得
-梦境与随笔
-网页资料收藏
-图片与图文档案
-不要使用假统计数字，例如“10 万用户”“提升 300% 效率”。
-7.5 功能亮点
-建议包括：
-打开就写
-富文本粘贴
-图片拖入与缩放
-文件夹与大纲
-链接卡片
-本地数据
-多格式导出
-SQLite 旧数据导入
-Markdown + 原始 HTML 迁移
-快捷键
-用简洁的粗线条 SVG 图标，保持与 PenMark Logo 调性一致。不要引入庞大图标库。
-7.6 数据属于用户
-这是 PenMark 最重要的展示段落。
-建议大标题：
-软件可以更换，内容不该被锁住。
-准确说明：
-桌面数据保存在本机。
-可以备份数据库。
-可以导出整个资料库。
-Markdown 用于通用阅读和迁移。
-原始 HTML 用于保留复杂图文。
-未来目标是文件即真相。
-不要声称当前已经完全达到 Obsidian 文件联动。
-7.7 桌面版与 Node 版
-简洁对比：
-桌面版	Node 版
-适合个人本地使用	适合开发、自托管
-无需安装 Node.js	需要 Node.js
-核心编辑无需登录	可保留用户和分享
-数据位于 AppData	数据位于服务器目录
+不要强行伪装成 `better-sqlite3.prepare().get().all().run()` 的同步行为。
 
-不要把表格做得像企业价格页。
-7.8 隐私与网络
-清楚说明：
-核心本地编辑不需要联网。
-普通笔记不会因为写作自动上传。
-外部链接卡片需要抓取网页信息。
-AI 功能需要用户自己配置并主动使用。
-GitHub 下载和版本检查会访问网络。
-不内置广告和跟踪器。
-创建适合 PenMark 的隐私说明：
-PRIVACY.md
-以及主页可访问的隐私页面或链接。
-隐私说明必须与实际代码一致，不能照抄 PicMark 的内容。
-7.9 下载区
-显示：
-当前版本
-Windows 64 位
-安装包下载
-GitHub Releases
-从源码运行
-说明：
-安装包尚未数字签名时，Windows 可能提示未知发布者。
-文件校验值可以从 Release 中的 SHA256SUMS 获取。
-不要在网页中写死容易过期的 SHA-256，除非实现了可维护方式。
-7.10 GitHub Star 与页脚
-增加自然的 Star CTA，例如：
-如果 PenMark 帮你留下了值得保存的东西，欢迎在 GitHub 留一颗星。
-页脚：
-PenMark 品牌
-GitHub
-Releases
-README
-隐私说明
-MIT License
-作者 Tsang12140
-八、视觉要求
-PenMark 主页应与产品本身一致：
-温暖纸张背景。
-墨色正文。
-蓝色作为主要强调色。
-可以有极少量绿色或暖金辅助，但不要复制 PicMark 的绿色主视觉。
-大留白。
-清晰的中文排版。
-圆角克制，不要满屏卡片。
-阴影轻。
-真实产品截图是视觉中心。
-图标使用简洁粗线条。
-不做廉价渐变堆叠。
-不做过度玻璃拟态。
-不做企业 SaaS 仪表盘风。
-不做 AI 科技紫。
-不要自动播放视频。
-不要用鼠标跟随特效。
-动画必须克制。
-支持：
-@media (prefers-reduced-motion: reduce)
-用户关闭动画时，页面仍完整显示。
-九、SEO 与社交分享
-主页 <head> 至少包含：
-中文 title
-description
-canonical
-favicon
-Open Graph title
-Open Graph description
-Open Graph image
-Open Graph URL
-Twitter card
-theme-color
-GitHub Pages 地址需要根据仓库合理设置，例如：
-https://tsang12140.github.io/PenMark/
-注意 GitHub Pages 路径和仓库大小写。
-Open Graph 图片优先复用或基于 PenMark 品牌资源制作静态图：
-docs/assets/penmark-social-preview.png
-不要放失效绝对路径。
+## 2. 数据库配置
+
+至少支持以下环境变量：
+
+- `DATABASE_URL`
+- `PGSSL`
+- `PGPOOL_MAX`
+- `PG_IDLE_TIMEOUT_MS`
+- `PG_CONNECTION_TIMEOUT_MS`
+- `PENMARK_SECRET`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `ADMIN_NICKNAME`
+- `NODE_ENV`
+- `PORT`
+- `PENMARK_HOST`
+- `TRUST_PROXY`
+
+生产环境要求：
+
+- 缺少 `DATABASE_URL` 时明确启动失败
+- 不打印数据库密码或完整连接字符串
+- 根据部署环境正确处理 PostgreSQL SSL
+- 不要无条件使用 `rejectUnauthorized: false`
+- 监听 pool error
+- 启动时先验证连接
+- 数据库迁移成功后才开始监听 HTTP 端口
+- 进程退出时关闭连接池
+- 健康检查至少区分“进程活着”和“数据库可用”
+
 可以增加：
-robots.txt
-sitemap.xml
-但内容必须正确，不要为了凑文件生成错误链接。
-十、GitHub Pages
-为展示主页准备 GitHub Pages 部署。
-优先创建：
-.github/workflows/pages.yml
+
+- `GET /health/live`
+- `GET /health/ready`
+
+健康接口不得泄露数据库连接信息、账号、密钥或堆栈。
+
+## 3. PostgreSQL Schema 和迁移
+
+请根据当前 SQLite 的真实表结构，为 PostgreSQL 建立完整、可重复执行、有版本号的迁移。
+
+至少覆盖：
+
+- users
+- sessions
+- documents
+- folders
+- invites
+- shares
+- reports
+- sensitive_words
+- schema_migrations
+
+必须保留当前业务真正用到的所有列，不要只根据早期建表语句猜测；需要同时检查增量迁移和所有 SQL 查询。
+
 要求：
-仅部署 docs/。
-使用 GitHub 官方 Pages Actions。
-在 main 分支相关文件变化时部署。
-支持手动触发。
-最小权限。
-不在 workflow 中写 Token。
-不上传整个仓库作为网页。
-不构建 Electron。
-不运行不必要的 npm install。
-如果仓库当前已经有 Pages 部署方式，检查后兼容，不要重复创建冲突 workflow。
-不能直接修改 GitHub 仓库 Pages 设置时，也要把本地 workflow 和说明准备完整，并在最终报告中告诉用户需要在 GitHub Settings → Pages 中做什么。
-未经明确授权，不要擅自 force push、删除分支或覆盖线上主页。
-十一、GitHub Releases 与下载链接
-源码继续放同一个仓库：
-https://github.com/Tsang12140/PenMark
-Node 版和 Electron 版放同一个开源项目是合理的，因为它们共用编辑器和核心代码。
-发布结构：
-Git 仓库：源码、README、LICENSE、docs、构建脚本。
-GitHub Releases：Windows EXE、可选便携 ZIP、SHA256SUMS。
-不把 EXE 放入 Git 历史。
-不提交 dist-desktop/。
-不提交 node_modules/。
-不提交数据库、日志、.env 和用户文档。
-检查 electron-builder 的 artifactName。
-如果目前生成：
-PenMark Setup 1.0.0.exe
-建议调整成便于 URL 和自动化的稳定名称：
-PenMark-Setup-1.0.0-x64.exe
-但修改后必须重新构建和测试，确保 README、主页和 Release 链接一致。
-如果当前没有真实 Release：
-主页按钮指向 Releases 列表。
-README 写“前往 Releases 下载”。
-不写不存在的直接下载链接。
-最终报告列出发布 Release 后需要替换或确认的链接。
-可以准备 GitHub Release workflow，但不要在没有授权、没有 Tag 或没有 GitHub 凭据时伪造“已发布”。
-十二、README 与主页的一致性
-必须统一：
-产品名称
-当前版本
-GitHub 地址
-GitHub Pages 地址
-安装包名称
-数据目录
-默认端口
-Electron 版本
-Node 版本要求
-测试命令
-MIT License
-旧数据导入能力
-Markdown 当前阶段
-未数字签名说明
-已实现与未来功能
-不要出现：
-README 写 3000，代码实际 3001。
-README 写 Electron 43，实际 package.json 是 Electron 42.6。
-主页写完全离线，但链接卡片和 AI 实际需要联网。
-主页写 Markdown 是正式数据源，但实际仍是 SQLite。
-下载按钮指向不存在的文件。
-主页版本与 package.json 不一致。
-PicMark 品牌名称残留在 PenMark 页面中。
-十三、测试要求
-完成后必须运行：
-npm test
-node --check server.js
-node --check public/app.js
-node --check public/editor.js
-node --check desktop/main.cjs
-node --check desktop/preload.cjs
-node --check desktop/exporter.cjs
-node --check desktop/importer.cjs
-node --check desktop/electron-task.cjs
-git diff --check
-主页测试：
-本地打开或启动静态服务器查看 docs/index.html。
-桌面宽屏布局。
-1366×768。
-平板宽度。
-手机宽度。
-导航跳转。
-下载按钮。
-GitHub 链接。
-Releases 链接。
-Privacy 链接。
-License 链接。
-图片全部加载。
-favicon 正常。
-控制台无异常。
-无横向溢出。
-动画关闭时可用。
-键盘 Tab 可以操作。
-图片有 alt。
-外部链接使用 rel="noopener"。
-页面不包含追踪脚本。
-README 测试：
-所有相对图片链接存在。
-所有仓库文件链接存在。
-Markdown 渲染结构正确。
-没有本机绝对路径。
-没有 Token、用户名密码和隐私信息。
-没有虚假的 Release 下载链接。
-License 测试：
-LICENSE 是完整标准 MIT。
-package.json 为 MIT。
-README 和主页链接到 LICENSE。
-第三方资源没有被错误重新授权。
-如果可用，运行链接检查；如果没有相关工具，可以写一个轻量 Node 脚本检查本地相对链接，不要引入大型依赖。
-十四、不要做的事
-不只创建 LICENSE 后结束。
-不只改 README 前三段后结束。
-不只复制 PicMark 首页并替换名称。
-不把 PicMark 的 Logo、绿色主色和产品截图用于 PenMark。
-不伪造 PenMark 产品截图。
-不编造用户数量、评分、下载量和媒体评价。
-不编造不存在的 Release。
-不把 EXE 提交进 Git。
-不上传用户数据库。
-不泄露 .env。
-不为了主页引入 React、Vue、Next.js。
-不依赖外部 CDN。
-不添加统计追踪。
-不添加自动播放。
-不修改核心编辑器行为。
-不删除现有用户修改。
-不自动提交或推送，除非用户明确授权。
-不把未测试内容写成已验证。
-十五、完成标准
-本次至少完成：
-根目录标准 MIT LICENSE。
-package.json 标记 MIT。
-README 完整重写。
-README 使用 PenMark 品牌 Logo。
-README 至少一张真实产品截图。
-docs/index.html 展示主页。
-PenMark 自有品牌视觉。
-响应式桌面和手机布局。
-真实有效的 GitHub、Releases、Privacy、License 链接。
-PRIVACY.md。
-GitHub Pages workflow。
-SEO/Open Graph。
-下载区。
-数据属于用户的核心表达。
-Node 版与桌面版说明。
-未签名提示。
-Markdown 当前阶段说明。
-所有自动测试通过。
-所有语法检查通过。
-git diff --check 通过。
-没有覆盖用户已有修改。
-十六、最终报告
-最终报告必须列出：
-新增和修改的文件。
-LICENSE 内容与版权人。
-README 的主要结构。
-展示主页的主要结构。
-使用了哪些 PenMark 品牌资源。
-截图来源和保存位置。
-GitHub Pages workflow。
-预期 Pages 地址。
-下载按钮当前指向哪里。
-是否存在真实 Release。
-是否还有需要用户在 GitHub 网页操作的设置。
-运行了哪些测试。
-测试结果。
-无法验证的内容。
-当前仍存在的发布风险。
-是否修改了核心应用代码；如果修改，说明原因。
-明确确认没有提交 EXE、数据库、.env 和用户文档。
-不要在只完成计划或部分文件后结束。现在开始读取项目状态、PicMark 参考主页、PenMark 品牌资源和当前 README，然后持续实现直到全部可安全完成的事项结束。
+
+- 主键使用适合 PostgreSQL 的自增方式
+- 正确建立唯一约束、普通索引和外键
+- 明确用户名大小写策略，并保持注册和登录行为一致
+- documents 必须可靠关联 user
+- folders 必须关联 user
+- shares 必须关联 owner 和 document
+- reports 必须关联 document 和 reporter
+- 邀请码必须有唯一约束
+- 分享 token 必须有唯一约束
+- 删除、软删除和外键级联策略必须谨慎，不能意外删除用户文档
+- 所有迁移可重复检测，不能每次启动重复执行破坏性 SQL
+- 不能继续依赖 SQLite 的 `PRAGMA table_info`
+- 不能继续查询 `sqlite_master`
+- 不得在生产启动时随意执行不可追踪的 `ALTER TABLE`
+- 时间字段可以继续保持 epoch 毫秒以减少前端破坏，但要处理 PostgreSQL BIGINT 默认返回字符串的问题；确保 API 返回给前端的时间仍为安全的 JavaScript Number
+- 如果改为 `TIMESTAMPTZ`，必须统一转换并确保所有相对时间、过期时间、排序和前端行为不回归
+
+迁移执行应有独立命令，例如：
+
+`npm run db:migrate`
+
+另外提供迁移状态或检查命令，例如：
+
+`npm run db:status`
+
+# 四、正式修复认证系统
+
+## 1. 网页版登录
+
+完整验证：
+
+- 用户名存在且未封禁
+- 密码哈希验证正确
+- 登录成功后创建持久会话
+- 返回用户公开字段
+- 设置正确 Cookie
+- 刷新页面仍保持登录
+- `/api/auth/me` 能根据 Cookie 找到会话和用户
+- 退出登录后会话立即失效
+- 过期会话不能继续使用
+- 被封禁用户不能继续使用已有会话
+- 不允许通过修改 user id 获取其他用户的数据
+
+建议把网页版改成服务端持久会话，而不是仅依靠不可撤销的长效 HMAC token：
+
+- 登录成功生成至少 256 bit 的密码学随机 token
+- 浏览器 Cookie 保存原始 token
+- PostgreSQL 的 sessions 表只保存 token 的 SHA-256 哈希，不保存原始 token
+- sessions 至少包含：
+  - id
+  - user_id
+  - token_hash
+  - created_at
+  - expires_at
+  - last_seen_at
+  - revoked_at
+  - 可选的 user_agent/ip 摘要
+- 查询会话时对 token 做哈希后查询
+- 退出时撤销或删除当前会话
+- 定期清理过期会话
+- 不要在日志中打印 token
+- 如果保留旧 HMAC token兼容期，必须明确、有限且有测试；不要永久保留两套互相冲突的认证
+
+Cookie 至少满足：
+
+- `HttpOnly`
+- `Path=/`
+- `SameSite=Lax`
+- 生产 HTTPS 环境设置 `Secure`
+- 本地 HTTP 开发不能因为错误设置 `Secure` 而导致 Cookie 完全不落盘
+- 正确处理 Nginx 反向代理和 `trust proxy`
+- 不要根据未经信任的 Host 或 X-Forwarded-Proto 随便判断安全属性
+- 登录、注册、退出请求保持同源 credentials
+- 检查 Cookie 的 domain、path、expiration 是否正确
+- Cookie 名称不要与桌面 Cookie 混淆
+
+不要把密码、密码哈希、盐、session token 返回给前端。
+
+## 2. 密码和管理员初始化
+
+可以继续使用 Node.js `crypto.scrypt`，但必须：
+
+- 使用随机盐
+- 使用常量时间比较
+- 检查哈希长度和格式
+- 密码策略前后端一致
+- 不记录明文密码
+- 错误提示不要泄漏过多账户信息；可以根据现有产品体验做合理取舍
+
+修复管理员初始化：
+
+- 第一次数据库为空时，可以通过明确的初始化命令创建管理员
+- 不允许每次服务启动都无条件覆盖管理员密码
+- `.env` 中密码变化不应静默重置线上管理员密码
+- 提供显式管理员创建/重置命令，例如：
+  - `npm run admin:create`
+  - `npm run admin:reset-password`
+- 命令必须避免在终端输出明文密码
+- 并发执行时不能创建多个冲突管理员
+- 如果为了兼容现有部署保留自动 seed，只能在不存在管理员时执行，并明确记录行为
+
+## 3. 注册和邀请码
+
+注册流程必须放在数据库事务中：
+
+1. 校验用户名、昵称和密码
+2. 锁定或原子消费邀请码
+3. 检查用户名唯一
+4. 创建用户
+5. 标记邀请码已使用
+6. 创建登录会话
+7. 提交事务
+
+任何步骤失败都必须回滚。
+
+重点测试两个请求同时使用同一个邀请码，必须最多只有一个成功。
+
+PostgreSQL 中应使用唯一约束、条件更新、行锁或其他可靠的事务方案，不能仅依赖应用层“先查询再更新”。
+
+## 4. 桌面认证
+
+桌面版不能使用网页版账号登录作为正常入口。
+
+检查并修复：
+
+- 主进程设置 `PENMARK_DESKTOP=1`
+- 本地服务只绑定 `127.0.0.1`
+- 随机生成桌面会话 token
+- 在创建窗口和加载首页前，确保 Cookie 已真正写入 BrowserWindow 使用的同一个 Electron session
+- 明确设置 Cookie URL、Path、HttpOnly、SameSite
+- 必要时读取 Cookie 验证写入成功
+- 写入失败应重试有限次数并记录安全日志
+- 重试仍失败时显示明确启动错误
+- 不得自动跳转登录页
+- 桌面模式访问 `/login.html` 时应安全重定向回首页或显示“桌面版无需登录”
+- 如果 `/api/auth/me` 在桌面模式认证失败，前端不能进入普通账号登录死循环
+- 保留 Host 检查、防 DNS rebinding 和现有桌面安全边界
+- 不得为了方便直接取消桌面本地服务认证
+- 不得允许任意本机网页访问 PenMark 本地 API
+
+补充自动化测试覆盖“桌面 Cookie 缺失、错误、正确”三种状态和恢复逻辑。
+
+# 五、SQLite 到 PostgreSQL 数据迁移工具
+
+增加一个安全的一次性迁移工具，把现有网页版 SQLite 数据迁移到 PostgreSQL。
+
+建议命令：
+
+`npm run db:migrate-sqlite -- --source=./data/penmark.db`
+
+必须满足：
+
+- 默认 dry-run 或提供明确 `--dry-run`
+- 检查源文件存在
+- 以只读方式打开源 SQLite
+- 检查所有必需表和列
+- 不修改、不删除、不重命名源 SQLite
+- PostgreSQL 导入在事务中完成
+- 迁移 users、documents、folders、invites、shares、reports、sensitive_words
+- 正确保留表之间的 id 关系
+- 正确处理旧表缺列、NULL、软删除、旧 phone 字段、username/nickname 回填
+- 迁移密码哈希和盐时保持现有用户仍可登录
+- 不迁移无效或已过期 session，旧会话可以要求重新登录
+- 遇到用户名、邀请码、分享 token 冲突时停止并给出明确报告，不能静默覆盖
+- 导入完成后校正 PostgreSQL sequence
+- 输出各表迁移前后行数
+- 对关键表做校验
+- 不输出正文、密码哈希、盐、token 等敏感数据
+- 失败时整个 PostgreSQL 导入回滚
+- 支持安全重跑，或者明确拒绝向非空目标库重复导入
+- 给出迁移前备份命令和迁移后验证命令
+
+# 六、登录页视觉问题
+
+修复当前登录页 Logo：
+
+当前 login.html 同时插入了浅色和深色两张横版 SVG，但 styles.css 缺少对应尺寸和主题显示规则，导致两张 1200×350 Logo 同时以大尺寸参与布局。
+
+必须：
+
+- 给 `.login-logo-img` 设置合理、响应式的宽度和 `height:auto`
+- 每次只显示当前主题对应的 Logo
+- 浅色/飞书主题显示 light Logo
+- 暗色主题显示 dark Logo
+- 登录卡片不能被 Logo 撑开或产生横向滚动
+- 移动端小屏正常显示
+- 分享页的 `.share-brand-logo` 也做同样检查和修复
+- 不要重新生成或替换现有品牌资产
+- 不要破坏登录字段、密码显示按钮、登录/注册切换和键盘操作
+
+# 七、全面排查项目问题
+
+完成 PostgreSQL 和认证改造后，继续检查整个项目，不要立即结束。
+
+重点检查：
+
+## 数据权限
+
+- 每个文档查询、更新、删除都必须限制 `user_id`
+- 每个文件夹操作都必须限制 `user_id`
+- 分享管理必须验证 owner
+- 管理员接口必须验证 admin
+- 普通用户不能修改 is_admin、is_banned、can_share
+- 动态 SQL 字段必须使用严格白名单
+- 文档恢复和永久删除不能越权
+- 公开分享接口只能访问被分享的文档
+- edit 分享不能修改其他文档
+- 举报接口不能伪造其他用户
+
+## SQL 安全
+
+- 所有用户输入使用参数化查询
+- 不允许拼接 username、title、search、token、id
+- 排序字段和更新字段必须白名单
+- 检查 PostgreSQL 与 SQLite 的语法差异
+- 检查 `LIKE`、大小写、NULL、布尔值、RETURNING、受影响行数和 upsert 行为
+- 检查 ID 字符串/数字转换
+- 检查分页或可能返回无限数据的管理员接口
+
+## Web 安全
+
+- 登录接口增加合理的速率限制
+- 不要引入内存无限增长的限流器
+- 检查 CSRF 风险；至少对修改请求验证同源 Origin/Referer，或实现可靠的 CSRF 方案
+- 保持 SameSite Cookie
+- 检查 XSS，尤其是文档 HTML、分享页、昵称、标题和错误信息
+- 保持现有富文本功能，不要粗暴转义编辑器正文导致格式丢失
+- 检查 SSRF 图片代理和链接抓取
+- 检查重定向、Host header、代理头
+- 生产环境不要返回堆栈和数据库错误详情
+- 不要在日志中记录密码、Cookie、session token、数据库 URL
+- 检查 100MB JSON 限制的内存风险并给出合理处理，不要因此破坏富文本图片粘贴
+- 检查账号封禁后已有会话是否立即失效
+- 检查退出登录是否只清当前会话还是全部会话，并明确行为
+
+## 稳定性
+
+- PostgreSQL 暂时断开时返回可理解的 503，而不是进程无提示崩溃
+- 避免重复提交注册、创建分享、保存文档造成重复数据
+- 重要写操作使用事务
+- 正确处理连接池耗尽
+- 所有路由返回一致的 JSON 错误
+- 前端对 401、403、409、429、500、503 做合理处理
+- 登录成功后必须先确认会话有效再进入应用，或者进入后保证 `/api/auth/me` 成功
+- 避免登录页和首页互相无限跳转
+- 防止重复初始化欢迎文档
+- 多个并发请求不能为同一新用户创建多篇欢迎文档
+
+## 性能和本地优先
+
+严格遵守 AGENTS.md：
+
+- 不让 PostgreSQL、分享、统计、AI、索引阻塞桌面写作
+- 普通输入不能触发网络数据库请求
+- 新建、切换、粘贴先完成界面响应，再保存
+- 不把当前“可编辑 HTML + 必要元数据”改成复杂 block schema
+- 不引入 CRDT
+- 不在这个任务中进行无关的大型前端重构
+- 不破坏微信公众号/微信富文本粘贴样式
+- 桌面版继续离线可用
+
+# 八、自动化测试要求
+
+不能只在代码层面声称已经修好，必须运行实际测试。
+
+优先使用项目现有测试体系；可以补充 Node 内置 test runner、独立集成测试或其他轻量方案。避免为了测试引入庞大框架。
+
+为 PostgreSQL 提供本地测试环境，建议增加：
+
+- `docker-compose.postgres.yml` 或等价开发配置
+- 独立测试数据库
+- 测试环境迁移命令
+- 测试结束清理数据
+
+测试绝不能连接或清空生产数据库。任何 destructive 测试开始前必须检查数据库名称或显式测试标志。
+
+至少测试：
+
+## 数据库
+
+- 空数据库迁移成功
+- 重复运行迁移安全
+- 所有表、索引、唯一约束和外键存在
+- PostgreSQL 连接失败时启动失败且错误清楚
+- 时间字段 API 类型正确
+- SQLite 到 PostgreSQL dry-run
+- SQLite 到 PostgreSQL真实测试库迁移
+- 迁移前后各表行数和关系一致
+
+## 登录闭环
+
+- 正确账号密码登录返回 200
+- 响应包含 Set-Cookie
+- Cookie 属性正确
+- 使用 Cookie 调用 `/api/auth/me` 返回 200
+- 模拟浏览器跳转 `/` 后不会回登录页
+- 刷新页面保持登录
+- 错误密码失败
+- 不存在用户失败
+- 封禁用户失败
+- 封禁已有登录用户后，会话不能继续使用
+- 过期会话失败
+- 篡改 Cookie 失败
+- 退出后 `/api/auth/me` 返回 401
+- 登录 Cookie 不会被桌面 Cookie 逻辑误判
+- HTTPS 反向代理场景 Cookie 带 Secure
+- 本地 HTTP 开发场景 Cookie 不错误携带 Secure
+- 登录页不会发生无限跳转
+
+## 注册和邀请码
+
+- 合法邀请码注册成功
+- 用户名唯一
+- 邀请码只能使用一次
+- 两个并发请求抢同一邀请码时只有一个成功
+- 注册中途失败会回滚用户和邀请码
+- SQL 注入输入不能改变查询逻辑
+
+## 用户隔离
+
+创建至少两个普通用户，验证：
+
+- A 看不到 B 的文档
+- A 不能读取 B 的文档详情
+- A 不能更新、移动、软删除、恢复或永久删除 B 的文档
+- A 不能操作 B 的文件夹
+- A 不能管理 B 的分享
+- 管理员接口对普通用户返回 403
+- 公开分享只能访问对应文档
+
+## 文档功能
+
+- 新建文档
+- 读取列表
+- 打开文档
+- 自动保存
+- 修改标题和正文
+- 文件夹创建、排序、重命名、删除
+- 软删除、恢复、永久删除
+- 搜索
+- 分享创建、更新、撤销
+- 分享密码
+- 分享过期时间
+- 分享阅读和编辑权限
+- 举报和敏感词功能
+- 富文本 HTML 和 base64 图片不会因为 PostgreSQL 类型或转义被破坏
+- 大正文能正常保存和读取
+
+## 桌面回归
+
+运行并保持通过：
+
+- `npm test`
+- exporter 测试
+- importer 测试
+- integration 测试
+- security 测试
+
+补充验证：
+
+- 桌面版不需要 DATABASE_URL
+- 断网情况下桌面版可启动
+- 桌面版直接进入首页
+- 桌面版不会出现网页登录页
+- 桌面 SQLite 仍然可写
+- PostgreSQL 改造没有改变桌面数据目录
+- 桌面导入导出仍然工作
+
+## 前端视觉
+
+如果可以启动浏览器或 Electron，请实际检查：
+
+- 登录页桌面尺寸
+- 登录页窄屏尺寸
+- 浅色主题
+- 暗色主题
+- Logo 只显示一张
+- 表单处于卡片合理位置
+- 登录后刷新不回登录页
+- 分享页品牌 Logo 正常
+
+如果环境无法截图，至少通过 DOM/CSS 检查和 HTTP 集成测试验证，不要假装进行了视觉测试。
+
+# 九、部署和文档
+
+更新：
+
+- `.env.example`
+- `README.md`
+- `deploy/README.md`
+- `deploy/nginx.conf`
+- `ecosystem.config.js`
+- package.json scripts
+- 必要的 PostgreSQL 初始化、迁移和备份文档
+
+文档必须包含：
+
+1. 安装 PostgreSQL 或使用现有 PostgreSQL
+2. 创建数据库和专用数据库用户
+3. 设置最小必要权限
+4. 配置 `DATABASE_URL`
+5. 配置 SSL
+6. 执行迁移
+7. 创建第一个管理员
+8. 从旧 SQLite 导入
+9. 验证登录
+10. PM2 启动
+11. Nginx HTTPS 反向代理
+12. `trust proxy` 配置
+13. `pg_dump` 备份
+14. 恢复演练
+15. PostgreSQL 升级前备份
+16. 常见登录 Cookie 问题排查
+17. 如何判断当前运行的是桌面 SQLite 还是网页版 PostgreSQL
+
+不得在示例文件中提交真实密码、真实数据库地址、真实 token 或当前 `.env` 内容。
+
+# 十、执行方式
+
+请按以下方式工作：
+
+1. 先检查 git status，保护用户已有的未提交改动。
+2. 完整读取 AGENTS.md。
+3. 搜索所有数据库和认证调用。
+4. 复现当前登录问题，记录请求状态和 Cookie 行为。
+5. 确认桌面版与网页版的数据库路径和认证分支。
+6. 设计最小但完整的 PostgreSQL 数据层。
+7. 建立迁移。
+8. 将网页版路由全部改为异步 PostgreSQL 查询。
+9. 保留桌面 SQLite 路径。
+10. 修复网页版认证。
+11. 修复桌面登录死循环。
+12. 修复登录页和分享页 Logo。
+13. 编写 SQLite 到 PostgreSQL 迁移工具。
+14. 编写和运行测试。
+15. 根据测试结果继续修复。
+16. 更新部署文档。
+17. 最后检查 git diff，确认没有秘密、数据库文件、日志或测试数据被提交。
+
+不要在只完成计划、Schema、数据库连接或登录接口后停止。只要环境允许，就持续实施直到所有可安全完成的内容都完成。
+
+如果 PostgreSQL 或 Docker 当前不可用：
+
+- 仍然完成代码、迁移、测试脚本和文档
+- 明确说明哪些测试因为外部服务不可用未能运行
+- 不得谎称测试通过
+- 不得把“无法启动 PostgreSQL”当成停止其他工作的理由
+- 不得静默改回 SQLite
+
+不要擅自删除或覆盖现有 SQLite 数据库。
+
+不要执行 `git reset --hard`、强制 checkout 或其他破坏用户改动的命令。
+
+不要自动提交或推送，除非我明确要求。
+
+# 十一、最终验收标准
+
+只有同时满足以下条件才算完成：
+
+- 网页生产模式使用 PostgreSQL
+- 桌面版继续使用本地 SQLite
+- 桌面版完全免登录
+- 正确密码能稳定登录网页版
+- 登录后刷新不会返回登录页
+- Cookie、安全代理和 session 行为正确
+- 管理员密码不会在每次启动时被静默覆盖
+- 注册和邀请码具备事务一致性
+- 多用户文档严格隔离
+- 现有 CRUD、分享、管理和举报接口完成 PostgreSQL 改造
+- 有可执行的数据库迁移
+- 有安全的 SQLite 导入 PostgreSQL 工具
+- 有 PostgreSQL 测试配置
+- 自动化测试覆盖认证闭环和权限隔离
+- 现有桌面测试通过
+- 登录页 Logo 恢复正常
+- 部署文档可以让新服务器从零部署
+- 没有提交真实密钥或数据库文件
+- 最终报告诚实区分“已运行通过”“只做静态检查”“因环境未运行”
+
+完成后请给出一份精确报告，包括：
+
+- 根因
+- 架构选择
+- 修改文件
+- PostgreSQL Schema 和迁移
+- 认证修复
+- 桌面版保护措施
+- SQLite 数据迁移方式
+- 实际运行的测试和结果
+- 未运行的测试及原因
+- 部署命令
+- 回滚方式
+- 仍然存在的风险
+
+现在开始读取项目并实际执行，不要先停下来向我重复需求，也不要只返回实施计划。
 ```

@@ -843,6 +843,17 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 }
 .login-brand{margin-bottom:18px;text-align:center;}
 .login-brand .brand{font-size:24px;}
+.login-logo-img{
+  display:block;
+  width:200px;
+  max-width:80%;
+  height:auto;
+  margin:0 auto;
+}
+/* 主题切换：每次只显示当前主题对应的 Logo */
+.brand-logo-dark{display:none;}
+[data-theme="dark"] .brand-logo-light{display:none;}
+[data-theme="dark"] .brand-logo-dark{display:block;}
 .login-tabs{
   display:flex;
   gap:4px;
@@ -2035,7 +2046,14 @@ body.share-page{
   color:#fff;
 }
 .share-date,.share-brand{font-size:11.5px;}
-.share-brand{font-family:var(--serif);letter-spacing:1px;color:var(--accent);}
+.share-brand{font-family:var(--serif);letter-spacing:1px;color:var(--accent);display:inline-flex;align-items:center;}
+.share-brand-logo{
+  display:inline-block;
+  height:16px;
+  width:auto;
+  vertical-align:middle;
+}
+/* 分享页品牌 Logo 同样遵循主题切换规则（与登录页共用 brand-logo-light/dark） */
 
 /* 阅读区 / 编辑区 */
 .share-reader,.share-editor{

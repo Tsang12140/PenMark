@@ -1,5 +1,10 @@
 // 知著 PenMark 登录/注册页逻辑
 (function () {
+  // 桌面模式无需登录，直接跳回首页
+  if (window.desktop && window.desktop.isDesktop) {
+    window.location.href = '/';
+    return;
+  }
   // 应用本地保存的主题
   try {
     var saved = localStorage.getItem('penmark_theme');

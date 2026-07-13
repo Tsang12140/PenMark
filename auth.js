@@ -1,123 +1,26 @@
-// 知著 PenMark 鉴权模块
-// 使用 Node 内置 crypto：scrypt 哈希密码 + HMAC-SHA256 签发 token
-// 无需任何外部依赖
-require('./env'); // 加载 .env 到 process.env
+// 知著 PenMark 鉴权模块（异步版）
+// 使用 Node 内置 crypto：scrypt 哈希密码 + 服务端持久会话
+// 网页版：sessions 表存储 token 哈希；桌面版：桌面 Cookie 免登录
+require('./env');
 const crypto = require('crypto');
-const db = require('./db');
+const db = require('./database');
 
 const SECRET = process.env.PENMARK_SECRET || 'penmark-default-secret-change-me-in-production-2026';
-const TOKEN_EXPIRE_DAYS = 90; // 长期免登录
+const SESSION_EXPIRE_DAYS = 90;
+const COOKIE_NAME = 'penmark_session';
 const DESKTOP_COOKIE_NAME = 'penmark_desktop_session';
 
-/* ---------- 用户表 ---------- */
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  phone TEXT,
-  username TEXT,
-  nickname TEXT,
-  password_hash TEXT NOT NULL,
-  password_salt TEXT NOT NULL,
-  is_admin INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
-);
-`);
-
-/* ---------- 用户表增量迁移：phone → username/nickname ---------- */
-try {
-  const cols = db.prepare("PRAGMA table_info(users)").all();
-  if (!cols.some(c => c.name === 'username')) {
-    db.exec("ALTER TABLE users ADD COLUMN username TEXT");
-  }
-  if (!cols.some(c => c.name === 'nickname')) {
-    db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
-  }
-  // 回填：管理员用环境变量配置，普通用户用 phone 作为 username/nickname
-  const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-  const ADMIN_NICKNAME = process.env.ADMIN_NICKNAME || '管理员';
-  db.prepare("UPDATE users SET username = ?, nickname = ? WHERE is_admin = 1 AND (username IS NULL OR username = '')")
-    .run(ADMIN_USERNAME, ADMIN_NICKNAME);
-  db.prepare("UPDATE users SET username = phone WHERE is_admin = 0 AND (username IS NULL OR username = '')").run();
-  db.prepare("UPDATE users SET nickname = phone WHERE nickname IS NULL OR nickname = ''").run();
-  // 唯一索引（忽略 NULL，但回填后无 NULL）
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
-} catch (e) {
-  console.warn('users 迁移跳过：', e.message);
-}
-
-/* ---------- 文档表增加 user_id 列（数据隔离） ---------- */
-try {
-  const cols = db.prepare("PRAGMA table_info(documents)").all();
-  if (!cols.some(c => c.name === 'user_id')) {
-    db.exec("ALTER TABLE documents ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, updated_at DESC)");
-  }
-} catch (e) {
-  console.warn('documents.user_id 迁移跳过：', e.message);
-}
-
-/* ---------- 桌面本地用户（桌面模式专用，不要求登录） ---------- */
-let _desktopUser = null;
-function ensureDesktopUser() {
-  if (_desktopUser) return _desktopUser;
-  let u = db.prepare('SELECT id, username, nickname, is_admin FROM users WHERE username = ?').get('desktop');
-  if (!u) {
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt); // 随机密码，无人能登录
-    const info = db.prepare(
-      'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)'
-    ).run('desktop', 'desktop', '本地用户', hash, salt, Date.now());
-    u = { id: info.lastInsertRowid, username: 'desktop', nickname: '本地用户', is_admin: 1 };
-    console.log('已创建桌面本地用户');
-  }
-  _desktopUser = { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin };
-  return _desktopUser;
-}
-
-/* ---------- 自动初始化/同步管理员账号（从 .env 读取） ---------- */
-function seedAdmin() {
-  // 桌面模式：创建本地用户，不走 .env 管理员逻辑
-  if (process.env.PENMARK_DESKTOP === '1') {
-    ensureDesktopUser();
-    return;
-  }
-  const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me';
-  const ADMIN_NICKNAME = process.env.ADMIN_NICKNAME || '管理员';
-  if (!ADMIN_PASSWORD || ADMIN_PASSWORD === 'change-me') {
-    console.warn('警告：未在 .env 设置 ADMIN_PASSWORD，请尽快配置');
-  }
-  const existing = db.prepare('SELECT id, password_hash, password_salt FROM users WHERE is_admin = 1').get();
-  if (!existing) {
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = hashPassword(ADMIN_PASSWORD, salt);
-    db.prepare(
-      'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)'
-    ).run(ADMIN_USERNAME, ADMIN_USERNAME, ADMIN_NICKNAME, hash, salt, Date.now());
-    console.log('已初始化管理员账号：' + ADMIN_USERNAME);
-  } else {
-    // 同步用户名/昵称，并在密码变化时更新（用新盐+哈希覆盖）
-    const salt = crypto.randomBytes(16).toString('hex');
-    const hash = hashPassword(ADMIN_PASSWORD, salt);
-    db.prepare('UPDATE users SET username = ?, nickname = ?, password_hash = ?, password_salt = ? WHERE id = ?')
-      .run(ADMIN_USERNAME, ADMIN_NICKNAME, hash, salt, existing.id);
-    console.log('已同步管理员配置：' + ADMIN_USERNAME);
-  }
-}
-seedAdmin();
-
-/* ---------- 密码哈希（scrypt） ---------- */
+/* ---------- 密码哈希（scrypt，同步） ---------- */
 function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 function verifyPassword(password, salt, hash) {
   const computed = hashPassword(password, salt);
-  // 常时间比较，防侧信道
   if (computed.length !== hash.length) return false;
   return crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(hash, 'hex'));
 }
 
-/* ---------- 输入校验 ---------- */
+/* ---------- 输入校验（同步） ---------- */
 function validateUsername(username) {
   if (!username) return '用户名不能为空';
   if (!/^[A-Za-z0-9_]{4,20}$/.test(username)) return '用户名须为 4-20 位字母、数字或下划线';
@@ -135,81 +38,167 @@ function validatePassword(password) {
   return null;
 }
 
-/* ---------- Token 签发与校验（HMAC-SHA256 签名的 base64 载荷） ---------- */
-function base64UrlEncode(buf) {
-  return Buffer.from(buf).toString('base64')
-    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+/* ---------- 服务端持久会话 ---------- */
+function generateSessionToken() {
+  return crypto.randomBytes(32).toString('hex'); // 256 bit
 }
-function base64UrlDecode(str) {
-  str = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (str.length % 4) str += '=';
-  return Buffer.from(str, 'base64');
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function signToken(payload) {
-  const body = base64UrlEncode(JSON.stringify({
-    uid: payload.uid,
-    admin: payload.admin ? 1 : 0,
-    iat: Date.now(),
-    exp: Date.now() + TOKEN_EXPIRE_DAYS * 24 * 3600 * 1000
-  }));
-  const sig = crypto.createHmac('sha256', SECRET).update(body).digest('hex');
-  return body + '.' + sig;
+async function createSession(userId, req) {
+  const token = generateSessionToken();
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const expiresAt = now + SESSION_EXPIRE_DAYS * 24 * 3600 * 1000;
+  const ua = (req && req.headers['user-agent'] || '').slice(0, 500);
+  const ip = (req && req.ip || '').slice(0, 100);
+  await db.execute(
+    'INSERT INTO sessions (user_id, token_hash, created_at, expires_at, last_seen_at, user_agent, ip) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [userId, tokenHash, now, expiresAt, now, ua, ip]
+  );
+  return token;
 }
 
-function verifyToken(token) {
+async function verifySession(token) {
   if (!token || typeof token !== 'string') return null;
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [body, sig] = parts;
-  const expected = crypto.createHmac('sha256', SECRET).update(body).digest('hex');
-  if (sig.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) return null;
-  try {
-    const payload = JSON.parse(base64UrlDecode(body).toString('utf8'));
-    if (!payload.exp || payload.exp < Date.now()) return null;
-    return payload;
-  } catch (e) { return null; }
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const session = await db.one(
+    'SELECT s.id, s.user_id, s.expires_at, s.revoked_at FROM sessions s WHERE s.token_hash = $1',
+    [tokenHash]
+  );
+  if (!session) return null;
+  if (session.revoked_at) return null;
+  if (session.expires_at < now) return null;
+  // 查询用户，检查封禁
+  const user = await db.one(
+    'SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = $1',
+    [session.user_id]
+  );
+  if (!user) return null;
+  if (user.is_banned) {
+    // 自动撤销被封禁用户的会话
+    await db.execute('UPDATE sessions SET revoked_at = $1 WHERE id = $2', [now, session.id]);
+    return null;
+  }
+  // 更新 last_seen_at（不阻塞）
+  db.execute('UPDATE sessions SET last_seen_at = $1 WHERE id = $2', [now, session.id]).catch(() => {});
+  return publicUser(user);
 }
 
-/* ---------- 登录 / 注册 ---------- */
-function login(username, password) {
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+async function revokeSession(token) {
+  if (!token) return;
+  const tokenHash = hashToken(token);
+  await db.execute('UPDATE sessions SET revoked_at = $1 WHERE token_hash = $2 AND revoked_at IS NULL', [Date.now(), tokenHash]);
+}
+
+async function revokeAllUserSessions(userId) {
+  await db.execute('UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL', [Date.now(), userId]);
+}
+
+async function cleanExpiredSessions() {
+  try {
+    await db.execute('DELETE FROM sessions WHERE expires_at < $1 OR revoked_at IS NOT NULL', [Date.now()]);
+  } catch (e) { /* 非关键 */ }
+}
+
+/* ---------- 用户公开信息 ---------- */
+function publicUser(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    nickname: u.nickname,
+    isAdmin: !!u.is_admin,
+    is_banned: !!u.is_banned,
+    can_share: !!u.can_share
+  };
+}
+
+async function getUserById(id) {
+  const u = await db.one('SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = $1', [id]);
+  if (!u) return null;
+  return publicUser(u);
+}
+
+/* ---------- 登录 ---------- */
+async function login(username, password, req) {
+  const user = await db.one('SELECT * FROM users WHERE username = $1', [String(username).trim()]);
   if (!user) return { ok: false, error: '账号不存在' };
+  if (user.is_banned) return { ok: false, error: '账号已被禁用' };
   if (!verifyPassword(password, user.password_salt, user.password_hash)) {
     return { ok: false, error: '密码错误' };
   }
-  const token = signToken({ uid: user.id, admin: !!user.is_admin });
+  const token = await createSession(user.id, req);
   return { ok: true, token, user: publicUser(user) };
 }
 
-// 注册：调用方需先用 invites.consume 校验邀请码
-function register(username, nickname, password, inviteRecord) {
+/* ---------- 注册（事务化，含邀请码原子消费） ---------- */
+async function register(username, nickname, password, inviteCode, req) {
   const uErr = validateUsername(username);
   if (uErr) return { ok: false, error: uErr };
   const nErr = validateNickname(nickname);
   if (nErr) return { ok: false, error: nErr };
   const pErr = validatePassword(password);
   if (pErr) return { ok: false, error: pErr };
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
-  if (exists) return { ok: false, error: '该用户名已存在' };
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = hashPassword(password, salt);
-  const info = db.prepare(
-    'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
-  ).run(username, username, nickname.trim(), hash, salt, Date.now());
-  const token = signToken({ uid: info.lastInsertRowid, admin: false });
-  return { ok: true, token, user: { id: info.lastInsertRowid, username, nickname: nickname.trim(), isAdmin: false } };
+
+  const trimmedUsername = String(username).trim();
+  const trimmedNickname = String(nickname).trim();
+  const trimmedCode = String(inviteCode).trim();
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      // 1. 原子消费邀请码（条件 UPDATE，行级锁）
+      const inviteInfo = await tx.execute(
+        'UPDATE invites SET used = 1, used_at = $1, registered_username = $2, registered_nickname = $3 WHERE code = $4 AND used = 0',
+        [Date.now(), trimmedUsername, trimmedNickname, trimmedCode]
+      );
+      if (inviteInfo.changes === 0) {
+        throw new Error('INVITE_INVALID');
+      }
+
+      // 2. 检查用户名唯一
+      const existing = await tx.one('SELECT id FROM users WHERE username = $1', [trimmedUsername]);
+      if (existing) throw new Error('USERNAME_EXISTS');
+
+      // 3. 创建用户
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = hashPassword(password, salt);
+      const userInfo = await tx.execute(
+        'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, 0, $6)',
+        [trimmedUsername, trimmedUsername, trimmedNickname, hash, salt, Date.now()]
+      );
+
+      return { id: userInfo.insertId, username: trimmedUsername, nickname: trimmedNickname };
+    });
+
+    // 4. 事务成功后创建会话（会话不回滚注册）
+    const token = await createSession(result.id, req);
+    return { ok: true, token, user: { id: result.id, username: result.username, nickname: result.nickname, isAdmin: false } };
+  } catch (err) {
+    if (err.message === 'INVITE_INVALID') return { ok: false, error: '邀请码无效或已被使用' };
+    if (err.message === 'USERNAME_EXISTS') return { ok: false, error: '该用户名已存在' };
+    throw err; // 其他错误向上抛
+  }
 }
 
-function publicUser(u) {
-  return { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin, is_banned: !!u.is_banned, can_share: !!u.can_share };
-}
-
-function getUserById(id) {
-  const u = db.prepare('SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = ?').get(id);
-  if (!u) return null;
-  return publicUser(u);
+/* ---------- 桌面本地用户 ---------- */
+let _desktopUser = null;
+async function ensureDesktopUser() {
+  if (_desktopUser) return _desktopUser;
+  let u = await db.one('SELECT id, username, nickname, is_admin FROM users WHERE username = $1', ['desktop']);
+  if (!u) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt);
+    const info = await db.execute(
+      'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, 1, $6)',
+      ['desktop', 'desktop', '本地用户', hash, salt, Date.now()]
+    );
+    u = { id: info.insertId, username: 'desktop', nickname: '本地用户', is_admin: 1 };
+    console.log('已创建桌面本地用户');
+  }
+  _desktopUser = { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin };
+  return _desktopUser;
 }
 
 function isDesktopRequestAuthorized(req) {
@@ -219,35 +208,46 @@ function isDesktopRequestAuthorized(req) {
   if (!expected || actual.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
-/* ---------- Express 中间件：从 cookie 解析 token ---------- */
-const COOKIE_NAME = 'penmark_token';
 
-function authMiddleware(req, res, next) {
-  const token = readCookie(req, COOKIE_NAME);
-  const payload = token ? verifyToken(token) : null;
-  if (!payload) {
-    // 桌面模式：自动以本地用户身份通过，不要求登录
-    if (isDesktopRequestAuthorized(req)) {
-      const u = ensureDesktopUser();
-      req.user = u;
-      return next();
+/* ---------- 管理员初始化（不再每次启动覆盖密码） ---------- */
+async function seedAdmin() {
+  // 桌面模式：创建本地用户，不走 .env 管理员逻辑
+  if (process.env.PENMARK_DESKTOP === '1') {
+    await ensureDesktopUser();
+    return;
+  }
+  // 网页模式：只在不存在管理员时创建，不覆盖已有管理员
+  const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me';
+  const ADMIN_NICKNAME = process.env.ADMIN_NICKNAME || '管理员';
+  const existing = await db.one('SELECT id FROM users WHERE is_admin = 1');
+  if (!existing) {
+    if (!ADMIN_PASSWORD || ADMIN_PASSWORD === 'change-me') {
+      console.warn('警告：未在 .env 设置 ADMIN_PASSWORD，请尽快配置或使用 npm run admin:create');
     }
-    return res.status(401).json({ error: 'unauthorized', needLogin: true });
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(ADMIN_PASSWORD, salt);
+    await db.execute(
+      'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, 1, $6)',
+      [ADMIN_USERNAME, ADMIN_USERNAME, ADMIN_NICKNAME, hash, salt, Date.now()]
+    );
+    console.log('已初始化管理员账号：' + ADMIN_USERNAME);
+  } else {
+    // 管理员已存在，不覆盖密码
+    console.log('管理员账号已存在，跳过初始化。如需重置密码请使用 npm run admin:reset-password');
   }
-  const user = getUserById(payload.uid);
-  if (!user) {
-    clearCookie(res);
-    return res.status(401).json({ error: 'need login', needLogin: true });
-  }
-  // 检查是否被禁用
-  if (user.is_banned) {
-    clearCookie(res);
-    return res.status(403).json({ error: '账号已被禁用', banned: true });
-  }
-  req.user = user;
-  next();
 }
 
+// 启动时执行初始化（返回 Promise 供 server.js await）
+const ready = seedAdmin().catch(err => {
+  console.error('管理员初始化失败:', err.message);
+  // 不阻止启动，允许后续手动创建
+});
+
+// 定期清理过期会话
+setInterval(() => { cleanExpiredSessions().catch(() => {}); }, 3600 * 1000);
+
+/* ---------- Cookie 处理 ---------- */
 function readCookie(req, name) {
   const header = req.headers.cookie;
   if (!header) return null;
@@ -262,23 +262,77 @@ function readCookie(req, name) {
   return null;
 }
 
-function setCookie(res, token) {
-  const maxAge = TOKEN_EXPIRE_DAYS * 24 * 3600;
-  // HttpOnly 防 XSS 偷取；SameSite=Lax 防多数 CSRF；Max-Age 长期
-  res.setHeader('Set-Cookie', COOKIE_NAME + '=' + encodeURIComponent(token) +
-    '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge);
+function isSecure(req) {
+  // 生产 HTTPS 环境设置 Secure
+  if (process.env.NODE_ENV !== 'production') return false;
+  // 检查 X-Forwarded-Proto（Nginx 反向代理）
+  const xfp = req.headers['x-forwarded-proto'];
+  return xfp === 'https' || (req.socket && req.socket.encrypted);
 }
 
-function clearCookie(res) {
-  res.setHeader('Set-Cookie', COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+function setCookie(res, token, req) {
+  const maxAge = SESSION_EXPIRE_DAYS * 24 * 3600;
+  const secure = isSecure(req);
+  let cookie = COOKIE_NAME + '=' + encodeURIComponent(token) +
+    '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge;
+  if (secure) cookie += '; Secure';
+  res.setHeader('Set-Cookie', cookie);
+}
+
+function clearCookie(res, req) {
+  const secure = req ? isSecure(req) : false;
+  let cookie = COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+  if (secure) cookie += '; Secure';
+  res.setHeader('Set-Cookie', cookie);
+}
+
+/* ---------- Express 中间件 ---------- */
+async function authMiddleware(req, res, next) {
+  // 桌面模式：检查桌面 Cookie
+  if (process.env.PENMARK_DESKTOP === '1') {
+    if (isDesktopRequestAuthorized(req)) {
+      try {
+        req.user = await ensureDesktopUser();
+      } catch (e) {
+        return res.status(500).json({ error: '桌面用户初始化失败' });
+      }
+      return next();
+    }
+    return res.status(401).json({ error: 'unauthorized', needLogin: false, desktop: true });
+  }
+  // 网页模式：检查服务端会话
+  const token = readCookie(req, COOKIE_NAME);
+  if (!token) return res.status(401).json({ error: 'unauthorized', needLogin: true });
+  const user = await verifySession(token);
+  if (!user) {
+    clearCookie(res, req);
+    return res.status(401).json({ error: 'unauthorized', needLogin: true });
+  }
+  req.user = user;
+  req.sessionToken = token;
+  next();
+}
+
+function adminOnly(req, res, next) {
+  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: '需要管理员权限' });
+  next();
 }
 
 /* ---------- 分享 session（公开访问用，独立 cookie） ---------- */
 const SHARE_COOKIE_NAME = 'penmark_share_token';
 const SHARE_SESSION_EXPIRE_DAYS = 7;
 
+function base64UrlEncode(buf) {
+  return Buffer.from(buf).toString('base64')
+    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function base64UrlDecode(str) {
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (str.length % 4) str += '=';
+  return Buffer.from(str, 'base64');
+}
+
 function generateShareToken() {
-  // 8 位 base64url 短码；碰撞由数据库 UNIQUE 约束兜底，调用方重试
   return crypto.randomBytes(6).toString('base64url');
 }
 
@@ -320,20 +374,17 @@ function readShareCookie(req) {
   return readCookie(req, SHARE_COOKIE_NAME);
 }
 
-/* ---------- 仅管理员中间件 ---------- */
-function adminOnly(req, res, next) {
-  if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: '需要管理员权限' });
-  next();
-}
-
 module.exports = {
-  login, register, getUserById, verifyToken,
+  login, register, getUserById,
+  verifySession, revokeSession, revokeAllUserSessions, cleanExpiredSessions,
   authMiddleware, setCookie, clearCookie,
-  COOKIE_NAME, TOKEN_EXPIRE_DAYS,
+  COOKIE_NAME, SESSION_EXPIRE_DAYS, DESKTOP_COOKIE_NAME,
   validateUsername, validateNickname, validatePassword,
-  ensureDesktopUser, isDesktopRequestAuthorized, DESKTOP_COOKIE_NAME,
+  ensureDesktopUser, isDesktopRequestAuthorized,
+  ready, seedAdmin,
+  adminOnly, hashPassword, verifyPassword, publicUser,
   // 分享相关
   generateShareToken, signShareSession, verifyShareSession,
   setShareCookie, clearShareCookie, readShareCookie,
-  SHARE_COOKIE_NAME, adminOnly, hashPassword, verifyPassword
+  SHARE_COOKIE_NAME, readCookie
 };

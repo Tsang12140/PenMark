@@ -430,7 +430,7 @@ async function doImportLegacyDatabase() {
       cancelId: 1
     });
     if (confirm.response !== 0) return false;
-    const user = auth.ensureDesktopUser();
+    const user = await auth.ensureDesktopUser();
     const stats = importLegacyDatabase(sourcePath, db, user.id);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('desktop:library-imported');
     dialog.showMessageBox({

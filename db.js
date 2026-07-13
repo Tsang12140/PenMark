@@ -63,18 +63,60 @@ try {
   console.warn('documents.folder_id 迁移跳过：', e.message);
 }
 
-// 注意：users 表与 documents.user_id 列由 auth.js 在 require 时迁移创建
+// 用户表（认证、管理员、封禁、分享权限）
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT,
+  username TEXT,
+  nickname TEXT,
+  password_hash TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+`);
 
-// users 表增量迁移：仅在 users 表已经存在时执行；首次启动由 auth.js 建表。
+// users 表增量迁移：username/nickname/is_banned/can_share/admin_note
 try {
-  const usersExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
-  if (usersExists) {
-    const userCols = db.prepare("PRAGMA table_info(users)").all();
-    if (!userCols.some(c => c.name === 'is_banned')) db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
-    if (!userCols.some(c => c.name === 'can_share')) db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
-    if (!userCols.some(c => c.name === 'admin_note')) db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
-  }
+  const userCols = db.prepare("PRAGMA table_info(users)").all();
+  if (!userCols.some(c => c.name === 'username')) db.exec("ALTER TABLE users ADD COLUMN username TEXT");
+  if (!userCols.some(c => c.name === 'nickname')) db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
+  if (!userCols.some(c => c.name === 'is_banned')) db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
+  if (!userCols.some(c => c.name === 'can_share')) db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
+  if (!userCols.some(c => c.name === 'admin_note')) db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
+  // 回填：普通用户用 phone 作为 username/nickname（管理员回填由 auth.js seedAdmin 负责）
+  db.prepare("UPDATE users SET username = phone WHERE is_admin = 0 AND (username IS NULL OR username = '')").run();
+  db.prepare("UPDATE users SET nickname = phone WHERE nickname IS NULL OR nickname = ''").run();
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
 } catch (e) { console.warn('users 迁移跳过：', e.message); }
+
+// documents 表增量迁移：user_id 列（数据隔离）
+try {
+  const docCols = db.prepare("PRAGMA table_info(documents)").all();
+  if (!docCols.some(c => c.name === 'user_id')) {
+    db.exec("ALTER TABLE documents ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, updated_at DESC)");
+  }
+} catch (e) { console.warn('documents.user_id 迁移跳过：', e.message); }
+
+// sessions 表（服务端持久会话，桌面版可选使用）
+db.exec(`
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_seen_at INTEGER,
+  revoked_at INTEGER,
+  user_agent TEXT,
+  ip TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+`);
 
 // documents 表增量迁移：软删除 + 审核标记
 try {

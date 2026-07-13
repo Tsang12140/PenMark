@@ -38,7 +38,9 @@ function listRelativeFiles(root) {
 async function main() {
   // 初始化数据库和认证
   const db = require('../db');
-  require('../auth');
+  const auth = require('../auth');
+  // 等待异步初始化完成（seedAdmin / ensureDesktopUser）
+  await auth.ready;
 
   // 获取桌面用户 ID
   const user = db.prepare('SELECT id FROM users WHERE username = ?').get('desktop');

@@ -1,0 +1,28 @@
+# PenMark 开发环境 PostgreSQL 配置
+# 用法：docker compose -f docker-compose.postgres.yml up -d
+#
+# 仅用于本地开发和测试，不用于生产部署。
+# 生产环境请使用独立的 PostgreSQL 实例并正确配置 SSL。
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: penmark-pg-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: penmark
+      POSTGRES_PASSWORD: penmark-dev-password-change-me
+      POSTGRES_DB: penmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - penmark-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U penmark -d penmark"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  penmark-pg-data:

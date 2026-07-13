@@ -535,15 +535,28 @@ function relativeTime(ts) {
 }
 
 /* ---------- API ---------- */
-// cookie 同源自动携带；遇 401 跳登录页
+// cookie 同源自动携带；遇 401 跳登录页（桌面模式不跳转）
 let currentUser = null;
+function isDesktopMode() {
+  return !!(window.desktop && window.desktop.isDesktop);
+}
+function handleAuthFailure() {
+  // 桌面模式：本地认证不应跳登录页，显示错误即可
+  if (isDesktopMode()) {
+    document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;color:#c0392b;font-family:sans-serif;padding:24px;text-align:center">' +
+      '<h2 style="margin:0 0 8px">桌面认证失败</h2>' +
+      '<p style="margin:0;color:#666">请重启知著 PenMark。如问题持续，请联系技术支持。</p>' +
+      '</div>';
+    return;
+  }
+  window.location.href = '/login.html';
+}
 async function api(url, method, body) {
   const opt = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
   if (body !== undefined) opt.body = JSON.stringify(body);
   const r = await fetch(url, opt);
   if (r.status === 401) {
-    // 未登录或登录失效，跳转到登录页
-    window.location.href = '/login.html';
+    handleAuthFailure();
     throw new Error('need login');
   }
   if (!r.ok) {
@@ -1566,7 +1579,7 @@ async function init() {
   try {
     // 先校验登录态
     const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
-    if (!meRes.ok) { window.location.href = '/login.html'; return; }
+    if (!meRes.ok) { handleAuthFailure(); return; }
     const meBody = await meRes.json();
     currentUser = meBody.user;
     updateUserBadge();

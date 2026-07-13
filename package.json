@@ -1,90 +1,98 @@
 {
-    "name":  "penmark",
-    "version":  "1.0.0",
-    "description":  "知著 PenMark — 本地优先的个人长期记录软件",
-    "license":  "MIT",
-    "author":  "Tsang12140",
-    "homepage":  "https://tsang12140.github.io/PenMark/",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "https://github.com/Tsang12140/PenMark.git"
-                   },
-    "main":  "desktop/main.cjs",
-    "scripts":  {
-                    "start":  "node server.js",
-                    "dev":  "node server.js",
-                    "desktop:dev":  "node desktop/electron-task.cjs dev",
-                    "desktop:start":  "node desktop/electron-task.cjs dev",
-                    "desktop:build":  "node desktop/electron-task.cjs build",
-                    "desktop:dist":  "node desktop/electron-task.cjs dist",
-                    "rebuild":  "npm rebuild better-sqlite3 --runtime=electron --target=42.6.1 --disturl=https://electronjs.org/headers",
-                    "rebuild:node":  "npm rebuild better-sqlite3",
-                    "test:exporter":  "node desktop/test-exporter.cjs",
-                    "test:integration":  "node desktop/test-export-integration.cjs",
-                    "test":  "node desktop/test-exporter.cjs \u0026\u0026 node desktop/test-export-integration.cjs \u0026\u0026 node desktop/test-importer.cjs \u0026\u0026 node desktop/test-security.cjs",
-                    "test:importer":  "node desktop/test-importer.cjs",
-                    "test:security":  "node desktop/test-security.cjs"
-                },
-    "dependencies":  {
-                         "better-sqlite3":  "^12.11.1",
-                         "dom-to-image-more":  "^3.10.2",
-                         "express":  "^4.21.2"
-                     },
-    "devDependencies":  {
-                            "electron":  "^42.6.1",
-                            "electron-builder":  "^26.15.3"
-                        },
-    "build":  {
-                  "appId":  "com.penmark.desktop",
-                  "productName":  "PenMark",
-                  "copyright":  "Copyright © 2026 知著 PenMark",
-                  "directories":  {
-                                      "output":  "dist-desktop"
-                                  },
-                  "files":  [
-                                "public/**/*",
-                                "server.js",
-                                "db.js",
-                                "auth.js",
-                                "invites.js",
-                                "ai.js",
-                                "env.js",
-                                "desktop/**/*",
-                                "package.json",
-                                "!**/.env*",
-                                "!**/data/**",
-                                "!**/dist-desktop/**",
-                                "!**/*.md",
-                                "!**/参考/**",
-                                "!**/desktop/test-*.cjs"
-                            ],
-                  "win":  {
-                "icon":  "public/PenMark_Brand_Assets/favicon.ico",
-                "artifactName":  "PenMark-Setup-${version}-x64.exe",
-                "target":  [
-                               {
-                                   "target":  "nsis",
-                                   "arch":  [
-                                                "x64"
-                                            ]
-                               }
-                           ]
-            },
-    "nsis":  {
-                 "oneClick":  false,
-                 "perMachine":  false,
-                 "allowToChangeInstallationDirectory":  true,
-                 "createDesktopShortcut":  true,
-                 "createStartMenuShortcut":  true,
-                 "shortcutName":  "PenMark",
-                 "deleteAppDataOnUninstall":  false,
-                 "artifactName":  "PenMark-Setup-${version}-x64.exe"
-             },
-                  "asar":  true,
-                  "asarUnpack":  [
-                                     "node_modules/better-sqlite3/**/*"
-                                 ],
-                  "npmRebuild":  false
-              },
-    "author":  "PenMark Contributors"
+    "name": "penmark",
+    "version": "1.0.0",
+    "description": "知著 PenMark — 本地优先的个人长期记录软件",
+    "license": "MIT",
+    "author": "PenMark Contributors",
+    "homepage": "https://tsang12140.github.io/PenMark/",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Tsang12140/PenMark.git"
+    },
+    "main": "desktop/main.cjs",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js",
+        "desktop:dev": "node desktop/electron-task.cjs dev",
+        "desktop:start": "node desktop/electron-task.cjs dev",
+        "desktop:build": "node desktop/electron-task.cjs build",
+        "desktop:dist": "node desktop/electron-task.cjs dist",
+        "rebuild": "npm rebuild better-sqlite3 --runtime=electron --target=42.6.1 --disturl=https://electronjs.org/headers",
+        "rebuild:node": "npm rebuild better-sqlite3",
+        "test:exporter": "node desktop/test-exporter.cjs",
+        "test:integration": "node desktop/test-export-integration.cjs",
+        "test": "node desktop/test-exporter.cjs && node desktop/test-export-integration.cjs && node desktop/test-importer.cjs && node desktop/test-security.cjs",
+        "test:importer": "node desktop/test-importer.cjs",
+        "test:security": "node desktop/test-security.cjs",
+        "test:auth": "node test/test-auth-isolation.cjs",
+        "db:migrate": "node database/migrate.js",
+        "db:status": "node database/migrate.js status",
+        "db:migrate-sqlite": "node scripts/migrate-sqlite-to-pg.js",
+        "admin:create": "node scripts/admin-cli.js create",
+        "admin:reset-password": "node scripts/admin-cli.js reset-password"
+    },
+    "dependencies": {
+        "better-sqlite3": "^12.11.1",
+        "dom-to-image-more": "^3.10.2",
+        "express": "^4.21.2",
+        "pg": "^8.22.0"
+    },
+    "devDependencies": {
+        "electron": "^42.6.1",
+        "electron-builder": "^26.15.3"
+    },
+    "build": {
+        "appId": "com.penmark.desktop",
+        "productName": "PenMark",
+        "copyright": "Copyright © 2026 知著 PenMark",
+        "directories": {
+            "output": "dist-desktop"
+        },
+        "files": [
+            "public/**/*",
+            "server.js",
+            "db.js",
+            "auth.js",
+            "invites.js",
+            "ai.js",
+            "env.js",
+            "database/index.js",
+            "database/sqlite.js",
+            "desktop/**/*",
+            "package.json",
+            "!**/.env*",
+            "!**/data/**",
+            "!**/dist-desktop/**",
+            "!**/*.md",
+            "!**/参考/**",
+            "!**/desktop/test-*.cjs"
+        ],
+        "win": {
+            "icon": "public/PenMark_Brand_Assets/favicon.ico",
+            "artifactName": "PenMark-Setup-${version}-x64.exe",
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "perMachine": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "PenMark",
+            "deleteAppDataOnUninstall": false,
+            "artifactName": "PenMark-Setup-${version}-x64.exe"
+        },
+        "asar": true,
+        "asarUnpack": [
+            "node_modules/better-sqlite3/**/*"
+        ],
+        "npmRebuild": false
+    }
 }
