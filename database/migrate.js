@@ -1,6 +1,7 @@
 // PostgreSQL 数据库迁移执行器
 // 用法：node database/migrate.js        执行迁移
 //       node database/migrate.js status  查看迁移状态
+require('../env');
 const fs = require('fs');
 const path = require('path');
 const pg = require('./postgres');
