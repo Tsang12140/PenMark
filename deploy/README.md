@@ -195,11 +195,15 @@ pm2 restart penmark
 ### 更新代码
 
 ```bash
-git pull
+# 国内服务器拉 GitHub 慢，走镜像代理
+git -c http.proxy= pull origin main
+
 npm install          # 如果有新依赖
 npm run db:migrate   # 如果有新迁移
 pm2 restart penmark
 ```
+
+> 如果 `git -c http.proxy= pull` 不行，换 `git pull` 直接走直连；都不行则用宝塔文件管理上传覆盖。
 
 ### 备份
 
