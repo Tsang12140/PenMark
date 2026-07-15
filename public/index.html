@@ -2,7 +2,28 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="256x256" href="/favicon-256.png">
+<link rel="shortcut icon" href="/favicon.ico">
+
+<!-- iOS Web App -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="知著">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+<!-- PWA -->
+<meta name="application-name" content="知著 PenMark">
+<meta name="theme-color" content="#F7F4EC">
+<link rel="manifest" href="/manifest.json">
+
+<meta name="description" content="知著 PenMark 是一款极简在线富文本写作工具，支持公众号/微信图文一键粘贴、自动图片修复、链接卡片和飞书式目录大纲，所有内容本地优先保存。">
+<meta property="og:title" content="知著 PenMark">
+<meta property="og:description" content="知著 PenMark 是一款极简在线富文本写作工具，支持公众号/微信图文一键粘贴、自动图片修复、链接卡片和飞书式目录大纲，所有内容本地优先保存。">
+<meta property="og:type" content="website">
 <title>知著 PenMark</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -12,32 +33,45 @@
   <!-- ============ 侧边栏 ============ -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <span class="brand">知著<small>PenMark</small></span>
-      <button class="icon-btn" id="themeToggle" title="切换主题（纸张/飞书/暗色）">◐</button>
+      <span class="brand-lockup" aria-label="知著 PenMark">
+        <img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="brand-logo brand-logo-light">
+        <img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="brand-logo brand-logo-dark">
+      </span>
+      <button class="icon-btn" id="themeToggle" title="切换主题（纸墨/雾纸/夜墨）">◐</button>
     </div>
     <div class="search-box">
-      <span class="search-icon">⌕</span>
+      <span class="search-icon" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m12.5 12.5 4 4"/></svg></span>
       <input type="text" id="searchInput" placeholder="搜索文档…">
     </div>
     <div class="new-row">
-      <button class="new-btn" id="newDocBtn">+ 新建文档</button>
-      <button class="new-folder-btn" id="newFolderBtn" title="新建文件夹">+ 文件夹</button>
+      <button class="new-btn" id="newDocBtn">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+        <span>新建文档</span>
+      </button>
+      <button class="new-folder-btn" id="newFolderBtn" title="新建文件夹">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .8.4l1 1.1a1 1 0 0 0 .8.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/></svg>
+        <span>文件夹</span>
+      </button>
     </div>
     <div class="doc-list" id="docList"></div>
     <div class="sidebar-extra" id="sidebarExtra">
       <button class="sidebar-link" id="trashBtn" title="回收站">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6 4V2.5h4V4M5 4l.5 9a1 1 0 0 0 1 .9h3a1 1 0 0 0 1-.9L11 4"/></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.7 8.4a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9L11.5 4.5M7 7v4M9 7v4"/></svg>
         <span>回收站</span>
       </button>
       <button class="sidebar-link" id="settingsBtn" title="设置" style="display:none">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 2v1.6M8 12.4V14M2 8h1.6M12.4 8H14M3.8 3.8l1.1 1.1M11.1 11.1l1.1 1.1M3.8 12.2l1.1-1.1M11.1 4.9l1.1-1.1"/></svg>
         <span>设置</span>
       </button>
     </div>
     <div class="sidebar-foot" id="userBadge" style="display:none">
-      <span class="user-avatar">●</span>
+      <span class="user-avatar">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="3.5"/></svg>
+      </span>
       <span class="user-name"></span>
-      <button class="icon-btn" id="logoutBtn" title="退出登录">⎋</button>
+      <button class="icon-btn" id="logoutBtn" title="退出登录">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5V3a1 1 0 0 0-1-1H3.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8a1 1 0 0 0 1-1v-1.5M11 5l3 3-3 3M6 8h8"/></svg>
+      </button>
     </div>
   </aside>
 
@@ -73,7 +107,7 @@
       </div>
 
       <div class="tb-group">
-        <button class="tb-btn" data-action="link" title="Insert link Ctrl+K"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 4.5l1-1a3 3 0 0 1 4.2 4.2l-1 1"/><path d="M9.5 11.5l-1 1a3 3 0 0 1-4.2-4.2l1-1"/><path d="M6.5 9.5l3-3"/></svg></button>
+        <button class="tb-btn" data-action="link" title="插入链接 Ctrl+K"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 4.5l1-1a3 3 0 0 1 4.2 4.2l-1 1"/><path d="M9.5 11.5l-1 1a3 3 0 0 1-4.2-4.2l1-1"/><path d="M6.5 9.5l3-3"/></svg></button>
         <button class="tb-btn" data-action="code" title="行内代码 Ctrl+Shift+M"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L1 8l4 4"/><path d="M11 4l4 4-4 4"/></svg></button>
         <button class="tb-btn" data-action="codeblock" title="代码块 Ctrl+Alt+C"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M5 6l-2 2 2 2"/><path d="M11 6l2 2-2 2"/></svg></button>
         <button class="tb-btn" data-action="table" title="表格 Ctrl+Alt+T"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M1.5 6h13M1.5 10h13M5.5 2.5v11M10.5 2.5v11"/></svg></button>
@@ -90,7 +124,7 @@
       <div style="flex:1"></div>
 
       <div class="tb-group">
-        <button class="tb-btn ai-toolbar-btn" data-action="aiLayout" title="AI layout"><svg class="ai-bulb" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/><path class="ai-bulb-spark" d="M18.8 4.2l.4-1.2.4 1.2 1.2.4-1.2.4-.4 1.2-.4-1.2-1.2-.4 1.2-.4Z"/><path class="ai-bulb-spark" d="M4.8 7.6l.3-.9.3.9.9.3-.9.3-.3.9-.3-.9-.9-.3.9-.3Z"/></svg></button>
+        <button class="tb-btn ai-toolbar-btn" data-action="aiLayout" title="AI 排版"><svg class="ai-bulb" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/><path class="ai-bulb-spark" d="M18.8 4.2l.4-1.2.4 1.2 1.2.4-1.2.4-.4 1.2-.4-1.2-1.2-.4 1.2-.4Z"/><path class="ai-bulb-spark" d="M4.8 7.6l.3-.9.3.9.9.3-.9.3-.3.9-.3-.9-.9-.3.9-.3Z"/></svg></button>
       </div>
 
       <div class="tb-group">
@@ -99,9 +133,10 @@
       <div class="tb-dropdown" id="exportDropdown">
         <button class="tb-btn" id="exportToggle" title="导出文档"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2"/><path d="M5 5l3-3 3 3"/><path d="M2.5 12v1.5h11V12"/></svg> <span class="caret">▾</span></button>
         <div class="dropdown-menu" id="exportMenu" hidden>
-          <button class="dropdown-item" data-action="exportDoc">Word-compatible</button>
-          <button class="dropdown-item" data-action="exportHTML">HTML 网页</button>
-          <button class="dropdown-item" data-action="exportMD">Markdown</button>
+          <button class="dropdown-item" data-action="exportDoc" title="导出为 Word 文档，保留排版样式">Word 文档</button>
+          <button class="dropdown-item" data-action="exportHTML" title="导出为独立 HTML 网页，包含所有样式和图片">HTML 网页</button>
+          <button class="dropdown-item" data-action="exportMD" title="导出为 Markdown 纯文本">Markdown</button>
+          <button class="dropdown-item" data-action="exportImage" title="导出为长图 PNG，可选样式和列宽">导出图片</button>
         </div>
       </div>
 
@@ -114,14 +149,12 @@
     <div class="editor-wrap" id="editorWrap">
       <div class="document-shell">
         <div class="doc-title-bar">
-      <button class="mobile-menu-btn" id="mobileMenuBtn" title="文档列表">☰</button>
-      <input type="text" id="docTitle" placeholder="无标题">
-      <button class="mobile-more-icon" id="mobileMoreIcon" title="更多操作" hidden>
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor"><circle cx="9" cy="4" r="1.6"/><circle cx="9" cy="9" r="1.6"/><circle cx="9" cy="14" r="1.6"/></svg>
-      </button>
-    </div>
+          <button class="mobile-menu-btn" id="mobileMenuBtn" title="文档列表">☰</button>
+          <input type="text" id="docTitle" placeholder="无标题">
+        </div>
         <div class="editor" id="editor" contenteditable="true" spellcheck="true" data-placeholder="在这里开始写作……"></div>
       </div>
+      <div id="dropIndicator"></div>
     </div>
 
     <div class="statusbar" id="statusbar">
@@ -140,24 +173,20 @@
 
 <!-- 选中浮动菜单（飞书式） -->
 <div class="float-menu" id="floatMenu" hidden>
+  <button class="fm-btn fm-type-trigger" data-action="blockMenu" title="段落类型" aria-haspopup="menu" aria-expanded="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8"/></svg><svg class="fm-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+  </button>
+  <span class="fm-divider"></span>
   <button class="fm-btn" data-cmd="bold" title="加粗"><b>B</b></button>
   <button class="fm-btn" data-cmd="italic" title="斜体"><i>I</i></button>
   <button class="fm-btn" data-cmd="underline" title="下划线"><u>U</u></button>
   <button class="fm-btn" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
-  <span class="fm-divider"></span>
-  <button class="fm-btn" data-block="H1" title="标题1">H1</button>
-  <button class="fm-btn" data-block="H2" title="标题2">H2</button>
-  <button class="fm-btn" data-block="H3" title="标题3">H3</button>
-  <button class="fm-btn" data-block="P" title="正文">正文</button>
-  <span class="fm-divider"></span>
-  <button class="fm-btn" data-cmd="insertUnorderedList" title="无序列表">•</button>
-  <button class="fm-btn" data-cmd="insertOrderedList" title="有序列表">1.</button>
-  <button class="fm-btn" data-block="BLOCKQUOTE" title="引用">❝</button>
-  <button class="fm-btn" data-action="code" title="行内代码">&lt;/&gt;</button>
+  <button class="fm-btn" data-action="linkMenu" title="链接"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 14.5 14.5 9.5"/><path d="M7.5 16.5 5 19a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0"/><path d="m16.5 7.5 2.5-2.5a3.5 3.5 0 0 1 5 5l-4 4a3.5 3.5 0 0 1-5 0"/></svg></button>
+  <button class="fm-btn" data-action="code" title="行内代码"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18"/></svg></button>
   <span class="fm-divider"></span>
   <button class="fm-btn ai-fm-btn" data-action="aiRewrite" title="AI"><svg class="ai-bulb" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/><path class="ai-bulb-spark" d="M18.8 4.2l.4-1.2.4 1.2 1.2.4-1.2.4-.4 1.2-.4-1.2-1.2-.4 1.2-.4Z"/><path class="ai-bulb-spark" d="M4.8 7.6l.3-.9.3.9.9.3-.9.3-.3.9-.3-.9-.9-.3.9-.3Z"/></svg></button>
   <span class="fm-divider"></span>
-  <button class="fm-btn" data-cmd="removeFormat" title="清除格式">⌫</button>
+  <button class="fm-btn" data-cmd="removeFormat" title="清除格式"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h12M11 5 7 17M4 20 20 4M12 19h7"/></svg></button>
 </div>
 
 <!-- 图片选中浮动菜单 -->
@@ -198,7 +227,7 @@
   <div class="modal ai-modal">
     <div class="modal-head">
       <span class="modal-title" id="aiModalTitle">AI</span>
-      <button class="modal-close" id="aiModalClose" title="Close">x</button>
+      <button class="modal-close" id="aiModalClose" title="关闭">×</button>
     </div>
     <div class="modal-body" id="aiModalBody"></div>
   </div>
@@ -234,74 +263,50 @@
 <!-- 阅读模式退出按钮 -->
 <button class="reading-exit" id="readingExit" title="退出阅读模式（Esc）" hidden>✕ 退出阅读</button>
 
-<!-- 移动端底部导航栏 -->
-<nav class="mobile-bottom-nav" id="mobileBottomNav" hidden>
-  <button class="mbn-btn mbn-icon" id="mbnMenu" title="文档列表">
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 7h16M3 11h16M3 15h16"/></svg>
-  </button>
-  <div class="mbn-title" id="mbnTitle" title="点击编辑标题">无标题</div>
-  <button class="mbn-btn mbn-new" id="mbnNew" title="新建文档">
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4v14M4 11h14"/></svg>
-  </button>
-</nav>
+<script src="/vendor/dom-to-image-more.min.js"></script>
+<script type="module" src="app.js"></script>
 
-<!-- 移动端格式工具栏（bottom sheet） -->
-<div class="mobile-sheet" id="mobileFormatSheet" hidden>
-  <div class="ms-handle"></div>
-  <div class="ms-head">
-    <span class="ms-title">格式</span>
-    <button class="ms-close" id="mobileFormatClose">×</button>
-  </div>
-  <div class="ms-body">
-    <div class="ms-grid">
-      <button class="ms-grid-btn" data-cmd="bold"><b>B</b><span>加粗</span></button>
-      <button class="ms-grid-btn" data-cmd="italic"><i>I</i><span>斜体</span></button>
-      <button class="ms-grid-btn" data-cmd="underline"><u>U</u><span>下划线</span></button>
-      <button class="ms-grid-btn" data-cmd="strikeThrough"><s>S</s><span>删除线</span></button>
-      <button class="ms-grid-btn" data-block="H1"><span style="font-size:16px;font-weight:700">H1</span><span>标题1</span></button>
-      <button class="ms-grid-btn" data-block="H2"><span style="font-size:15px;font-weight:700">H2</span><span>标题2</span></button>
-      <button class="ms-grid-btn" data-block="H3"><span style="font-size:14px;font-weight:700">H3</span><span>标题3</span></button>
-      <button class="ms-grid-btn" data-block="P"><span style="font-size:14px">正文</span><span>正文</span></button>
-      <button class="ms-grid-btn" data-cmd="insertUnorderedList"><span style="font-size:18px">•</span><span>无序列表</span></button>
-      <button class="ms-grid-btn" data-cmd="insertOrderedList"><span style="font-size:14px">1.</span><span>有序列表</span></button>
-      <button class="ms-grid-btn" data-block="BLOCKQUOTE"><span style="font-size:16px">❝</span><span>引用</span></button>
-      <button class="ms-grid-btn" data-action="code"><span style="font-size:13px">&lt;/&gt;</span><span>行内代码</span></button>
-      <button class="ms-grid-btn" data-action="codeblock"><span style="font-size:14px;font-weight:700">{ }</span><span>代码块</span></button>
-      <button class="ms-grid-btn" data-action="table"><span style="font-size:15px">▦</span><span>表格</span></button>
-      <button class="ms-grid-btn" data-action="hr"><span style="font-size:15px">—</span><span>分隔线</span></button>
-      <button class="ms-grid-btn" data-action="toc"><span style="font-size:15px">≡</span><span>目录</span></button>
-      <button class="ms-grid-btn" data-action="undo"><span style="font-size:14px">↶</span><span>撤销</span></button>
-      <button class="ms-grid-btn" data-action="redo"><span style="font-size:14px">↷</span><span>重做</span></button>
-      <button class="ms-grid-btn" data-cmd="removeFormat"><span style="font-size:14px">⌫</span><span>清除格式</span></button>
+<!-- 导出图片：隐藏渲染区（用于生成预览和截图） -->
+<div id="exportRenderContainer" style="position:fixed;left:-9999px;top:0;pointer-events:none;"></div>
+
+<!-- 导出图片弹窗 -->
+<div class="modal-overlay" id="exportImageModal" hidden>
+  <div class="modal export-image-modal">
+    <div class="modal-head">
+      <span class="modal-title">导出图片</span>
+      <button class="modal-close" id="exportImageClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body" id="exportImageBody">
+      <div class="expimg-layout">
+        <div class="expimg-sidebar">
+          <div class="expimg-label">样式</div>
+          <div class="expimg-styles" id="expimgStyles">
+            <button class="expimg-style active" data-style="default">默认</button>
+            <button class="expimg-style" data-style="wechat">公众号</button>
+            <button class="expimg-style" data-style="simple">简约</button>
+            <button class="expimg-style" data-style="dark">暗色</button>
+          </div>
+          <div class="expimg-label">列宽</div>
+          <div class="expimg-width-row">
+            <input type="range" class="expimg-slider" id="expimgWidth" min="420" max="900" value="720" step="10">
+            <span class="expimg-width-val" id="expimgWidthVal">720px</span>
+          </div>
+          <div class="expimg-label">分辨率</div>
+          <select class="expimg-select" id="expimgScale">
+            <option value="2">2x（推荐）</option>
+            <option value="1">1x</option>
+            <option value="3">3x</option>
+          </select>
+          <button class="expimg-download" id="expimgDownload">下载 PNG</button>
+        </div>
+        <div class="expimg-preview-wrap">
+          <div class="expimg-preview-label">预览</div>
+          <div class="expimg-preview" id="expimgPreview"></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- 移动端更多操作（bottom sheet） -->
-<div class="mobile-sheet" id="mobileMoreSheet" hidden>
-  <div class="ms-handle"></div>
-  <div class="ms-head">
-    <span class="ms-title">更多操作</span>
-    <button class="ms-close" id="mobileMoreClose">×</button>
-  </div>
-  <div class="ms-body">
-    <button class="ms-action-btn" id="msImport">导入 HTML 文件</button>
-    <button class="ms-action-btn" id="msExport">导出文档</button>
-    <button class="ms-action-btn" id="msReading">阅读模式</button>
-    <button class="ms-action-btn" id="msShare" style="display:none">分享文档</button>
-    <button class="ms-action-btn" id="msTrash">回收站</button>
-    <button class="ms-action-btn" id="msSettings" style="display:none">设置</button>
-    <button class="ms-action-btn" id="msTheme">切换主题</button>
-  </div>
-</div>
-
-<!-- 图片查看器 -->
-<div class="img-viewer" id="imgViewer" hidden>
-  <div class="iv-counter" id="ivCounter"></div>
-  <button class="iv-close" id="ivClose" title="关闭">×</button>
-  <div class="iv-track" id="ivTrack"></div>
-</div>
-
-<script type="module" src="app.js"></script>
 </body>
 </html>

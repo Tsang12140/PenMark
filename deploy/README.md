@@ -86,6 +86,9 @@ NODE_ENV=production
 
 # Nginx 反向代理
 TRUST_PROXY=1
+
+# 网站实际对外地址（替换为你的域名，不要带末尾斜杠）
+APP_ORIGIN=https://你的域名
 ```
 
 生成随机密钥：
@@ -136,7 +139,9 @@ pm2 startup
 location / {
     proxy_pass http://127.0.0.1:3001;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Port $server_port;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -150,6 +155,8 @@ location / {
 宝塔面板 → 网站 → SSL → 一键申请 Let's Encrypt 免费证书。
 
 **重要**：SSL 配置后，Cookie 会自动带 `Secure` 标志（基于 `X-Forwarded-Proto` 判断）。
+
+`Host`、`X-Forwarded-Host`、`X-Forwarded-Proto` 和 `.env` 中的 `APP_ORIGIN` 共同用于登录后的同源安全校验。宝塔生成反向代理配置后，请确认这些请求头仍然存在，否则新建和保存会返回“跨域请求被拒绝”。
 
 ---
 

@@ -25,7 +25,6 @@ let switching = false; // 切换文档时屏蔽自动保存
 
 /* ---------- Toast ---------- */
 function toast(msg) {
-  if (!toastStack) return;
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
@@ -101,6 +100,7 @@ function handleAction(action) {
     case 'exportHTML': exportHTML(); break;
     case 'exportMD': exportMarkdown(); break;
     case 'exportDoc': exportWord(); break;
+    case 'exportImage': openExportImageModal(); break;
     case 'share': openShareModal(); break;
     
     case 'aiLayout': openAiLayoutModal(); break;
@@ -110,8 +110,7 @@ function handleAction(action) {
 }
 
 function refreshToolbar() {
-  const toolbar = $('toolbar');
-  const btns = toolbar ? toolbar.querySelectorAll('.tb-btn[data-cmd]') : [];
+  const btns = document.querySelectorAll('.tb-btn[data-cmd]');
   editor.refreshToolbarState(btns, blockStyleSel);
 }
 
@@ -122,6 +121,9 @@ document.addEventListener('selectionchange', () => {
 /* ---------- 飞书式浮动菜单：选中显示完整菜单，点击显示精简菜单（标题层级） ---------- */
 const floatMenu = $('floatMenu');
 const floatMenuImg = $('floatMenuImg');
+let pinnedLinkCard = null;
+let pinnedLinkCardUntil = 0;
+let floatMenuRange = null;
 
 editorEl.addEventListener('mouseup', () => {
   setTimeout(updateTextFloatMenu, 10);
@@ -134,30 +136,22 @@ editorEl.addEventListener('click', () => {
 });
 
 function updateTextFloatMenu() {
+  if (pinnedLinkCard && performance.now() < pinnedLinkCardUntil && editorEl.contains(pinnedLinkCard)) {
+    floatMenu.classList.remove('compact');
+    floatMenu.classList.add('card-context');
+    showFloatMenu(floatMenu, pinnedLinkCard.getBoundingClientRect(), 'top');
+    refreshFloatMenuState();
+    return;
+  }
+  floatMenu.classList.remove('card-context');
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) { hideFloatMenu(); return; }
   const range = sel.getRangeAt(0);
   if (!editorEl.contains(range.commonAncestorContainer)) { hideFloatMenu(); return; }
+  rememberFloatMenuRange(range);
   // 选区在 img-container 内时不显示文字菜单
   if (range.commonAncestorContainer.nodeType === 1 && range.commonAncestorContainer.closest && range.commonAncestorContainer.closest('.img-container')) {
     hideFloatMenu();
-    return;
-  }
-
-  // 移动端：不设置位置，CSS 固定在底部
-  if (isMobile()) {
-    if (!sel.isCollapsed) {
-      // 有选区：显示完整菜单
-      floatMenu.classList.remove('compact');
-      floatMenu.hidden = false;
-      refreshFloatMenuState();
-    } else if (mobileKeyboardOpen) {
-      // 键盘弹出 + 光标定位：显示精简菜单（标题层级），跟随键盘上方
-      floatMenu.classList.add('compact');
-      floatMenu.hidden = false;
-    } else {
-      hideFloatMenu();
-    }
     return;
   }
 
@@ -174,11 +168,29 @@ function updateTextFloatMenu() {
     if (!block) { hideFloatMenu(); return; }
     const rect = block.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) { hideFloatMenu(); return; }
-    floatMenu.classList.add('compact');
-    showFloatMenuAtLeft(floatMenu, rect);
+    floatMenu.classList.remove('compact');
+    showFloatMenu(floatMenu, rect, 'top');
+    refreshFloatMenuState();
   }
 }
 
+function rememberFloatMenuRange(range) {
+  if (!range) return;
+  try { floatMenuRange = range.cloneRange(); } catch (_) { floatMenuRange = null; }
+}
+
+function restoreFloatMenuRange() {
+  if (!floatMenuRange) return false;
+  try {
+    if (!editorEl.contains(floatMenuRange.commonAncestorContainer)) return false;
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(floatMenuRange.cloneRange());
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function getCurrentBlockElement() {
   const sel = window.getSelection();
   if (!sel.rangeCount) return null;
@@ -207,11 +219,6 @@ function updateImageFloatMenu(container) {
   if (!container) { floatMenuImg.hidden = true; return; }
   // 隐藏文字菜单
   floatMenu.hidden = true;
-  // 移动端：不设置位置，CSS 固定在底部
-  if (isMobile()) {
-    floatMenuImg.hidden = false;
-    return;
-  }
   // 等一帧让 selected 样式生效，再取位置
   requestAnimationFrame(() => {
     const rect = container.getBoundingClientRect();
@@ -243,12 +250,6 @@ function showFloatMenu(menu, rect, prefer) {
 
 function hideFloatMenu() { floatMenu.hidden = true; }
 
-function hideAllFloatMenus() {
-  hideFloatMenu();
-  floatMenuImg.hidden = true;
-  tableFloatMenu.hidden = true;
-}
-
 function refreshFloatMenuState() {
   const cmds = ['bold', 'italic', 'underline', 'strikeThrough'];
   floatMenu.querySelectorAll('.fm-btn').forEach(btn => {
@@ -268,12 +269,30 @@ floatMenu.addEventListener('mousedown', (e) => {
 floatMenu.addEventListener('click', (e) => {
   const btn = e.target.closest('.fm-btn');
   if (!btn) return;
+  restoreFloatMenuRange();
   const cmd = btn.getAttribute('data-cmd');
   const block = btn.getAttribute('data-block');
   const action = btn.getAttribute('data-action');
   if (cmd) editor.exec(cmd);
   else if (block) editor.exec('formatBlock', '<' + block + '>');
-  else if (action) handleAction(action);
+  else if (action === 'linkMenu') {
+    const anchor = getSelectionAnchor();
+    if (!anchor) handleAction('link');
+    else {
+      buildLinkMenu(anchor);
+      const rect = floatMenu.getBoundingClientRect();
+      positionCtxMenu(rect.left, rect.bottom + 6, rect.top - 6);
+    }
+  }
+  else if (action === 'blockMenu') {
+    if (!ctxMenu.hidden) hideCtxMenu();
+    else {
+      buildCtxMenu(getCurrentBlockElement());
+      const rect = floatMenu.getBoundingClientRect();
+      positionCtxMenu(rect.left, rect.bottom + 6, rect.top - 6);
+      btn.setAttribute('aria-expanded', 'true');
+    }
+  } else if (action) handleAction(action);
   refreshFloatMenuState();
 });
 
@@ -299,99 +318,106 @@ floatMenuImg.addEventListener('click', (e) => {
 editorEl.addEventListener('scroll', hideFloatMenu);
 window.addEventListener('scroll', hideFloatMenu, true);
 window.addEventListener('resize', () => { hideFloatMenu(); floatMenuImg.hidden = true; });
-// 点击编辑器外隐藏所有浮动菜单
+// 点击编辑器外隐藏
 document.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.float-menu') || e.target.closest('.table-float-menu')) return;
+  if (e.target.closest('.float-menu')) return;
   if (!editorEl.contains(e.target) && !e.target.closest('.img-container')) {
     hideFloatMenu();
     floatMenuImg.hidden = true;
-    tableFloatMenu.hidden = true;
   }
 });
 
 /* ---------- 右键上下文菜单（飞书式，精简版） ---------- */
 const ctxMenu = $('ctxMenu');
-let ctxAnchor = null; // 右键命中的链接（若有）
+let ctxAnchor = null;
+let activeLinkAnchor = null; // 右键命中的链接（若有）
 
-editorEl.addEventListener('contextmenu', (e) => {
-  if (readingMode) return; // 阅读模式禁用右键编辑菜单
-  // 仅在编辑区内有效
-  const block = getCurrentBlockElement();
-  // 命中链接？
-  const a = e.target.closest('a');
-  ctxAnchor = (a && editorEl.contains(a)) ? a : null;
-  e.preventDefault();
-  hideFloatMenu();
-  floatMenuImg.hidden = true;
-  buildCtxMenu(ctxAnchor, block);
-  positionCtxMenu(e.clientX, e.clientY);
-});
+editorEl.addEventListener('contextmenu', () => hideCtxMenu());
 
-function buildCtxMenu(anchor, block) {
-  let html = '';
-  // 链接上下文：优先显示链接相关操作
-  if (anchor) {
-    const isCard = anchor.getAttribute('data-link-card') === '1';
-    if (isCard) {
-      html += ctxBtn('open', '↗', '在新标签打开');
-      html += ctxBtn('delete', '✕', '删除卡片', true);
-    } else {
-      html += ctxBtn('card', '▦', '转为链接卡片');
-      html += ctxBtn('unwrap', '🔗', '取消链接');
-      html += ctxBtn('open', '↗', '在新标签打开');
-    }
-    html += '<div class="ctx-sep"></div>';
+function getSelectionAnchor() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  const node = sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const anchor = el && el.closest ? el.closest('a') : null;
+  return anchor && editorEl.contains(anchor) ? anchor : (activeLinkAnchor && editorEl.contains(activeLinkAnchor) ? activeLinkAnchor : null);
+}
+
+function buildLinkMenu(anchor) {
+  ctxAnchor = anchor;
+  let html = '<div class="ctx-menu-label">链接</div>';
+  if (anchor.getAttribute('data-link-card') === '1') {
+    html += ctxBtn('unwrapCard', '转回链接');
+  } else {
+    html += ctxBtn('card', '转为链接卡片');
   }
-  // 格式：正文/H1/H2/H3
-  html += '<div class="ctx-grid">';
-  html += ctxGridBtn('P', '正文', currentBlockTag(block) === 'P');
-  html += ctxGridBtn('H1', 'H1', currentBlockTag(block) === 'H1');
-  html += ctxGridBtn('H2', 'H2', currentBlockTag(block) === 'H2');
-  html += ctxGridBtn('H3', 'H3', currentBlockTag(block) === 'H3');
-  html += '</div>';
+  html += ctxBtn('open', '在新标签页打开');
+  if (anchor.getAttribute('data-link-card') !== '1') html += ctxBtn('unwrap', '取消链接');
+  ctxMenu.innerHTML = html;
+}
+function buildCtxMenu(block) {
+  if (floatMenu.classList.contains('card-context')) {
+    ctxMenu.innerHTML = '<div class="ctx-menu-label">插入到卡片后</div>' +
+      ctxBtn('codeblock', '代码块') + ctxBtn('hr', '分隔线');
+    return;
+  }
+  const tag = currentBlockTag(block);
+  let html = '<div class="ctx-menu-label">段落类型</div>';
+  html += ctxBtn('block', '正文', tag === 'P', 'P');
+  html += ctxBtn('block', '一级标题', tag === 'H1', 'H1');
+  html += ctxBtn('block', '二级标题', tag === 'H2', 'H2');
+  html += ctxBtn('block', '三级标题', tag === 'H3', 'H3');
+  html += ctxBtn('block', '四级标题', tag === 'H4', 'H4');
   html += '<div class="ctx-sep"></div>';
-  // 列表
-  html += ctxBtn('ul', '•', '无序列表');
-  html += ctxBtn('ol', '1.', '有序列表');
-  html += '<div class="ctx-sep"></div>';
-  // 插入
-  html += ctxBtn('codeblock', '{ }', '代码块');
-  html += ctxBtn('quote', '❝', '引用');
-  html += ctxBtn('hr', '—', '分割线');
-  html += '<div class="ctx-sep"></div>';
-  // 编辑
-  html += ctxBtn('cut', '✂', '剪切');
-  html += ctxBtn('copy', '⎘', '复制');
-  html += ctxBtn('duplicate', '⧉', '复制此段');
-  html += ctxBtn('delete', '✕', '删除', true);
+  html += ctxBtn('ol', '有序列表');
+  html += ctxBtn('ul', '无序列表');
+  html += ctxBtn('quote', '引用');
+  html += ctxBtn('codeblock', '代码块');
+  html += ctxBtn('hr', '分隔线');
   ctxMenu.innerHTML = html;
 }
 
-function ctxBtn(action, icon, label, danger) {
-  return '<button class="ctx-btn' + (danger ? ' danger' : '') + '" data-ctx="' + action + '">' +
-    '<span class="ctx-icon">' + icon + '</span><span>' + label + '</span></button>';
+function menuIcon(action, block) {
+  if (action === 'block') {
+    return '<span class="ctx-type-icon">' + (block === 'P' ? 'T' : block) + '</span>';
+  }
+  const paths = {
+    ol: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M3 5h2v3M3 11h2l-2 3h2M3 17h2v3H3"/>',
+    ul: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+    quote: '<path d="M5 7h5v5H6c0 3-1 5-3 6M14 7h5v5h-4c0 3-1 5-3 6"/>',
+    codeblock: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
+    hr: '<path d="M4 12h16"/>',
+    card: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h10M7 13h7"/>',
+    open: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6H5V6h6"/>',
+    unwrap: '<path d="m9 15 6-6M7 17l-2 2a3 3 0 0 1-4-4l3-3M17 7l2-2a3 3 0 0 1 4 4l-3 3"/>'
+  };
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (paths[action] || '') + '</svg>';
 }
-function ctxGridBtn(block, label, active) {
-  return '<button class="ctx-btn' + (active ? ' active' : '') + '" data-ctx="block" data-block="' + block + '">' + label + '</button>';
+
+function ctxBtn(action, label, active, block) {
+  return '<button class="ctx-btn' + (active ? ' active' : '') + '" data-ctx="' + action + '"' +
+    (block ? ' data-block="' + block + '"' : '') + '>' +
+    '<span class="ctx-icon">' + menuIcon(action, block) + '</span><span>' + label + '</span>' +
+    (active ? '<span class="ctx-check">✓</span>' : '') + '</button>';
 }
 function currentBlockTag(block) {
   if (!block || block === editorEl) return '';
   return block.tagName.toUpperCase();
 }
 
-function positionCtxMenu(x, y) {
+function positionCtxMenu(x, y, aboveY) {
   ctxMenu.hidden = false;
   const mw = ctxMenu.offsetWidth, mh = ctxMenu.offsetHeight;
   let left = x, top = y;
   if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (top + mh > window.innerHeight - 8) top = y - mh;
+  if (top + mh > window.innerHeight - 8) top = (aboveY || y) - mh;
   if (top < 8) top = 8;
   if (left < 8) left = 8;
   ctxMenu.style.left = left + 'px';
   ctxMenu.style.top = top + 'px';
 }
 
-function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; }
+function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); }
 
 ctxMenu.addEventListener('mousedown', (e) => e.preventDefault()); // 不失焦
 ctxMenu.addEventListener('click', (e) => {
@@ -399,7 +425,8 @@ ctxMenu.addEventListener('click', (e) => {
   if (!btn) return;
   const action = btn.getAttribute('data-ctx');
   const block = btn.getAttribute('data-block');
-  const anchor = ctxAnchor; // 先捕获，hideCtxMenu 会清空
+  const anchor = ctxAnchor;
+  restoreFloatMenuRange();
   hideCtxMenu();
   handleCtxAction(action, block, anchor);
 });
@@ -419,6 +446,9 @@ async function handleCtxAction(action, block, anchor) {
     case 'delete': editor.deleteCurrentBlock(); break;
     case 'card':
       if (anchor) await editor.convertLinkToCard(anchor);
+      break;
+    case 'unwrapCard':
+      if (anchor) editor.convertCardToLink(anchor);
       break;
     case 'unwrap':
       if (anchor) editor.unwrapLink(anchor);
@@ -444,9 +474,27 @@ function openEditorLink(anchor) {
 // Editing keeps plain links safe from accidental navigation; cards expose an explicit open target.
 editorEl.addEventListener('click', (e) => {
   const a = e.target.closest('a');
-  if (!a || !editorEl.contains(a)) return;
+  if (!a || !editorEl.contains(a)) {
+    activeLinkAnchor = null;
+    pinnedLinkCard = null;
+    pinnedLinkCardUntil = 0;
+    return;
+  }
+  activeLinkAnchor = a;
   const isCard = a.getAttribute('data-link-card') === '1';
-  const openTarget = e.target.closest('.lc-open');
+  if (isCard) {
+    pinnedLinkCard = a;
+    pinnedLinkCardUntil = performance.now() + 250;
+    const cardRange = document.createRange();
+    cardRange.setStartAfter(a);
+    cardRange.collapse(true);
+    rememberFloatMenuRange(cardRange);
+    floatMenu.classList.remove('compact');
+    floatMenu.classList.add('card-context');
+    showFloatMenu(floatMenu, a.getBoundingClientRect(), 'top');
+    refreshFloatMenuState();
+  }
+  const openTarget = e.target.closest('.lc-open, .lc-thumb');
   if ((isCard && openTarget) || e.ctrlKey || e.metaKey) {
     e.preventDefault();
     e.stopPropagation();
@@ -612,8 +660,8 @@ function renderFolderItem(folder, docs) {
   const head = document.createElement('div');
   head.className = 'folder-head';
   head.innerHTML =
-    '<span class="folder-arrow">▸</span>' +
-    '<span class="folder-icon">▤</span>' +
+    '<span class="folder-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,4 11,8 6,12"/></svg></span>' +
+    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .8.4l1 1.1a1 1 0 0 0 .8.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/></svg></span>' +
     '<span class="folder-name" title="' + escapeHtml(folder.name) + '">' + escapeHtml(folder.name) + '</span>' +
     '<span class="folder-count">' + (folder.doc_count || 0) + '</span>' +
     '<button class="folder-menu" title="更多操作">⋯</button>';
@@ -655,8 +703,8 @@ function renderUnfiledSection(docs) {
   const wrap = document.createElement('div');
   wrap.className = 'folder-item unfiled';
   wrap.innerHTML =
-    '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden">▸</span>' +
-    '<span class="folder-icon">▸</span>' +
+    '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 16 16"></svg></span>' +
+    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .8.4l1 1.1a1 1 0 0 0 .8.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/></svg></span>' +
     '<span class="folder-name">未分类</span>' +
     '<span class="folder-count">' + docs.length + '</span>' +
     '<button class="folder-menu" title="更多操作">⋯</button></div>';
@@ -1006,7 +1054,7 @@ async function openDoc(id) {
     saveStateEl.textContent = '已加载';
     updateStats();
     refreshToolbar();
-    updateOutline();
+    updateOutline(true);
   } catch (e) { toast('打开失败：' + (e.message || e)); }
   finally { switching = false; }
 }
@@ -1076,7 +1124,7 @@ function renderSearchResults(results) {
   }
   const wrap = document.createElement('div');
   wrap.className = 'folder-item expanded';
-  wrap.innerHTML = '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden">▸</span><span class="folder-icon">⌕</span><span class="folder-name">搜索结果</span><span class="folder-count">' + results.length + '</span></div>';
+  wrap.innerHTML = '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 16 16"></svg></span><span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.2"/><line x1="10.2" y1="10.2" x2="13.5" y2="13.5"/></svg></span><span class="folder-name">搜索结果</span><span class="folder-count">' + results.length + '</span></div>';
   const list = document.createElement('div');
   list.className = 'folder-docs';
   results.forEach(doc => list.appendChild(buildDocItem(doc)));
@@ -1089,19 +1137,25 @@ searchInput.addEventListener('search', () => {
   if (!searchInput.value) loadSidebar();
 });
 
-/* ---------- 主题切换：纸张 → 飞书 → 暗色 ---------- */
-const THEME_LABELS = { light: '纸张', feishu: '飞书', dark: '暗色' };
+/* ---------- 主题切换：纸墨 → 雾纸 → 夜墨 ---------- */
+const THEME_LABELS = { light: '纸墨', feishu: '雾纸', dark: '夜墨' };
 const THEME_ORDER = ['light', 'feishu', 'dark'];
+const THEME_COLORS = { light: '#F4F2ED', feishu: '#F4F6F4', dark: '#171B1C' };
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', THEME_COLORS[theme] || THEME_COLORS.light);
+}
 function initTheme() {
   const saved = localStorage.getItem('penmark_theme');
   const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', theme);
+  applyTheme(theme);
 }
 function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') || 'light';
   const idx = THEME_ORDER.indexOf(cur);
   const next = THEME_ORDER[(idx + 1) % THEME_ORDER.length];
-  document.documentElement.setAttribute('data-theme', next);
+  applyTheme(next);
   localStorage.setItem('penmark_theme', next);
   toast('主题：' + THEME_LABELS[next]);
 }
@@ -1148,7 +1202,7 @@ importInput.addEventListener('change', () => {
 
 /* ---------- 导出 ---------- */
 function suggestedFilename(ext) {
-  const title = (docTitleEl.value.trim() || '知著文档').replace(/[\\/:*?"<>|]/g, '_');
+  const title = (docTitleEl.value.trim() || '知著文档').replace(/[\\/:*?"<>|]/g, '_').replace(/\.+$/, '');
   return title + '.' + ext;
 }
 
@@ -1178,6 +1232,206 @@ function exportWord() {
   toast('已导出 Word');
 }
 
+// 导出图片前清理 HTML：
+// 1) 所有 SVG 补 width/height
+// 2) link-card 强制包裹
+// 3) 空壳 link-card（无描述且无缩略图）降级为简洁链接样式
+function sanitizeForImageExport(html) {
+  const tpl = document.createElement('div');
+  tpl.innerHTML = html;
+  // 1) 给所有无尺寸 SVG 补 24x24
+  tpl.querySelectorAll('svg').forEach(svg => {
+    if (!svg.getAttribute('width')) svg.setAttribute('width', '24');
+    if (!svg.getAttribute('height')) svg.setAttribute('height', '24');
+    if (!svg.getAttribute('viewBox') && svg.getAttribute('width') && svg.getAttribute('height')) {
+      svg.setAttribute('viewBox', '0 0 ' + svg.getAttribute('width') + ' ' + svg.getAttribute('height'));
+    }
+  });
+  // 2) link-card 强制 max-width + flex-wrap
+  tpl.querySelectorAll('.link-card').forEach(card => {
+    card.style.maxWidth = '100%';
+    card.style.flexWrap = 'wrap';
+    // 3) 空壳卡片降级：加个 class，CSS 把它变简洁
+    const hasDesc = !!card.querySelector('.lc-desc');
+    const hasThumb = !!card.querySelector('.lc-thumb');
+    if (!hasDesc && !hasThumb) {
+      card.classList.add('lc-empty');
+    }
+  });
+  return tpl.innerHTML;
+}
+
+/* ---------- 导出图片 ---------- */
+// 通用 link-card 样式：每个导出主题都会拼接
+const EXPORT_LINK_CARD_CSS = '.export-doc .doc .link-card{display:flex;flex-wrap:wrap;align-items:center;width:100%;max-width:100%;margin:.8em 0;padding:12px 14px;background:rgba(127,127,127,.06);border:1px solid rgba(127,127,127,.2);border-radius:8px;text-decoration:none;color:inherit;box-sizing:border-box;}.export-doc .doc .link-card.lc-empty{padding:8px 14px;background:transparent;border:none;border-radius:0;border-bottom:1px solid rgba(127,127,127,.25);font-size:.95em;}.export-doc .doc .link-card.lc-empty .lc-main{flex-direction:row;gap:8px;align-items:baseline;}.export-doc .doc .link-card.lc-empty .lc-title{font-size:1em;font-weight:500;}.export-doc .doc .link-card.lc-empty .lc-domain{font-size:.85em;opacity:.6;margin:0;}.export-doc .doc .link-card .lc-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px;}.export-doc .doc .link-card .lc-title{font-size:1em;font-weight:600;line-height:1.4;text-decoration:none;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}.export-doc .doc .link-card .lc-desc{font-size:.85em;line-height:1.5;opacity:.75;text-decoration:none;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}.export-doc .doc .link-card .lc-domain{font-size:.78em;opacity:.55;margin-top:2px;text-decoration:none;}.export-doc .doc .link-card .lc-thumb{flex:0 0 auto;width:64px;height:64px;margin-left:12px;border-radius:6px;overflow:hidden;}.export-doc .doc .link-card .lc-thumb img{width:100%;height:100%;object-fit:cover;}.export-doc .doc .link-card.no-thumb .lc-thumb{display:none;}.export-doc .doc .link-card .lc-open{display:none;}.export-doc .doc .link-card .lc-open svg{width:14px;height:14px;}';
+
+const EXPORT_IMAGE_STYLES = {
+  default: {
+    name: '默认',
+    css: '.export-doc{background:#fdfbf5;}.export-doc .doc{color:#2b2a27;font-family:"Songti SC","Source Han Serif SC","SimSun",Georgia,serif;line-height:1.85;font-size:17px;padding:48px 60px;box-sizing:border-box;}.doc h1{font-size:1.9em;margin:1.2em 0 .6em;}.doc h2{font-size:1.5em;margin:1.1em 0 .5em;}.doc h3{font-size:1.2em;margin:1em 0 .4em;}.doc p{margin:.6em 0;}.doc blockquote{margin:.8em 0;padding:.4em 1.1em;border-left:3px solid #c9bc9a;background:#f5f0e3;color:#6b6660;border-radius:0 4px 4px 0;font-style:italic;}.doc ul,.doc ol{margin:.6em 0;padding-left:1.8em;}.doc hr{border:none;border-top:1px solid #e6e0d4;margin:1.6em 0;}.doc pre{background:#f0ece0;border:1px solid #d9d2bf;border-radius:6px;padding:14px 16px;overflow-x:auto;font-family:Consolas,monospace;font-size:13.5px;}.doc table{border-collapse:collapse;width:100%;margin:.8em 0;}.doc th,.doc td{border:1px solid #e6e0d4;padding:8px 12px;}.doc th{background:#efe9dc;}.doc img{max-width:100%;height:auto;display:block;margin:12px auto;}.doc a{color:#b87333;text-decoration:underline;}' + EXPORT_LINK_CARD_CSS
+  },
+  wechat: {
+    name: '公众号',
+    css: '.export-doc{background:#fff;}.export-doc .doc{color:#333;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;line-height:1.8;font-size:15px;padding:32px 40px;box-sizing:border-box;}.doc h1{font-size:1.7em;margin:1em 0 .5em;color:#1a1a1a;}.doc h2{font-size:1.4em;margin:.9em 0 .4em;color:#1a1a1a;}.doc h3{font-size:1.15em;margin:.8em 0 .3em;color:#1a1a1a;}.doc p{margin:.5em 0;letter-spacing:.3px;}.doc blockquote{margin:.6em 0;padding:.3em 1em;border-left:3px solid #576b95;background:#f7f7f7;color:#888;}.doc ul,.doc ol{margin:.5em 0;padding-left:1.6em;}.doc hr{border:none;border-top:1px solid #e5e5e5;margin:1.2em 0;}.doc pre{background:#f5f5f5;border-radius:4px;padding:12px 14px;font-size:13px;}.doc table{border-collapse:collapse;width:100%;}.doc th,.doc td{border:1px solid #e0e0e0;padding:6px 10px;}.doc th{background:#f0f0f0;}.doc img{max-width:100%;height:auto;display:block;margin:10px auto;border-radius:4px;}.doc a{color:#576b95;text-decoration:none;}' + EXPORT_LINK_CARD_CSS
+  },
+  simple: {
+    name: '简约',
+    css: '.export-doc{background:#fff;}.export-doc .doc{color:#333;font-family:"Georgia","Times New Roman",serif;line-height:1.7;font-size:16px;padding:40px 56px;box-sizing:border-box;}.doc h1{font-size:1.6em;margin:1em 0 .5em;font-weight:700;}.doc h2{font-size:1.3em;margin:.8em 0 .4em;font-weight:700;}.doc h3{font-size:1.1em;margin:.7em 0 .3em;font-weight:700;}.doc p{margin:.5em 0;}.doc blockquote{margin:.6em 0;padding:.3em 1em;border-left:2px solid #ccc;color:#666;}.doc ul,.doc ol{margin:.5em 0;padding-left:1.6em;}.doc hr{border:none;border-top:1px solid #eee;margin:1.2em 0;}.doc pre{background:#f9f9f9;border:1px solid #eee;border-radius:4px;padding:12px 14px;font-size:13.5px;}.doc table{border-collapse:collapse;width:100%;}.doc th,.doc td{border:1px solid #ddd;padding:6px 10px;}.doc th{background:#f5f5f5;}.doc img{max-width:100%;height:auto;display:block;margin:10px auto;}.doc a{color:#0366d6;text-decoration:underline;}' + EXPORT_LINK_CARD_CSS
+  },
+  dark: {
+    name: '暗色',
+    css: '.export-doc{background:#1e1e1e;}.export-doc .doc{color:#d4d4d4;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.8;font-size:15px;padding:40px 56px;box-sizing:border-box;}.doc h1{font-size:1.7em;margin:1em 0 .5em;color:#e8e8e8;}.doc h2{font-size:1.4em;margin:.9em 0 .4em;color:#e0e0e0;}.doc h3{font-size:1.15em;margin:.8em 0 .3em;color:#d8d8d8;}.doc p{margin:.5em 0;}.doc blockquote{margin:.6em 0;padding:.3em 1em;border-left:3px solid #444;background:#2a2a2a;color:#aaa;}.doc ul,.doc ol{margin:.5em 0;padding-left:1.6em;}.doc hr{border:none;border-top:1px solid #333;margin:1.2em 0;}.doc pre{background:#2a2a2a;border:1px solid #333;border-radius:4px;padding:12px 14px;font-size:13px;}.doc table{border-collapse:collapse;width:100%;}.doc th,.doc td{border:1px solid #444;padding:6px 10px;}.doc th{background:#2d2d2d;}.doc img{max-width:100%;height:auto;display:block;margin:10px auto;}.doc a{color:#6ea8fe;text-decoration:underline;}' + EXPORT_LINK_CARD_CSS
+  }
+};
+
+let currentExportStyle = 'default';
+let exportRenderTimer = null;
+
+function openExportImageModal() {
+  if (!currentDoc) return;
+  const modal = $('exportImageModal');
+  currentExportStyle = 'default';
+
+  // 样式列表
+  const stylesEl = $('expimgStyles');
+  stylesEl.querySelectorAll('.expimg-style').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-style') === currentExportStyle);
+    btn.onclick = () => {
+      currentExportStyle = btn.getAttribute('data-style');
+      stylesEl.querySelectorAll('.expimg-style').forEach(b => b.classList.toggle('active', b === btn));
+      debounceExportPreview();
+    };
+  });
+
+  // 列宽滑块
+  const slider = $('expimgWidth');
+  const valEl = $('expimgWidthVal');
+  slider.oninput = () => {
+    valEl.textContent = slider.value + 'px';
+    debounceExportPreview();
+  };
+  valEl.textContent = slider.value + 'px';
+
+  // 分辨率
+  const scaleSel = $('expimgScale');
+  scaleSel.onchange = () => {};  // 分辨率只影响下载，预览始终 1x
+
+  // 下载按钮
+  const downloadBtn = $('expimgDownload');
+  downloadBtn.onclick = () => downloadExportImage();
+
+  // 关闭
+  $('exportImageClose').onclick = () => modal.hidden = true;
+  modal.onclick = (e) => { if (e.target === modal) modal.hidden = true; };
+
+  modal.hidden = false;
+  debounceExportPreview();
+}
+
+function debounceExportPreview() {
+  if (exportRenderTimer) clearTimeout(exportRenderTimer);
+  exportRenderTimer = setTimeout(updateExportPreview, 150);
+}
+
+async function updateExportPreview() {
+  const preview = $('expimgPreview');
+  const container = $('exportRenderContainer');
+  preview.classList.remove('empty');
+  preview.innerHTML = '<span style="color:var(--ink-faint)">渲染中…</span>';
+
+  try {
+    const style = EXPORT_IMAGE_STYLES[currentExportStyle];
+    const width = parseInt($('expimgWidth').value, 10);
+    const content = editor.getHTML();
+
+    // 清理导出 HTML：给所有 SVG 补上默认尺寸，给 link-card 强制约束
+    const cleanContent = sanitizeForImageExport(content);
+
+    // 渲染到隐藏容器
+    // 用唯一 style id 强制覆盖 + 把 <style> 放在容器外层避免 dom-to-image-more 缓存
+    const styleId = 'export-style-' + Date.now();
+    container.innerHTML =
+      '<style id="' + styleId + '">' + style.css + '</style>' +
+      '<div id="exportRenderNode" class="export-doc" style="width:' + width + 'px;box-sizing:border-box;">' +
+        '<div class="doc">' + cleanContent + '</div>' +
+      '</div>';
+
+    // 等待图片 + 字体加载
+    const imgs = container.querySelectorAll('img');
+    await Promise.all(Array.from(imgs).map(img => {
+      if (img.complete) return Promise.resolve();
+      return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+    }));
+    if (document.fonts && document.fonts.ready) {
+      try { await document.fonts.ready; } catch (_) {}
+    }
+    // 强制 reflow 确保样式生效
+    void container.offsetHeight;
+
+    // 截图
+    const node = container.querySelector('#exportRenderNode');
+    if (!node) throw new Error('渲染失败');
+
+    const previewScale = Math.min(1, (preview.clientWidth - 32) / width);
+    const dataUrl = await window.domtoimage.toPng(node, {
+      width: width,
+      height: node.scrollHeight,
+      style: { transform: 'scale(1)', transformOrigin: 'top left' },
+      quality: 0.95,
+      cacheBust: true
+    });
+
+    // 预览图 1x 截，按精确宽度显示；预览框横向滚动避免被压缩
+    preview.innerHTML = '<img src="' + dataUrl + '" alt="预览" style="width:' + width + 'px;height:auto;display:block">';
+  } catch (e) {
+    preview.classList.add('empty');
+    preview.textContent = '预览失败：' + (e.message || e);
+  }
+}
+
+function buildExportImageHTML(content, styleCss, width) {
+  return '<div class="export-doc" style="width:' + width + 'px;box-sizing:border-box;">' +
+    '<style>' + styleCss + '</style>' +
+    '<div class="doc">' + content + '</div>' +
+    '</div>';
+}
+
+async function downloadExportImage() {
+  const downloadBtn = $('expimgDownload');
+  const container = $('exportRenderContainer');
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = '生成中…';
+
+  try {
+    const width = parseInt($('expimgWidth').value, 10);
+    const scale = parseInt($('expimgScale').value, 10);
+    const node = container.querySelector('.export-doc');
+    if (!node) throw new Error('请先生成预览');
+
+    const dataUrl = await window.domtoimage.toPng(node, {
+      width: width * scale,
+      height: node.scrollHeight * scale,
+      style: { transform: 'scale(' + scale + ')', transformOrigin: 'top left' },
+      quality: 0.95
+    });
+
+    // 下载
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = suggestedFilename('png');
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); }, 100);
+
+    toast('已导出图片');
+  } catch (e) {
+    toast('导出失败：' + (e.message || e));
+  } finally {
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = '下载 PNG';
+  }
+}
+
 
 
 /* ---------- Table tools ---------- */
@@ -1185,24 +1439,43 @@ const tableFloatMenu = document.createElement('div');
 tableFloatMenu.className = 'table-float-menu';
 tableFloatMenu.hidden = true;
 tableFloatMenu.innerHTML =
-  '<button class="table-tool" data-table-action="row-before" title="Add row above">+\u2191</button>' +
-  '<button class="table-tool" data-table-action="row-after" title="Add row below">+\u2193</button>' +
+  '<button class="table-tool" data-table-action="row-before" title="在上方插入行">+\u2191</button>' +
+  '<button class="table-tool" data-table-action="row-after" title="在下方插入行">+\u2193</button>' +
   '<span class="table-tool-sep"></span>' +
-  '<button class="table-tool" data-table-action="col-left" title="Add column left">+\u2190</button>' +
-  '<button class="table-tool" data-table-action="col-right" title="Add column right">+\u2192</button>' +
+  '<button class="table-tool" data-table-action="col-left" title="在左侧插入列">+\u2190</button>' +
+  '<button class="table-tool" data-table-action="col-right" title="在右侧插入列">+\u2192</button>' +
   '<span class="table-tool-sep"></span>' +
-  '<button class="table-tool" data-table-action="toggle-header" title="Toggle header">H</button>' +
-  '<button class="table-tool" data-table-action="delete-row" title="Delete row">\u2212\u2194</button>' +
-  '<button class="table-tool" data-table-action="delete-col" title="Delete column">\u2212\u2195</button>' +
-  '<button class="table-tool danger" data-table-action="delete-table" title="Delete table">\u00d7</button>';
+  '<button class="table-tool" data-table-action="equalize" title="均分全部列宽">等宽</button>' +
+  '<button class="table-tool" data-table-action="merge" title="按住 Shift 点击选择连续单元格后合并">合并</button>' +
+  '<button class="table-tool" data-table-action="split" title="拆分当前合并单元格">拆分</button>' +
+  '<label class="table-color-tool" title="设置所选单元格背景色"><span>底色</span><input type="color" id="tableCellColor" value="#fff8dc"></label>' +
+  '<button class="table-tool" data-table-action="clear-bg" title="清除单元格背景色">清底色</button>' +
+  '<span class="table-tool-sep"></span>' +
+  '<button class="table-tool" data-table-action="toggle-header" title="切换表头">H</button>' +
+  '<button class="table-tool" data-table-action="delete-row" title="删除行">\u2212\u2194</button>' +
+  '<button class="table-tool" data-table-action="delete-col" title="删除列">\u2212\u2195</button>' +
+  '<button class="table-tool danger" data-table-action="delete-table" title="删除表格">\u00d7</button>';
 document.body.appendChild(tableFloatMenu);
 
+function tableColorToHex(value) {
+  if (/^#[0-9a-f]{6}$/i.test(value || '')) return value;
+  const match = String(value || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (!match) return '#fff8dc';
+  return '#' + match.slice(1, 4).map(part => Number(part).toString(16).padStart(2, '0')).join('');
+}
+
 function updateTableFloatMenu() {
-  const cell = editor.currentTableCell && editor.currentTableCell();
-  const table = cell && cell.closest('table');
-  if (!table || document.body.classList.contains('reading-mode')) { tableFloatMenu.hidden = true; return; }
+  const state = editor.getTableState ? editor.getTableState() : null;
+  const table = state && state.table;
+  if (!state || !state.active || !table || document.body.classList.contains('reading-mode')) { tableFloatMenu.hidden = true; return; }
   const rect = table.getBoundingClientRect();
   tableFloatMenu.hidden = false;
+  const mergeBtn = tableFloatMenu.querySelector('[data-table-action="merge"]');
+  const splitBtn = tableFloatMenu.querySelector('[data-table-action="split"]');
+  if (mergeBtn) mergeBtn.disabled = !state.canMerge;
+  if (splitBtn) splitBtn.disabled = !state.canSplit;
+  const colorInput = tableFloatMenu.querySelector('#tableCellColor');
+  if (colorInput && document.activeElement !== colorInput) colorInput.value = tableColorToHex(state.backgroundColor);
   const width = tableFloatMenu.offsetWidth || 280;
   let left = rect.left + Math.min(rect.width - width, 0) / 2;
   left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
@@ -1213,16 +1486,19 @@ function updateTableFloatMenu() {
 }
 
 ['mouseup', 'keyup'].forEach(type => editorEl.addEventListener(type, () => setTimeout(updateTableFloatMenu, 10)));
-document.addEventListener('selectionchange', () => {
-  if (document.activeElement === editorEl) setTimeout(updateTableFloatMenu, 20);
-});
+editorEl.addEventListener('penmark:table-state', () => setTimeout(updateTableFloatMenu, 0));
+document.addEventListener('selectionchange', () => setTimeout(updateTableFloatMenu, 20));
 window.addEventListener('scroll', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); }, true);
 window.addEventListener('resize', () => { if (!tableFloatMenu.hidden) updateTableFloatMenu(); });
-tableFloatMenu.addEventListener('mousedown', e => e.preventDefault());
+tableFloatMenu.addEventListener('mousedown', e => { if (!e.target.closest('input')) e.preventDefault(); });
 tableFloatMenu.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-table-action]');
-  if (!btn) return;
+  if (!btn || btn.disabled) return;
   editor.tableCommand(btn.getAttribute('data-table-action'));
+  setTimeout(updateTableFloatMenu, 10);
+});
+tableFloatMenu.querySelector('#tableCellColor').addEventListener('change', (e) => {
+  editor.setTableCellBackground(e.target.value);
   setTimeout(updateTableFloatMenu, 10);
 });
 
@@ -1251,22 +1527,22 @@ async function refreshAiStatus(runButtonId) {
   if (runBtn) runBtn.disabled = true;
   if (note) {
     note.hidden = false;
-    note.textContent = '\u6b63\u5728\u68c0\u67e5 AI \u914d\u7f6e...';
+    note.textContent = '正在检查 AI 配置…';
   }
   try {
     const status = await getAiStatus(false);
     if (!status.configured) {
-      if (note) note.textContent = '\u670d\u52a1\u5668\u8fd8\u6ca1\u914d AI key\uff0c\u8bf7\u5728 .env \u91cc\u8bbe\u7f6e AI_API_KEY \u6216 DEEPSEEK_API_KEY\u3002';
+      if (note) note.textContent = '服务器还没配置 AI 密钥，请在 .env 里设置 AI_API_KEY 或 DEEPSEEK_API_KEY。';
       return false;
     }
     if (note) {
-      note.textContent = '\u5df2\u8fde\u63a5 AI\uff1a' + (status.model || 'model');
+      note.textContent = '已连接 AI：' + (status.model || 'model');
       note.classList.add('ok');
     }
     if (runBtn) runBtn.disabled = false;
     return true;
   } catch (e) {
-    if (note) note.textContent = '\u6682\u65f6\u65e0\u6cd5\u68c0\u67e5 AI \u72b6\u6001\uff1a' + (e.message || e);
+    if (note) note.textContent = '暂时无法检查 AI 状态：' + (e.message || e);
     return false;
   }
 }
@@ -1286,7 +1562,6 @@ const AI_REWRITE_PRESETS = [
 
 function openAiModal(title, bodyHtml) {
   if (!aiModal) return;
-  hideAllFloatMenus();
   aiModalTitle.textContent = title;
   aiModalBody.innerHTML = bodyHtml;
   aiModal.hidden = false;
@@ -1342,9 +1617,9 @@ function openAiLayoutModal() {
   const presetButtons = Object.keys(AI_PRESETS).map(key =>
     '<button class="ai-preset' + (key === 'share' ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key] + '</button>'
   ).join('');
-  openAiModal('AI \u6392\u7248',
+  openAiModal('AI 排版',
     '<div class="ai-panel" id="aiLayoutPanel">' +
-      '<div class="ai-note">\u53ea\u8c03\u6574\u7ed3\u6784\u3001\u5206\u6bb5\u3001\u6807\u9898\u3001\u5217\u8868\u548c\u95f4\u8ddd\uff1b\u9ed8\u8ba4\u4e0d\u5220\u5b57\u3001\u4e0d\u6539\u5199\u3002</div>' +
+      '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
       '<div class="ai-preset-row">' + presetButtons + '</div>' +
       '<div class="ai-warning" id="aiLayoutWarning" hidden></div>' +
@@ -1375,7 +1650,7 @@ async function runAiLayout(preset) {
   applyBtn.disabled = true;
   warning.hidden = true;
   preview.classList.add('empty');
-  preview.textContent = '\u6b63\u5728\u6392\u7248\uff0c\u7a0d\u7b49\u4e00\u4e0b...';
+  preview.textContent = '正在排版，稍等一下…';
   try {
     const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset });
     pendingAiLayoutHtml = res.html || '';
@@ -1384,7 +1659,7 @@ async function runAiLayout(preset) {
     applyBtn.disabled = !pendingAiLayoutHtml;
     if (!res.textUnchanged) {
       warning.hidden = false;
-      warning.textContent = '\u6ce8\u610f\uff1aAI \u8fd4\u56de\u7684\u53ef\u89c1\u6587\u5b57\u6570\u548c\u539f\u6587\u4e0d\u5b8c\u5168\u4e00\u81f4\uff08\u539f\u6587 ' + res.beforeChars + ' / \u7ed3\u679c ' + res.afterChars + '\uff09\uff0c\u8bf7\u5148\u5bf9\u6bd4\u518d\u5e94\u7528\u3002';
+      warning.textContent = '注意：AI 返回的文字数量和原文不完全一致（原文 ' + res.beforeChars + ' 字 / 结果 ' + res.afterChars + ' 字），请先对比再应用。';
     }
   } catch (e) {
     preview.classList.add('empty');
@@ -1557,15 +1832,9 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'w' && e.shiftKey && !e.altKey) { e.preventDefault(); exportWord(); }
 });
 
-// 离开前保存（使用 sendBeacon 确保请求不被中断）
+// 离开前保存
 window.addEventListener('beforeunload', () => {
-  if (currentDoc && saveTimer) {
-    clearTimeout(saveTimer);
-    const title = docTitleEl.value.trim() || '无标题';
-    const content = editor.getHTML();
-    const body = JSON.stringify({ title, content });
-    navigator.sendBeacon('/api/documents/' + currentDoc.id, new Blob([body], { type: 'application/json' }));
-  }
+  if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveCurrent(); }
 });
 
 /* ---------- 工具 ---------- */
@@ -1576,6 +1845,7 @@ function escapeHtml(s) {
 /* ---------- 初始化 ---------- */
 async function init() {
   initTheme();
+  initDesktop();
   try {
     // 先校验登录态
     const meRes = await fetch('/api/auth/me', { credentials: 'same-origin' });
@@ -1584,7 +1854,6 @@ async function init() {
     currentUser = meBody.user;
     updateUserBadge();
     updateShareButton();
-    updateMobileNav();
 
     const docs = await api('/api/documents');
     if (docs.length) {
@@ -1622,11 +1891,37 @@ function updateShareButton() {
 }
 
 $('logoutBtn').addEventListener('click', async () => {
+  if (window.desktop && window.desktop.isDesktop) return; // 桌面模式无退出登录
   try {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
   } catch (_) {}
   window.location.href = '/login.html';
 });
+
+/* ---------- 桌面模式适配 ---------- */
+function initDesktop() {
+  if (!window.desktop || !window.desktop.isDesktop) return;
+  // 桌面模式：隐藏退出登录按钮
+  const logoutBtn = $('logoutBtn');
+  if (logoutBtn) logoutBtn.style.display = 'none';
+  // 桌面模式：隐藏设置中不适用的标签页（用户管理、邀请码）
+  document.querySelectorAll('.settings-tab[data-stab="users"], .settings-tab[data-stab="invites"]').forEach(tab => {
+    tab.style.display = 'none';
+  });
+  // 菜单事件
+  if (window.desktop.onMenuNewDoc) {
+    window.desktop.onMenuNewDoc(() => newDoc());
+  }
+  if (window.desktop.onMenuShortcuts) {
+    window.desktop.onMenuShortcuts(() => showShortcutHelp());
+  }
+  if (window.desktop.onLibraryImported) {
+    window.desktop.onLibraryImported(async () => {
+      await loadSidebar();
+      toast('旧版资料库已导入');
+    });
+  }
+}
 
 /* ---------- 设置面板（管理员） ---------- */
 const settingsModal = $('settingsModal');
@@ -1646,7 +1941,6 @@ $('settingsTabs').addEventListener('click', (e) => {
 });
 
 function openSettings() {
-  hideAllFloatMenus();
   settingsModal.hidden = false;
   loadSettingsTab(settingsTab);
 }
@@ -1895,7 +2189,6 @@ $('trashModalClose').addEventListener('click', () => trashModal.hidden = true);
 trashModal.addEventListener('click', (e) => { if (e.target === trashModal) trashModal.hidden = true; });
 
 async function openTrash() {
-  hideAllFloatMenus();
   trashModal.hidden = false;
   trashModalBody.innerHTML = '<div class="share-loading">加载中…</div>';
   try {
@@ -1967,7 +2260,6 @@ $('shareModalClose').addEventListener('click', () => shareModal.hidden = true);
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.hidden = true; });
 
 async function openShareModal() {
-  hideAllFloatMenus();
   if (!currentDoc) { toast('请先选择文档'); return; }
   if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { toast('无分享权限'); return; }
   shareModal.hidden = false;
@@ -2044,9 +2336,9 @@ function renderShareForm(share) {
     '<div class="share-section">' +
       '<div class="share-label">默认主题</div>' +
       '<div class="share-theme-row" id="shareThemeRow">' +
-        '<button class="share-theme-btn' + (share.theme === 'light' ? ' active' : '') + '" data-theme="light">纸张</button>' +
-        '<button class="share-theme-btn' + (share.theme === 'feishu' ? ' active' : '') + '" data-theme="feishu">飞书</button>' +
-        '<button class="share-theme-btn' + (share.theme === 'dark' ? ' active' : '') + '" data-theme="dark">暗色</button>' +
+        '<button class="share-theme-btn' + (share.theme === 'light' ? ' active' : '') + '" data-theme="light">纸墨</button>' +
+        '<button class="share-theme-btn' + (share.theme === 'feishu' ? ' active' : '') + '" data-theme="feishu">雾纸</button>' +
+        '<button class="share-theme-btn' + (share.theme === 'dark' ? ' active' : '') + '" data-theme="dark">夜墨</button>' +
       '</div>' +
     '</div>' +
     '<div class="share-link-section">' +
@@ -2145,21 +2437,17 @@ function setupPinInputs() {
   if (!pinRow) return;
   const inputs = pinRow.querySelectorAll('.pin-input');
   inputs.forEach((input, i) => {
-    if (input.dataset.pinBound) return; // 避免重复绑定
-    input.dataset.pinBound = '1';
-    const onInput = () => {
+    input.addEventListener('input', () => {
       input.value = input.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
       if (input.value && i < inputs.length - 1) inputs[i + 1].focus();
       if (Array.prototype.every.call(inputs, inp => inp.value)) {
         const pwd = Array.prototype.map.call(inputs, inp => inp.value).join('');
         updateShare({ password: pwd }).then(() => toast('密码已保存')).catch(() => {});
       }
-    };
-    const onKeydown = (e) => {
+    });
+    input.addEventListener('keydown', (e) => {
       if (e.key === 'Backspace' && !input.value && i > 0) inputs[i - 1].focus();
-    };
-    input.addEventListener('input', onInput);
-    input.addEventListener('keydown', onKeydown);
+    });
   });
 }
 
@@ -2196,52 +2484,135 @@ document.body.appendChild(docOutline);
 
 let outlineTimer = null;
 let outlineObserver = null;
+let outlineScrollRoot = null;
+let outlineScrollHandler = null;
+let outlineScrollFrame = null;
+let outlinePinnedIdx = null;
+let outlineProgrammaticScroll = false;
+let outlineProgrammaticTimer = null;
 
-function updateOutline() {
+function updateOutline(immediate) {
   if (outlineTimer) clearTimeout(outlineTimer);
-  outlineTimer = setTimeout(() => {
+  const build = () => {
     if (readingMode) { docOutline.hidden = true; return; }
-    const headings = editorEl.querySelectorAll('h1, h2, h3');
+    // 过滤 .toc 内的标题，和编辑器 _buildTOCHTML 保持一致
+    const headings = Array.from(editorEl.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc'));
     if (headings.length < 2) { docOutline.hidden = true; return; }
+    // 强制按文档顺序分配唯一 ID（消除导入文档中可能的重复 ID）
+    const prefix = 'outline-' + (currentDoc ? currentDoc.id : 'draft') + '-';
+    headings.forEach((h, i) => { h.id = prefix + i; });
     let html = '<div class="outline-title">大纲</div><ol class="outline-list">';
     headings.forEach((h, i) => {
-      if (!h.id) h.id = 'outline-' + i;
       const level = h.tagName.toLowerCase();
       const indent = level === 'h2' ? 'padding-left:1.2em;' : (level === 'h3' ? 'padding-left:2.4em;' : '');
       const text = h.textContent.trim() || '空标题';
-      html += '<li style="' + indent + '"><a href="#' + h.id + '" data-target="' + h.id + '">' + escapeHtml(text) + '</a></li>';
+      html += '<li style="' + indent + '"><a href="#' + h.id + '" data-outline-idx="' + i + '">' + escapeHtml(text) + '</a></li>';
     });
     html += '</ol>';
     docOutline.innerHTML = html;
     docOutline.hidden = false;
-    setupOutlineObserver();
-  }, 300);
+    positionOutline();
+    setupOutlineObserver(headings);
+  };
+  if (immediate) {
+    build();
+  } else {
+    outlineTimer = setTimeout(build, 300);
+  }
 }
 
-function setupOutlineObserver() {
+function setupOutlineObserver(headings) {
   if (outlineObserver) outlineObserver.disconnect();
+  if (outlineScrollRoot && outlineScrollHandler) {
+    outlineScrollRoot.removeEventListener('scroll', outlineScrollHandler);
+  }
+  if (outlineScrollFrame) cancelAnimationFrame(outlineScrollFrame);
+  outlineScrollRoot = null;
+  outlineScrollHandler = null;
+  outlineScrollFrame = null;
+  outlinePinnedIdx = null;
+  outlineProgrammaticScroll = false;
+  if (outlineProgrammaticTimer) clearTimeout(outlineProgrammaticTimer);
+  outlineProgrammaticTimer = null;
   const links = docOutline.querySelectorAll('a');
-  const headings = editorEl.querySelectorAll('h1, h2, h3');
-  // 点击跳转
+  const wrap = document.querySelector('.editor-wrap');
+  const toolbar = document.querySelector('.toolbar');
+  // 点击跳转 — 用数组下标代替 getElementById，不依赖 ID 唯一性
   links.forEach(link => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
-      const target = document.getElementById(link.getAttribute('data-target'));
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const idx = parseInt(link.getAttribute('data-outline-idx'), 10);
+      const target = headings[idx];
+      if (!target) return;
+      outlinePinnedIdx = idx;
+      outlineProgrammaticScroll = true;
+      if (outlineProgrammaticTimer) clearTimeout(outlineProgrammaticTimer);
+      outlineProgrammaticTimer = setTimeout(() => {
+        outlineProgrammaticScroll = false;
+        outlineProgrammaticTimer = null;
+      }, 1000);
+      links.forEach((item, i) => item.classList.toggle('active', i === idx));
+      // 正文实际滚动容器是 .editor-wrap，不是 window。
+      const wrapRect = wrap.getBoundingClientRect();
+      const top = target.getBoundingClientRect().top - wrapRect.top + wrap.scrollTop - 24;
+      wrap.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     });
   });
   // 滚动高亮当前章节
-  const wrap = document.querySelector('.editor-wrap');
-  outlineObserver = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        links.forEach(l => l.classList.toggle('active', l.getAttribute('data-target') === entry.target.id));
-      }
+  const updateActiveHeading = () => {
+    if (!headings.length) return;
+    if (outlinePinnedIdx !== null) {
+      links.forEach((l, i) => l.classList.toggle('active', i === outlinePinnedIdx));
+      return;
+    }
+    const marker = wrap.getBoundingClientRect().top + 32;
+    let activeIdx = 0;
+    headings.forEach((h, i) => {
+      if (h.getBoundingClientRect().top <= marker) activeIdx = i;
     });
-  }, { rootMargin: '-80px 0px -70% 0px' });
+    links.forEach((l, i) => l.classList.toggle('active', i === activeIdx));
+  };
+  outlineObserver = new IntersectionObserver(updateActiveHeading, {
+    root: wrap,
+    rootMargin: '-80px 0px -70% 0px'
+  });
   headings.forEach(h => outlineObserver.observe(h));
+  outlineScrollRoot = wrap;
+  outlineScrollHandler = () => {
+    if (!outlineProgrammaticScroll) outlinePinnedIdx = null;
+    if (outlineScrollFrame) return;
+    outlineScrollFrame = requestAnimationFrame(() => {
+      outlineScrollFrame = null;
+      updateActiveHeading();
+    });
+  };
+  wrap.addEventListener('scroll', outlineScrollHandler, { passive: true });
+  updateActiveHeading();
 }
 
+function positionOutline() {
+  if (docOutline.hidden) return;
+  const shell = document.querySelector('.document-shell');
+  const sidebar = document.querySelector('.sidebar');
+  const toolbar = document.querySelector('.toolbar');
+  if (!shell || !sidebar) return;
+  const shellRect = shell.getBoundingClientRect();
+  const sidebarRect = sidebar.getBoundingClientRect();
+  const available = shellRect.left - sidebarRect.right;
+  if (available < 190) {
+    docOutline.hidden = true;
+    return;
+  }
+  const width = Math.min(200, available - 40);
+  docOutline.style.width = width + 'px';
+  docOutline.style.left = Math.max(sidebarRect.right + 16, shellRect.left - width - 24) + 'px';
+  docOutline.style.top = Math.max((toolbar ? toolbar.getBoundingClientRect().bottom : 0) + 24, shellRect.top + 48) + 'px';
+}
+
+window.addEventListener('resize', () => {
+  if (!docOutline.hidden) positionOutline();
+  else updateOutline();
+});
 /* ---------- 阅读模式 ---------- */
 const readingExitBtn = $('readingExit');
 let readingMode = false;
@@ -2249,349 +2620,22 @@ let readingMode = false;
 function toggleReadingMode() {
   readingMode = !readingMode;
   document.body.classList.toggle('reading-mode', readingMode);
-  if (readingExitBtn) readingExitBtn.hidden = !readingMode;
-  hideAllFloatMenus();
+  readingExitBtn.hidden = !readingMode;
   if (readingMode) {
+    hideFloatMenu();
+    floatMenuImg.hidden = true;
     editorEl.contentEditable = 'false';
   } else {
     editorEl.contentEditable = 'true';
   }
 }
 
-if (readingExitBtn) readingExitBtn.addEventListener('click', toggleReadingMode);
+readingExitBtn.addEventListener('click', toggleReadingMode);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && readingMode) {
     e.preventDefault();
     toggleReadingMode();
   }
 });
-
-/* ---------- 移动端交互 ---------- */
-const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
-let mobileKeyboardOpen = false;
-
-// 底部导航栏
-const mobileBottomNav = $('mobileBottomNav');
-const mbnMenu = $('mbnMenu');
-const mbnNew = $('mbnNew');
-const mbnTitle = $('mbnTitle');
-const mobileMoreIcon = $('mobileMoreIcon');
-
-function updateMobileNav() {
-  if (isMobile() && currentUser) {
-    mobileBottomNav.hidden = false;
-    mobileMoreIcon.hidden = false;
-  } else {
-    mobileBottomNav.hidden = true;
-    mobileMoreIcon.hidden = true;
-  }
-}
-
-// 响应 resize（旋转设备等）
-window.addEventListener('resize', () => {
-  clearTimeout(window._resizeTimer);
-  window._resizeTimer = setTimeout(updateMobileNav, 150);
-});
-
-// 更新底部导航标题
-function updateMobileNavTitle() {
-  if (mbnTitle) mbnTitle.textContent = docTitleEl.value.trim() || '无标题';
-}
-docTitleEl.addEventListener('input', updateMobileNavTitle);
-
-mbnMenu.addEventListener('click', () => {
-  sidebarEl.classList.toggle('open');
-  mobileBackdrop.classList.toggle('show', sidebarEl.classList.contains('open'));
-});
-
-mbnNew.addEventListener('click', () => {
-  newDoc();
-});
-
-// 点击标题区聚焦标题输入
-mbnTitle.addEventListener('click', () => {
-  docTitleEl.focus();
-  docTitleEl.select();
-});
-
-// kebab 按钮打开更多操作
-mobileMoreIcon.addEventListener('click', () => {
-  $('msShare').style.display = (currentUser && (currentUser.isAdmin || currentUser.can_share)) ? '' : 'none';
-  $('msSettings').style.display = (currentUser && currentUser.isAdmin) ? '' : 'none';
-  $('mobileMoreSheet').hidden = false;
-});
-
-$('mobileMoreClose').addEventListener('click', () => {
-  $('mobileMoreSheet').hidden = true;
-});
-
-// 更多操作 sheet：点击内容区域外关闭
-$('mobileMoreSheet').addEventListener('click', (e) => {
-  if (!e.target.closest('.ms-body') && !e.target.closest('.ms-head') && !e.target.closest('.ms-handle')) {
-    $('mobileMoreSheet').hidden = true;
-  }
-});
-
-// 更多操作按钮
-$('msImport').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('importHtml'); });
-$('msExport').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('exportDoc'); });
-$('msReading').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('reading'); });
-$('msShare').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; handleAction('share'); });
-$('msTrash').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('trashBtn')) $('trashBtn').click(); });
-$('msSettings').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('settingsBtn')) $('settingsBtn').click(); });
-$('msTheme').addEventListener('click', () => { $('mobileMoreSheet').hidden = true; if ($('themeToggle')) $('themeToggle').click(); });
-
-// 格式 sheet（保留，可通过浮动菜单或其他方式触发）
-$('mobileFormatClose').addEventListener('click', () => {
-  $('mobileFormatSheet').hidden = true;
-});
-$('mobileFormatSheet').addEventListener('click', (e) => {
-  const btn = e.target.closest('.ms-grid-btn');
-  if (btn) {
-    const cmd = btn.getAttribute('data-cmd');
-    const block = btn.getAttribute('data-block');
-    const action = btn.getAttribute('data-action');
-    if (cmd) editor.exec(cmd);
-    else if (block) editor.exec('formatBlock', '<' + block + '>');
-    else if (action) handleAction(action);
-    $('mobileFormatSheet').hidden = true;
-    refreshToolbar();
-    return;
-  }
-  // 点击内容区域外关闭
-  if (!e.target.closest('.ms-body') && !e.target.closest('.ms-head') && !e.target.closest('.ms-handle')) {
-    $('mobileFormatSheet').hidden = true;
-  }
-});
-
-// 移动端侧边栏仅通过按钮打开（避免边缘手势与 Android 返回冲突）
-// 侧边栏滚动不穿透到背景
-sidebarEl.addEventListener('touchmove', (e) => {
-  if (sidebarEl.classList.contains('open')) {
-    const docList = $('docList');
-    if (docList && docList.contains(e.target)) return;
-    if (e.target.closest('.doc-list') || e.target.closest('.sidebar-extra') || e.target.closest('.search-box') || e.target.closest('.new-row') || e.target.closest('.sidebar-foot')) return;
-    e.preventDefault();
-  }
-}, { passive: false });
-
-// 长按上下文菜单（文档列表项）
-(function initLongPress() {
-  let longPressTimer = null;
-  let longPressTarget = null;
-  let savedCoords = { x: 0, y: 0 };
-
-  docListEl.addEventListener('touchstart', (e) => {
-    const item = e.target.closest('.doc-item');
-    if (!item) return;
-    longPressTarget = item;
-    const touch = e.touches[0];
-    savedCoords = { x: touch.clientX, y: touch.clientY };
-    longPressTimer = setTimeout(() => {
-      if (longPressTarget === item) {
-        if (navigator.vibrate) navigator.vibrate(50);
-        showDocContextMenu(item, savedCoords);
-      }
-    }, 500);
-  }, { passive: true });
-
-  docListEl.addEventListener('touchmove', () => {
-    clearTimeout(longPressTimer);
-    longPressTarget = null;
-  }, { passive: true });
-
-  docListEl.addEventListener('touchend', () => {
-    clearTimeout(longPressTimer);
-    longPressTarget = null;
-  }, { passive: true });
-})();
-
-function showDocContextMenu(item, coords) {
-  const docId = parseInt(item.getAttribute('data-id'));
-  const menu = document.createElement('div');
-  menu.className = 'mobile-context-menu';
-  menu.innerHTML =
-    '<button class="mcm-btn" data-act="open">打开</button>' +
-    '<button class="mcm-btn" data-act="rename">重命名</button>' +
-    '<button class="mcm-btn mcm-danger" data-act="delete">删除</button>';
-  menu.style.cssText = 'position:fixed;z-index:3000;background:var(--bg-editor);border:1px solid var(--line);border-radius:14px;padding:4px;box-shadow:0 8px 32px rgba(0,0,0,.2);min-width:140px;animation:msFadeIn .15s ease;';
-
-  menu.style.left = Math.min(coords.x, window.innerWidth - 160) + 'px';
-  menu.style.top = Math.min(coords.y, window.innerHeight - 200) + 'px';
-
-  document.body.appendChild(menu);
-
-  const removeMenu = () => { if (menu.parentNode) menu.remove(); };
-
-  menu.querySelectorAll('.mcm-btn').forEach(btn => {
-    btn.style.cssText = 'display:block;width:100%;padding:14px 18px;border:none;background:transparent;color:var(--ink);font-size:14px;font-family:var(--sans);text-align:left;cursor:pointer;border-radius:10px;min-height:44px;';
-    if (btn.classList.contains('mcm-danger')) btn.style.color = '#c44';
-    btn.addEventListener('click', () => {
-      const act = btn.getAttribute('data-act');
-      if (act === 'open') item.click();
-      else if (act === 'rename') { docTitleEl.focus(); docTitleEl.select(); }
-      else if (act === 'delete') { confirmDelete({ id: docId, title: item.querySelector('.doc-title') ? item.querySelector('.doc-title').textContent : '' }); }
-      removeMenu();
-    });
-  });
-
-  setTimeout(() => {
-    document.addEventListener('click', removeMenu, { once: true });
-  }, 100);
-}
-
-// 图片查看器
-(function initImageViewer() {
-  const viewer = $('imgViewer');
-  const ivTrack = $('ivTrack');
-  const ivCounter = $('ivCounter');
-  const ivClose = $('ivClose');
-
-  editorEl.addEventListener('click', (e) => {
-    if (!isMobile()) return;
-    const container = e.target.closest('.img-container');
-    if (!container) return;
-    const clickedImg = container.querySelector('img');
-    if (!clickedImg) return;
-
-    const allImgs = Array.from(editorEl.querySelectorAll('.img-container img')).filter(img => img.src);
-    if (!allImgs.length) return;
-
-    const clickedIndex = allImgs.indexOf(clickedImg);
-
-    ivTrack.innerHTML = '';
-    allImgs.forEach((img) => {
-      const slide = document.createElement('div');
-      slide.className = 'iv-slide';
-      const clone = img.cloneNode();
-      clone.src = img.src;
-      slide.appendChild(clone);
-      ivTrack.appendChild(slide);
-    });
-
-    viewer.hidden = false;
-    updateCounter(clickedIndex + 1, allImgs.length);
-    ivTrack.scrollTo({ left: clickedIndex * window.innerWidth, behavior: 'instant' });
-
-    let scrollTimer = null;
-    ivTrack.onscroll = () => {
-      clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(() => {
-        const idx = Math.round(ivTrack.scrollLeft / window.innerWidth);
-        updateCounter(idx + 1, allImgs.length);
-      }, 100);
-    };
-  });
-
-  function updateCounter(cur, total) {
-    ivCounter.textContent = cur + ' / ' + total;
-    ivCounter.hidden = total <= 1;
-  }
-
-  ivClose.addEventListener('click', () => { viewer.hidden = true; ivTrack.innerHTML = ''; });
-
-  viewer.addEventListener('click', (e) => {
-    if (e.target === viewer || e.target.classList.contains('iv-slide')) {
-      viewer.hidden = true;
-      ivTrack.innerHTML = '';
-    }
-  });
-})();
-
-// Bottom Sheet 拖拽关闭
-(function initSheetDrag() {
-  document.querySelectorAll('.mobile-sheet').forEach(sheet => {
-    const handle = sheet.querySelector('.ms-handle');
-    if (!handle) return;
-    let startY = 0, currentY = 0, dragging = false;
-
-    handle.addEventListener('touchstart', (e) => {
-      startY = e.touches[0].clientY;
-      dragging = true;
-      sheet.style.transition = 'none';
-    }, { passive: true });
-
-    handle.addEventListener('touchmove', (e) => {
-      if (!dragging) return;
-      currentY = e.touches[0].clientY - startY;
-      if (currentY > 0) sheet.style.transform = 'translateY(' + currentY + 'px)';
-    }, { passive: true });
-
-    handle.addEventListener('touchend', () => {
-      if (!dragging) return;
-      dragging = false;
-      sheet.style.transition = '';
-      sheet.style.transform = '';
-      if (currentY > 100) sheet.hidden = true;
-      currentY = 0;
-    }, { passive: true });
-  });
-
-  // 弹窗也支持拖拽关闭（modal）
-  document.querySelectorAll('.modal-overlay .modal').forEach(modal => {
-    const head = modal.querySelector('.modal-head');
-    if (!head) return;
-    let startY = 0, currentY = 0, dragging = false;
-
-    head.addEventListener('touchstart', (e) => {
-      if (!isMobile()) return;
-      startY = e.touches[0].clientY;
-      dragging = true;
-      modal.style.transition = 'none';
-    }, { passive: true });
-
-    head.addEventListener('touchmove', (e) => {
-      if (!dragging || !isMobile()) return;
-      currentY = e.touches[0].clientY - startY;
-      if (currentY > 0) modal.style.transform = 'translateY(' + currentY + 'px)';
-    }, { passive: true });
-
-    head.addEventListener('touchend', () => {
-      if (!dragging) return;
-      dragging = false;
-      modal.style.transition = '';
-      modal.style.transform = '';
-      if (currentY > 100) {
-        const overlay = modal.closest('.modal-overlay');
-        if (overlay) overlay.hidden = true;
-      }
-      currentY = 0;
-    }, { passive: true });
-  });
-})();
-
-// 键盘适配
-(function initKeyboardAdapt() {
-  if (!window.visualViewport) return;
-  const editorWrap = $('editorWrap');
-
-  window.visualViewport.addEventListener('resize', () => {
-    if (!isMobile()) return;
-    const keyboardHeight = window.innerHeight - window.visualViewport.height;
-    if (keyboardHeight > 100) {
-      mobileKeyboardOpen = true;
-      document.body.style.setProperty('--kb-height', keyboardHeight + 'px');
-      // 键盘弹出时隐藏底部导航栏，让浮动菜单（含 compact 标题层级）独占键盘上方
-      mobileBottomNav.style.transform = 'translateY(calc(100% + env(safe-area-inset-bottom)))';
-      if (editorWrap) editorWrap.style.paddingBottom = '12px';
-      // 键盘弹出后刷新浮动菜单（可能在 tap 时还未标记 keyboardOpen）
-      updateTextFloatMenu();
-      // 浮动菜单上移到键盘上方（先显示再定位，确保 compact 菜单也覆盖）
-      document.querySelectorAll('.float-menu, .float-menu-img').forEach(m => {
-        if (m.hidden) return;
-        m.style.bottom = 'calc(' + keyboardHeight + 'px + 12px)';
-      });
-    } else {
-      mobileKeyboardOpen = false;
-      mobileBottomNav.style.transform = '';
-      if (editorWrap) editorWrap.style.paddingBottom = '';
-      document.querySelectorAll('.float-menu, .float-menu-img').forEach(m => {
-        m.style.bottom = '';
-      });
-      // 键盘收起后隐藏 compact 菜单（仅光标定位态）
-      if (floatMenu.classList.contains('compact')) hideFloatMenu();
-    }
-  });
-})();
 
 init();

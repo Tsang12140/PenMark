@@ -245,7 +245,8 @@ const ready = seedAdmin().catch(err => {
 });
 
 // 定期清理过期会话
-setInterval(() => { cleanExpiredSessions().catch(() => {}); }, 3600 * 1000);
+const sessionCleanupTimer = setInterval(() => { cleanExpiredSessions().catch(() => {}); }, 3600 * 1000);
+if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
 
 /* ---------- Cookie 处理 ---------- */
 function readCookie(req, name) {

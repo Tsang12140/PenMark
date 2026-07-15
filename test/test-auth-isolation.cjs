@@ -28,6 +28,8 @@ process.env.ADMIN_PASSWORD = 'admin123';
 process.env.ADMIN_NICKNAME = '管理员';
 process.env.PENMARK_SECRET = 'test-secret-for-auth-tests-only';
 process.env.LOGIN_RATE_LIMIT = '200'; // 测试环境放宽速率限制
+process.env.TRUST_PROXY = '1';
+process.env.APP_ORIGIN = 'https://notes.example.test';
 
 let pass = 0;
 let fail = 0;
@@ -44,9 +46,9 @@ function check(name, cond, detail) {
 }
 
 /* ---------- HTTP 请求辅助 ---------- */
-function request(port, method, pathname, body, cookies) {
+function request(port, method, pathname, body, cookies, extraHeaders) {
   return new Promise((resolve, reject) => {
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, extraHeaders || {});
     if (cookies) headers.Cookie = cookies;
     const data = body ? JSON.stringify(body) : null;
     if (data) headers['Content-Length'] = Buffer.byteLength(data);
@@ -103,6 +105,24 @@ async function main() {
     const meRes = await request(port, 'GET', '/api/auth/me', null, adminCookie);
     check('/api/auth/me 返回 200', meRes.status === 200);
     check('/api/auth/me 返回用户', meRes.json && meRes.json.user && meRes.json.user.username === 'admin');
+
+    // 宝塔/Nginx 反向代理：Node 收到的 Host 可能是回环地址，必须识别转发后的公网 Origin。
+    const proxyHeaders = {
+      Origin: 'https://notes.example.test',
+      Host: '127.0.0.1:' + port,
+      'X-Forwarded-Host': 'notes.example.test',
+      'X-Forwarded-Proto': 'https'
+    };
+    const proxiedCreate = await request(port, 'POST', '/api/documents',
+      { title: '代理同源测试', content: '<p>ok</p>' }, adminCookie, proxyHeaders);
+    check('反向代理后的同源写请求允许通过', proxiedCreate.status === 200,
+      'status=' + proxiedCreate.status + ' body=' + JSON.stringify(proxiedCreate.json));
+
+    const rejectedCreate = await request(port, 'POST', '/api/documents',
+      { title: '恶意跨域测试', content: '<p>blocked</p>' }, adminCookie,
+      Object.assign({}, proxyHeaders, { Origin: 'https://evil.example.test' }));
+    check('真正的跨域写请求仍被拒绝', rejectedCreate.status === 403,
+      'status=' + rejectedCreate.status + ' body=' + JSON.stringify(rejectedCreate.json));
 
     // 无 Cookie 访问 /api/auth/me
     const noCookieMe = await request(port, 'GET', '/api/auth/me');

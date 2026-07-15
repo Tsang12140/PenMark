@@ -1,6 +1,13 @@
 // 知著 PenMark 编辑器核心模块
 // 富文本编辑、图片管理（参考简编方案：放行默认粘贴 + fixImageContainers 包装裸 img + onload 自动缩放）、
 // 粘贴处理、撤销重做、Markdown快捷输入、代码块/表格/目录、导出
+import {
+  TABLE_MIN_COL_WIDTH,
+  equalizeWidths,
+  normalizePixelWidths,
+  resizeColumnWidth
+} from './table-utils.mjs';
+
 export class Editor {
   constructor(opts) {
     this.editor = opts.editor;
@@ -12,6 +19,13 @@ export class Editor {
     this.imageClipboard = null;
     this.styleUndoStack = [];
     this.resizeState = null;
+    this.imageDragPreview = null;
+    this.tableResizeState = null;
+    this.tableResizeLayer = null;
+    this.activeTableCell = null;
+    this.tableSelection = null;
+    this.tableUndoStack = [];
+    this.tableRedoStack = [];
     this._init();
   }
 
@@ -89,6 +103,9 @@ export class Editor {
       this._maybeAutoLink(e);
       this._afterChange();
     });
+    this.editor.addEventListener('keyup', (e) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') this._afterChange();
+    });
     this.editor.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._maybeAutoLink({ inputType: 'insertText', data: ' ' });
     });
@@ -97,6 +114,14 @@ export class Editor {
   /* ---------- 撤销/重做 ---------- */
   undo() {
     this.editor.focus();
+    const tableEntry = this.tableUndoStack[this.tableUndoStack.length - 1];
+    if (tableEntry && this._snapshotHTML() === tableEntry.after) {
+      this.tableUndoStack.pop();
+      this.tableRedoStack.push(tableEntry);
+      this._restoreEditorSnapshot(tableEntry.before);
+      this.onToast('Table change undone');
+      return true;
+    }
     const before = this.editor.innerHTML;
     document.execCommand('undo');
     if (this.editor.innerHTML === before) {
@@ -118,6 +143,14 @@ export class Editor {
   }
   redo() {
     this.editor.focus();
+    const tableEntry = this.tableRedoStack[this.tableRedoStack.length - 1];
+    if (tableEntry && this._snapshotHTML() === tableEntry.before) {
+      this.tableRedoStack.pop();
+      this.tableUndoStack.push(tableEntry);
+      this._restoreEditorSnapshot(tableEntry.after);
+      this.onToast('Table change redone');
+      return true;
+    }
     const before = this.editor.innerHTML;
     document.execCommand('redo');
     if (this.editor.innerHTML === before) { this.onToast('无可重做操作'); return false; }
@@ -126,7 +159,12 @@ export class Editor {
   }
 
   /* ---------- 插入：分隔线 / 引用 / 代码 / 代码块 / 表格 / 目录 ---------- */
-  insertHR() { this.editor.focus(); document.execCommand('insertHTML', false, '<hr>'); this._afterChange(); }
+  insertHR() {
+    this.editor.focus();
+    const range = this._blockInsertionRangeFromSelection();
+    this._insertHTMLAtRange(range, '<hr><p><br></p>');
+    this._afterChange();
+  }
   insertQuote() { this.exec('formatBlock', '<BLOCKQUOTE>'); }
   insertCodeInline() {
     const sel = window.getSelection();
@@ -138,7 +176,8 @@ export class Editor {
   }
   insertCodeBlock() {
     this.editor.focus();
-    document.execCommand('insertHTML', false, '<pre><code><br></code></pre><p><br></p>');
+    const range = this._blockInsertionRangeFromSelection();
+    this._insertHTMLAtRange(range, '<pre><code><br></code></pre><p><br></p>');
     this._afterChange();
   }
   insertLink() {
@@ -146,10 +185,10 @@ export class Editor {
     const sel = window.getSelection();
     if (!sel.rangeCount || sel.isCollapsed) { this.onToast('先选中文字，再插入链接'); return; }
     const selected = sel.toString().trim();
-    const guess = /^https?:\/\//i.test(selected) ? selected : 'https://';
+    const guess = this._normalizeUrl(selected) || 'https://';
     const url = window.prompt('链接地址：', guess);
     if (!url || !url.trim() || url.trim() === 'https://') return;
-    document.execCommand('createLink', false, url.trim());
+    document.execCommand('createLink', false, this._normalizeUrl(url) || url.trim());
     this._afterChange();
   }
   insertTable(rows, cols) {
@@ -210,7 +249,7 @@ export class Editor {
     return html;
   }
 
-  insertImage(src) {
+  insertImage(src, targetRange) {
     this.editor.focus();
     // 确保光标在编辑器内
     const sel = window.getSelection();
@@ -231,7 +270,7 @@ export class Editor {
       '<span class="rs-handle rs-sw" data-dir="sw" draggable="false"></span>' +
       '<span class="rs-handle rs-se" data-dir="se" draggable="false"></span>' +
       '</div><p><br></p>';
-    const range = this._blockInsertionRangeFromSelection();
+    const range = targetRange || this._blockInsertionRangeFromSelection();
     this._insertHTMLAtRange(range, html);
 
     // 找到新容器，挂 onload 自动缩放
@@ -250,10 +289,13 @@ export class Editor {
     if (!img) return;
     const onLoad = () => {
       const ew = this._editorContentWidth();
+      const MAX_DEFAULT = 560; // 单图默认最大宽度，避免占满全文
       const styleW = (container.style.width || '').trim();
       const pct = styleW.match(/^([\d.]+)%$/);
-      const currentW = pct ? ew * Math.min(parseFloat(pct[1]), 100) / 100 : (parseFloat(styleW) || this._readImageWidth(img) || img.naturalWidth || ew * 0.8);
-      const w = Math.min(currentW, img.naturalWidth || currentW, ew * 0.95);
+      // currentW：用户已设的 px/% > 读取的渲染宽度 > 原始宽度 > 兜底 80%
+      const currentW = pct ? ew * Math.min(parseFloat(pct[1]), 100) / 100 : (parseFloat(styleW) || this._readImageWidth(img) || img.naturalWidth || Math.min(MAX_DEFAULT, ew * 0.8));
+      // 限制：不超过最大默认宽度、不超过原始宽度、不超过编辑器宽度 95%
+      const w = Math.max(40, Math.min(currentW, img.naturalWidth || currentW, MAX_DEFAULT, ew * 0.95));
       this._setImageDisplaySize(container, w);
     };
     img.onload = onLoad;
@@ -263,7 +305,7 @@ export class Editor {
   /* ---------- 把裸 img 包装成可编辑容器（粘贴/打开文件后调用） ---------- */
   fixImageContainers() {
     this.editor.querySelectorAll('img').forEach(img => {
-      if (img.closest('.img-container')) return;
+      if (img.closest('.img-container, .link-card, .lc-thumb')) return;
       const container = document.createElement('div');
       container.className = 'img-container';
       container.contentEditable = 'false';
@@ -290,7 +332,6 @@ export class Editor {
       img.removeAttribute('height');
       img.setAttribute('draggable', 'false');
 
-      if (!img.parentNode) return;
       img.parentNode.insertBefore(container, img);
       container.appendChild(img);
       container.appendChild(sizeLabel);
@@ -299,6 +340,7 @@ export class Editor {
 
     // 确保已有容器都齐备
     this.editor.querySelectorAll('.img-container').forEach(c => {
+      c.classList.remove('dragging');
       if (!c.draggable) c.draggable = true;
       c.contentEditable = 'false';
       c.setAttribute('data-type', 'image');
@@ -364,11 +406,8 @@ export class Editor {
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return null;
     let node = sel.getRangeAt(0).commonAncestorContainer;
-    if (!node) return null;
     if (node.nodeType !== 1) node = node.parentNode;
-    if (!node || !node.closest) return null;
-    const cell = node.closest('td,th');
-    return cell && this.editor.contains(cell) ? cell : null;
+    return node && node.closest ? node.closest('td,th') : null;
   }
 
   _cellColumnIndex(cell) {
@@ -470,17 +509,10 @@ export class Editor {
       this.editor.classList.toggle('table-col-resize-hover', Math.abs(e.clientX - rect.right) <= 5);
     });
     this.editor.addEventListener('mousedown', (e) => {
-      startTableResize.call(this, e, e.clientX);
-    });
-    this.editor.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      startTableResize.call(this, e, e.touches[0].clientX);
-    }, { passive: false });
-    function startTableResize(e, clientX) {
       const cell = e.target.closest && e.target.closest('td,th');
       if (!cell || !this.editor.contains(cell)) return;
       const rect = cell.getBoundingClientRect();
-      if (Math.abs(clientX - rect.right) > 8) return;
+      if (Math.abs(e.clientX - rect.right) > 5) return;
       const table = cell.closest('table');
       this._normalizeTable(table);
       const cols = Array.from(table.querySelectorAll(':scope > colgroup > col'));
@@ -488,19 +520,18 @@ export class Editor {
       if (index < 0 || index >= cols.length) return;
       e.preventDefault();
       const tableRect = table.getBoundingClientRect();
-      this.tableResizeState = { table, cols, index, startX: clientX, tableWidth: tableRect.width, widths: cols.map(col => {
+      this.tableResizeState = { table, cols, index, startX: e.clientX, tableWidth: tableRect.width, widths: cols.map(col => {
         const raw = col.style.width || '';
         if (raw.endsWith('%')) return tableRect.width * parseFloat(raw) / 100;
         return parseFloat(raw) || tableRect.width / cols.length;
       }) };
       document.body.classList.add('table-resizing');
-    }
-    function onTableResizeMove(e, clientX) {
+    });
+    document.addEventListener('mousemove', (e) => {
       const st = this.tableResizeState;
       if (!st) return;
-      e.preventDefault();
       const nextIndex = Math.min(st.index + 1, st.cols.length - 1);
-      const dx = clientX - st.startX;
+      const dx = e.clientX - st.startX;
       const left = Math.max(40, st.widths[st.index] + dx);
       if (nextIndex !== st.index) {
         const right = Math.max(40, st.widths[nextIndex] - dx);
@@ -509,27 +540,530 @@ export class Editor {
       } else {
         st.cols[st.index].style.width = Math.round(left) + 'px';
       }
-    }
-    document.addEventListener('mousemove', (e) => { onTableResizeMove.call(this, e, e.clientX); });
-    document.addEventListener('touchmove', (e) => {
-      if (!this.tableResizeState) return;
-      if (e.touches.length !== 1) return;
-      onTableResizeMove.call(this, e, e.touches[0].clientX);
-    }, { passive: false });
-    document.addEventListener('mouseup', onTableResizeEnd.bind(this));
-    document.addEventListener('touchend', onTableResizeEnd.bind(this));
-    function onTableResizeEnd() {
+    });
+    document.addEventListener('mouseup', () => {
       if (!this.tableResizeState) return;
       this.tableResizeState = null;
       document.body.classList.remove('table-resizing');
       this.editor.classList.remove('table-col-resize-hover');
       this._afterChange();
+    });
+  }
+
+  /* ---------- Table editing v2 ---------- */
+  _snapshotHTML() {
+    const clone = this.editor.cloneNode(true);
+    clone.querySelectorAll('.pm-table-cell-active,.pm-table-cell-selected').forEach(cell => {
+      cell.classList.remove('pm-table-cell-active', 'pm-table-cell-selected');
+      if (!cell.getAttribute('class')) cell.removeAttribute('class');
+    });
+    return clone.innerHTML;
+  }
+
+  _recordTableMutation(before) {
+    const after = this._snapshotHTML();
+    if (!before || before === after) return false;
+    this.tableUndoStack.push({ before, after });
+    if (this.tableUndoStack.length > 30) this.tableUndoStack.shift();
+    this.tableRedoStack.length = 0;
+    return true;
+  }
+
+  _restoreEditorSnapshot(html) {
+    this.activeTableCell = null;
+    this.tableSelection = null;
+    this.editor.innerHTML = html || '<p><br></p>';
+    this.normalizeLinkCards();
+    this.fixImageContainers();
+    this.normalizeTables();
+    this._renderTableSelection();
+    this._afterChange();
+  }
+
+  _tableGrid(table) {
+    const grid = [];
+    const info = new Map();
+    const rows = Array.from((table && table.rows) || []);
+    let colCount = 0;
+    rows.forEach((row, rowIndex) => {
+      if (!grid[rowIndex]) grid[rowIndex] = [];
+      let colIndex = 0;
+      Array.from(row.cells).forEach(cell => {
+        while (grid[rowIndex][colIndex]) colIndex++;
+        const rowSpan = Math.max(1, Number(cell.rowSpan) || 1);
+        const colSpan = Math.max(1, Number(cell.colSpan) || 1);
+        info.set(cell, { row: rowIndex, col: colIndex, rowSpan, colSpan });
+        for (let r = rowIndex; r < rowIndex + rowSpan; r++) {
+          if (!grid[r]) grid[r] = [];
+          for (let c = colIndex; c < colIndex + colSpan; c++) grid[r][c] = cell;
+        }
+        colIndex += colSpan;
+        colCount = Math.max(colCount, colIndex);
+      });
+      colCount = Math.max(colCount, grid[rowIndex].length);
+    });
+    return { grid, info, rows, rowCount: grid.length, colCount: colCount || 1 };
+  }
+
+  _normalizeTable(table) {
+    if (!table) return;
+    table.setAttribute('data-pm-table', '1');
+    if (!table.getAttribute('data-pm-table-id')) table.setAttribute('data-pm-table-id', this._uid());
+    table.style.tableLayout = 'fixed';
+    const model = this._tableGrid(table);
+    let colgroup = table.querySelector(':scope > colgroup');
+    if (!colgroup) {
+      colgroup = document.createElement('colgroup');
+      table.insertBefore(colgroup, table.firstChild);
+    }
+    const countChanged = colgroup.children.length !== model.colCount;
+    while (colgroup.children.length < model.colCount) colgroup.appendChild(document.createElement('col'));
+    while (colgroup.children.length > model.colCount) colgroup.lastChild.remove();
+    const baseWidth = Math.max(1, table.getBoundingClientRect().width || this._editorContentWidth());
+    if (countChanged || Array.from(colgroup.children).some(col => !col.style.width)) {
+      this._applyColumnPixelWidths(table, equalizeWidths(baseWidth, model.colCount));
+    } else {
+      this._applyColumnPixelWidths(table, this._getColumnPixelWidths(table));
+    }
+    model.rows.forEach(row => Array.from(row.cells).forEach(cell => {
+      if (!cell.innerHTML.trim()) cell.innerHTML = '<br>';
+    }));
+  }
+
+  _getColumnPixelWidths(table) {
+    const cols = Array.from(table.querySelectorAll(':scope > colgroup > col'));
+    const rawTableWidth = String(table.style.width || '').trim();
+    const inlineTableWidth = rawTableWidth.endsWith('px') ? parseFloat(rawTableWidth) || 0 : 0;
+    const tableWidth = Math.max(1, inlineTableWidth || table.getBoundingClientRect().width || this._editorContentWidth());
+    const values = cols.map(col => {
+      const raw = String(col.style.width || '').trim();
+      if (raw.endsWith('%')) return tableWidth * (parseFloat(raw) || 0) / 100;
+      if (raw.endsWith('px')) return parseFloat(raw) || 0;
+      return 0;
+    });
+    if (values.some(value => value <= 0)) return normalizePixelWidths(values, tableWidth, cols.length || 1);
+    return values;
+  }
+
+  _applyColumnPixelWidths(table, widths) {
+    const cols = Array.from(table.querySelectorAll(':scope > colgroup > col'));
+    const currentWidth = Math.max(1, table.getBoundingClientRect().width || this._editorContentWidth());
+    const values = widths && widths.length === cols.length ? widths : equalizeWidths(currentWidth, cols.length || 1);
+    cols.forEach((col, index) => { col.style.width = Math.max(1, Number(values[index]) || 1).toFixed(2) + 'px'; });
+    table.style.width = values.reduce((sum, value) => sum + Math.max(1, Number(value) || 1), 0).toFixed(2) + 'px';
+  }
+
+  _selectedTableCells() {
+    if (this.tableSelection && this.tableSelection.cells && this.tableSelection.cells.length) {
+      return this.tableSelection.cells.filter(cell => cell && cell.isConnected);
+    }
+    return this.activeTableCell && this.activeTableCell.isConnected ? [this.activeTableCell] : [];
+  }
+
+  currentTableCell() {
+    if (this.activeTableCell && this.activeTableCell.isConnected) return this.activeTableCell;
+    return this._currentTableCell();
+  }
+
+  _setActiveTableCell(cell, extend) {
+    if (!cell || !this.editor.contains(cell)) {
+      this.activeTableCell = null;
+      this.tableSelection = null;
+      this._renderTableSelection();
+      return;
+    }
+    const table = cell.closest('table');
+    if (extend && this.tableSelection && this.tableSelection.table === table && this.tableSelection.anchor) {
+      this._selectTableRange(table, this.tableSelection.anchor, cell);
+      return;
+    }
+    this.activeTableCell = cell;
+    this.tableSelection = { table, anchor: cell, focus: cell, cells: [cell] };
+    this._renderTableSelection();
+  }
+
+  _selectTableRange(table, anchor, focus) {
+    const model = this._tableGrid(table);
+    const a = model.info.get(anchor);
+    const f = model.info.get(focus);
+    if (!a || !f) return this._setActiveTableCell(focus, false);
+    let top = Math.min(a.row, f.row);
+    let left = Math.min(a.col, f.col);
+    let bottom = Math.max(a.row + a.rowSpan - 1, f.row + f.rowSpan - 1);
+    let right = Math.max(a.col + a.colSpan - 1, f.col + f.colSpan - 1);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let r = top; r <= bottom; r++) {
+        for (let c = left; c <= right; c++) {
+          const cell = model.grid[r] && model.grid[r][c];
+          const meta = cell && model.info.get(cell);
+          if (!meta) continue;
+          const nextTop = Math.min(top, meta.row);
+          const nextLeft = Math.min(left, meta.col);
+          const nextBottom = Math.max(bottom, meta.row + meta.rowSpan - 1);
+          const nextRight = Math.max(right, meta.col + meta.colSpan - 1);
+          if (nextTop !== top || nextLeft !== left || nextBottom !== bottom || nextRight !== right) changed = true;
+          top = nextTop; left = nextLeft; bottom = nextBottom; right = nextRight;
+        }
+      }
+    }
+    const cells = [];
+    const seen = new Set();
+    for (let r = top; r <= bottom; r++) {
+      for (let c = left; c <= right; c++) {
+        const cell = model.grid[r] && model.grid[r][c];
+        if (cell && !seen.has(cell)) { seen.add(cell); cells.push(cell); }
+      }
+    }
+    this.activeTableCell = focus;
+    this.tableSelection = { table, anchor, focus, cells, rect: { top, left, bottom, right } };
+    this._renderTableSelection();
+  }
+
+  _renderTableSelection() {
+    this.editor.querySelectorAll('.pm-table-cell-active,.pm-table-cell-selected').forEach(cell => {
+      cell.classList.remove('pm-table-cell-active', 'pm-table-cell-selected');
+    });
+    const cells = this._selectedTableCells();
+    if (this.activeTableCell && this.activeTableCell.isConnected) this.activeTableCell.classList.add('pm-table-cell-active');
+    if (cells.length > 1) cells.forEach(cell => cell.classList.add('pm-table-cell-selected'));
+    this._emitTableState();
+    requestAnimationFrame(() => this._updateTableResizeHandles());
+  }
+
+  getTableState() {
+    const cell = this.currentTableCell();
+    const table = cell && cell.closest('table');
+    const cells = table ? this._selectedTableCells() : [];
+    return {
+      active: !!table,
+      table,
+      cell,
+      selectedCount: cells.length,
+      canMerge: cells.length > 1,
+      canSplit: !!(cell && (cell.rowSpan > 1 || cell.colSpan > 1)),
+      backgroundColor: cell && cell.style.backgroundColor ? cell.style.backgroundColor : '#ffffff'
+    };
+  }
+
+  _emitTableState() {
+    this.editor.dispatchEvent(new CustomEvent('penmark:table-state', { detail: this.getTableState() }));
+  }
+
+  _hasMergedCells(table) {
+    return !!table.querySelector('td[rowspan]:not([rowspan="1"]),th[rowspan]:not([rowspan="1"]),td[colspan]:not([colspan="1"]),th[colspan]:not([colspan="1"])');
+  }
+
+  tableCommand(action) {
+    const cell = this.currentTableCell();
+    const table = cell && cell.closest('table');
+    if (!table) { this.onToast('请先把光标放进表格'); return false; }
+    const structural = new Set(['row-before','row-after','col-left','col-right','delete-row','delete-col','toggle-header']);
+    if (structural.has(action) && this._hasMergedCells(table)) {
+      this.onToast('请先拆分合并单元格，再增删行列');
+      return false;
+    }
+    const before = this._snapshotHTML();
+    const row = cell.parentNode;
+    const colIndex = this._cellColumnIndex(cell);
+    let ok = true;
+    switch (action) {
+      case 'row-before': this._insertTableRow(row, -1); break;
+      case 'row-after': this._insertTableRow(row, 1); break;
+      case 'col-left': this._insertTableColumn(table, colIndex); break;
+      case 'col-right': this._insertTableColumn(table, colIndex + 1); break;
+      case 'delete-row': this._deleteTableRow(row); break;
+      case 'delete-col': this._deleteTableColumn(table, colIndex); break;
+      case 'toggle-header': this._toggleTableHeader(table); break;
+      case 'delete-table': this._deleteTable(table); this._setActiveTableCell(null, false); break;
+      case 'equalize': this._equalizeTableColumns(table); break;
+      case 'merge': ok = this._mergeSelectedTableCells(table); break;
+      case 'split': ok = this._splitActiveTableCell(table, cell); break;
+      case 'clear-bg': this._applyTableCellBackground(''); break;
+      default: ok = false;
+    }
+    if (!ok) return false;
+    if (table.isConnected) this._normalizeTable(table);
+    this._recordTableMutation(before);
+    this._afterChange();
+    this._renderTableSelection();
+    return true;
+  }
+
+  _equalizeTableColumns(table) {
+    const count = table.querySelectorAll(':scope > colgroup > col').length || this._tableGrid(table).colCount;
+    const current = this._getColumnPixelWidths(table);
+    const total = current.reduce((sum, value) => sum + value, 0);
+    this._applyColumnPixelWidths(table, equalizeWidths(total, count));
+  }
+
+  _mergeSelectedTableCells(table) {
+    const cells = this._selectedTableCells();
+    if (cells.length < 2 || !this.tableSelection || !this.tableSelection.rect) {
+      this.onToast('按住 Shift 点击，先选择连续单元格');
+      return false;
+    }
+    const model = this._tableGrid(table);
+    const rect = this.tableSelection.rect;
+    const keeper = model.grid[rect.top] && model.grid[rect.top][rect.left];
+    if (!keeper) return false;
+    const contents = cells.map(item => String(item.innerHTML || '').trim())
+      .filter(value => value && value !== '<br>');
+    keeper.innerHTML = contents.length ? contents.join('<br>') : '<br>';
+    keeper.rowSpan = rect.bottom - rect.top + 1;
+    keeper.colSpan = rect.right - rect.left + 1;
+    cells.forEach(item => { if (item !== keeper) item.remove(); });
+    this.activeTableCell = keeper;
+    this.tableSelection = { table, anchor: keeper, focus: keeper, cells: [keeper] };
+    return true;
+  }
+
+  _insertCellAtLogicalColumn(table, row, targetCol, tagName) {
+    const model = this._tableGrid(table);
+    let ref = null;
+    for (const existing of Array.from(row.cells)) {
+      const meta = model.info.get(existing);
+      if (meta && meta.col >= targetCol) { ref = existing; break; }
+    }
+    const cell = document.createElement(tagName || 'td');
+    cell.innerHTML = '<br>';
+    row.insertBefore(cell, ref);
+    return cell;
+  }
+
+  _splitActiveTableCell(table, cell) {
+    const model = this._tableGrid(table);
+    const meta = model.info.get(cell);
+    if (!meta || (meta.rowSpan === 1 && meta.colSpan === 1)) {
+      this.onToast('当前单元格没有合并');
+      return false;
+    }
+    const originalTag = cell.tagName.toLowerCase();
+    cell.rowSpan = 1;
+    cell.colSpan = 1;
+    for (let r = meta.row; r < meta.row + meta.rowSpan; r++) {
+      const row = table.rows[r];
+      for (let c = meta.col; c < meta.col + meta.colSpan; c++) {
+        if (r === meta.row && c === meta.col) continue;
+        const tag = row.parentElement && row.parentElement.tagName === 'THEAD' ? 'th' : originalTag === 'th' ? 'th' : 'td';
+        this._insertCellAtLogicalColumn(table, row, c, tag);
+      }
+    }
+    this.activeTableCell = cell;
+    this.tableSelection = { table, anchor: cell, focus: cell, cells: [cell] };
+    return true;
+  }
+
+  _applyTableCellBackground(color) {
+    const cells = this._selectedTableCells();
+    cells.forEach(cell => {
+      if (color) cell.style.backgroundColor = color;
+      else cell.style.removeProperty('background-color');
+    });
+  }
+
+  setTableCellBackground(color) {
+    if (!this.currentTableCell()) return false;
+    const before = this._snapshotHTML();
+    this._applyTableCellBackground(color);
+    this._recordTableMutation(before);
+    this._afterChange();
+    this._emitTableState();
+    return true;
+  }
+
+  _ensureTableResizeLayer() {
+    if (this.tableResizeLayer) return this.tableResizeLayer;
+    const layer = document.createElement('div');
+    layer.className = 'table-resize-layer';
+    layer.hidden = true;
+    document.body.appendChild(layer);
+    this.tableResizeLayer = layer;
+    return layer;
+  }
+
+  _updateTableResizeHandles() {
+    const layer = this._ensureTableResizeLayer();
+    if (this.tableResizeState) return;
+    const cell = this.currentTableCell();
+    const table = cell && cell.closest('table');
+    if (!table || !table.isConnected || this.editor.contentEditable === 'false') {
+      layer.hidden = true;
+      layer.replaceChildren();
+      return;
+    }
+    const rect = table.getBoundingClientRect();
+    const widths = this._getColumnPixelWidths(table);
+    layer.replaceChildren();
+    layer.hidden = false;
+    let x = rect.left;
+    for (let index = 0; index < widths.length; index++) {
+      x += widths[index];
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'table-col-resizer';
+      handle.dataset.columnIndex = String(index);
+      handle.setAttribute('aria-label', '调整列宽');
+      handle.title = '拖动调整列宽；双击均分列宽';
+      handle.style.left = (x - 7) + 'px';
+      handle.style.top = rect.top + 'px';
+      handle.style.height = rect.height + 'px';
+      handle.addEventListener('pointerdown', event => this._startTableColumnResize(event, table, index));
+      handle.addEventListener('dblclick', event => {
+        event.preventDefault();
+        const before = this._snapshotHTML();
+        this._equalizeTableColumns(table);
+        this._recordTableMutation(before);
+        this._afterChange();
+        this._updateTableResizeHandles();
+      });
+      layer.appendChild(handle);
     }
   }
 
+  _startTableColumnResize(event, table, boundaryIndex) {
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget;
+    const widths = this._getColumnPixelWidths(table);
+    this.tableResizeState = {
+      table,
+      handle,
+      boundaryIndex,
+      startX: event.clientX,
+      widths,
+      before: this._snapshotHTML(),
+      pointerId: event.pointerId
+    };
+    handle.classList.add('active');
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add('table-resizing');
+    const move = e => this._moveTableColumnResize(e);
+    const end = e => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      this._endTableColumnResize(e);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
+
+  _positionTableResizeHandles(table, widths) {
+    const rect = table.getBoundingClientRect();
+    const handles = Array.from(this._ensureTableResizeLayer().querySelectorAll('.table-col-resizer'));
+    let x = rect.left;
+    handles.forEach((handle, index) => {
+      x += widths[index] || 0;
+      handle.style.left = (x - 7) + 'px';
+      handle.style.top = rect.top + 'px';
+      handle.style.height = rect.height + 'px';
+    });
+  }
+
+  _moveTableColumnResize(event) {
+    const state = this.tableResizeState;
+    if (!state || event.pointerId !== state.pointerId) return;
+    let resized = resizeColumnWidth(state.widths, state.boundaryIndex, event.clientX - state.startX, TABLE_MIN_COL_WIDTH);
+    if (!event.altKey) {
+      const width = resized[state.boundaryIndex];
+      const equalCandidate = state.widths
+        .filter((_value, index) => index !== state.boundaryIndex)
+        .map(value => ({ value, distance: Math.abs(value - width) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (equalCandidate && equalCandidate.distance <= 6) {
+        resized = resizeColumnWidth(state.widths, state.boundaryIndex,
+          equalCandidate.value - state.widths[state.boundaryIndex], TABLE_MIN_COL_WIDTH);
+      }
+      if (state.boundaryIndex === state.widths.length - 1) {
+        const editorRect = this.editor.getBoundingClientRect();
+        const editorStyle = window.getComputedStyle(this.editor);
+        const contentRight = editorRect.right - (parseFloat(editorStyle.paddingRight) || 0);
+        const tableLeft = state.table.getBoundingClientRect().left;
+        const proposedRight = tableLeft + resized.reduce((sum, value) => sum + value, 0);
+        if (Math.abs(contentRight - proposedRight) <= 8) {
+          resized[state.boundaryIndex] += contentRight - proposedRight;
+        }
+      }
+    }
+    this._applyColumnPixelWidths(state.table, resized);
+    this._positionTableResizeHandles(state.table, resized);
+    state.currentWidths = resized;
+  }
+
+  _endTableColumnResize(event) {
+    const state = this.tableResizeState;
+    if (!state || event.pointerId !== state.pointerId) return;
+    if (state.handle.hasPointerCapture && state.handle.hasPointerCapture(event.pointerId)) state.handle.releasePointerCapture(event.pointerId);
+    const finalWidths = state.currentWidths || state.widths;
+    this._applyColumnPixelWidths(state.table, finalWidths);
+    state.handle.classList.remove('active');
+    this.tableResizeState = null;
+    document.body.classList.remove('table-resizing');
+    this._recordTableMutation(state.before);
+    this._afterChange();
+    this._updateTableResizeHandles();
+  }
+
+  _bindTableEditing() {
+    this._ensureTableResizeLayer();
+    this.editor.addEventListener('pointerdown', event => {
+      const cell = event.target.closest && event.target.closest('td,th');
+      if (cell && this.editor.contains(cell)) {
+        if (event.shiftKey) event.preventDefault();
+        this._setActiveTableCell(cell, event.shiftKey);
+      } else if (event.target.closest && !event.target.closest('table')) {
+        this._setActiveTableCell(null, false);
+      }
+    });
+    this.editor.addEventListener('focusin', event => {
+      const cell = event.target.closest && event.target.closest('td,th');
+      if (cell) this._setActiveTableCell(cell, false);
+    });
+    this.editor.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && this._selectedTableCells().length > 1) {
+        event.preventDefault();
+        this._setActiveTableCell(this.activeTableCell, false);
+      }
+    });
+    window.addEventListener('resize', () => this._updateTableResizeHandles());
+    window.addEventListener('scroll', () => this._updateTableResizeHandles(), true);
+  }
+
+  _createImageDragPreview(img) {
+    this._removeImageDragPreview();
+    if (!img) return null;
+    const naturalW = img.naturalWidth || img.offsetWidth || 180;
+    const naturalH = img.naturalHeight || img.offsetHeight || 140;
+    const scale = Math.min(180 / naturalW, 140 / naturalH, 1);
+    const width = Math.max(48, Math.round(naturalW * scale));
+    const height = Math.max(36, Math.round(naturalH * scale));
+    const preview = document.createElement('div');
+    preview.className = 'image-drag-preview';
+    preview.style.width = width + 'px';
+    preview.style.height = height + 'px';
+    const clone = img.cloneNode(false);
+    clone.removeAttribute('width');
+    clone.removeAttribute('height');
+    clone.style.cssText = 'display:block;width:100%;height:100%;object-fit:cover;';
+    preview.appendChild(clone);
+    document.body.appendChild(preview);
+    this.imageDragPreview = preview;
+    return preview;
+  }
+
+  _removeImageDragPreview() {
+    if (this.imageDragPreview && this.imageDragPreview.parentNode) {
+      this.imageDragPreview.parentNode.removeChild(this.imageDragPreview);
+    }
+    this.imageDragPreview = null;
+  }
   _bindImageDelegation() {
     // 点击选中
     this.editor.addEventListener('click', (e) => {
+      if (e.target.closest('.link-card, .lc-thumb')) return;
       const handle = e.target.closest('.rs-handle');
       if (handle) return; // 手柄交给 mousedown 处理
       const container = e.target.closest('.img-container');
@@ -541,31 +1075,39 @@ export class Editor {
       }
     });
 
-    // 缩放手柄 mousedown / touchstart
-    function startImageResize(e, clientX, clientY) {
+    // 缩放手柄 mousedown
+    this.editor.addEventListener('mousedown', (e) => {
       const handle = e.target.closest('.rs-handle');
-      if (!handle) return false;
+      if (!handle) return;
       e.preventDefault();
       e.stopPropagation();
       const container = handle.closest('.img-container');
-      if (!container) return false;
+      if (!container) return;
       this._selectImage(container);
       const dir = handle.getAttribute('data-dir');
       const rect = container.getBoundingClientRect();
+      const grid = container.closest('.img-grid');
+      if (grid) {
+        const parent = grid.parentNode;
+        parent.insertBefore(container, grid.nextSibling);
+        container.style.width = Math.round(rect.width) + 'px';
+        container.style.height = Math.round(rect.height) + 'px';
+        this._cleanupImageGrid(grid);
+      }
       const img = container.querySelector('img');
       const aspect = (img && img.naturalWidth) ? img.naturalWidth / img.naturalHeight : 1;
       this.resizeState = {
         container, dir,
-        startX: clientX, startY: clientY,
+        startX: e.clientX, startY: e.clientY,
         startW: rect.width, startH: rect.height, aspect
       };
-      return true;
-    }
-    function onImageResizeMove(e, clientX, clientY) {
+    });
+
+    // 缩放 mousemove / mouseup（绑 document 一次）
+    document.addEventListener('mousemove', (e) => {
       if (!this.resizeState) return;
-      e.preventDefault();
       const s = this.resizeState;
-      const dx = clientX - s.startX;
+      const dx = e.clientX - s.startX;
       let newW;
       if (s.dir === 'se' || s.dir === 'ne') newW = s.startW + dx;
       else newW = s.startW - dx;
@@ -575,32 +1117,16 @@ export class Editor {
       const maxW = this._editorContentWidth();
       if (newW > maxW * 0.95) newW = maxW * 0.95;
       this._setImageDisplaySize(s.container, newW);
-    }
-    function onImageResizeEnd() {
+    });
+    document.addEventListener('mouseup', () => {
       if (this.resizeState) {
         const s = this.resizeState;
+        // 缩放前尺寸入栈，供 undo 补偿
         this.styleUndoStack.push({ container: s.container, w: s.startW, h: s.startH });
         this.resizeState = null;
         this._afterChange();
       }
-    }
-    this.editor.addEventListener('mousedown', (e) => {
-      startImageResize.call(this, e, e.clientX, e.clientY);
     });
-    this.editor.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      startImageResize.call(this, e, e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
-    document.addEventListener('mousemove', (e) => {
-      onImageResizeMove.call(this, e, e.clientX, e.clientY);
-    });
-    document.addEventListener('touchmove', (e) => {
-      if (!this.resizeState) return;
-      if (e.touches.length !== 1) return;
-      onImageResizeMove.call(this, e, e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
-    document.addEventListener('mouseup', () => { onImageResizeEnd.call(this); });
-    document.addEventListener('touchend', () => { onImageResizeEnd.call(this); });
 
     // 删除键
     this.editor.addEventListener('keydown', (e) => {
@@ -621,6 +1147,7 @@ export class Editor {
 
     // 编辑器内拖拽移位
     this.editor.addEventListener('dragstart', (e) => {
+      if (e.target.closest && e.target.closest('.link-card, .lc-thumb')) return;
       const container = e.target.closest && e.target.closest('.img-container');
       if (container) {
         container.classList.add('dragging');
@@ -629,23 +1156,30 @@ export class Editor {
           e.dataTransfer.setData('text/penmark-img', container.getAttribute('data-id') || this._uid());
           container.setAttribute('data-id', e.dataTransfer.getData('text/penmark-img'));
           const img = container.querySelector('img');
-          if (img && e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(img, img.offsetWidth / 2, img.offsetHeight / 2);
+          if (img && e.dataTransfer.setDragImage) {
+            const preview = this._createImageDragPreview(img);
+            if (preview) e.dataTransfer.setDragImage(preview, preview.offsetWidth / 2, preview.offsetHeight / 2);
+          }
         } catch (_) {}
       }
     });
     this.editor.addEventListener('dragend', (e) => {
       const container = e.target.closest && e.target.closest('.img-container');
       if (container) container.classList.remove('dragging');
+      this._hideDropIndicator();
+      this._removeImageDragPreview();
     });
     this.editor.addEventListener('dragover', (e) => {
       if (e.dataTransfer.types && e.dataTransfer.types.indexOf('text/penmark-img') >= 0) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
+        this._showDropIndicator(e.clientX, e.clientY);
       }
     });
     this.editor.addEventListener('drop', (e) => {
       const id = e.dataTransfer.getData('text/penmark-img');
       if (id) {
+        this._hideDropIndicator();
         e.preventDefault();
         e.stopPropagation();
         const container = this.editor.querySelector('.img-container[data-id="' + id + '"]');
@@ -653,18 +1187,21 @@ export class Editor {
         const gridTarget = this._imageDropTarget(e.clientX, e.clientY, container);
         if (gridTarget) {
           this._moveImageBeside(container, gridTarget, e.clientX);
+          container.removeAttribute('data-id');
+          container.classList.remove('dragging');
           this._afterChange();
           return;
         }
         const r = this._blockInsertionRangeFromPoint(e.clientX, e.clientY);
         if (!r) return;
         const oldGrid = container.closest('.img-grid');
+        container.classList.remove('dragging');
         const html = container.outerHTML;
         container.parentNode.removeChild(container);
         this._cleanupImageGrid(oldGrid);
         this._insertHTMLAtRange(r, html + '<p><br></p>');
         const inserted = this.editor.querySelector('.img-container[data-id="' + id + '"]');
-        if (inserted) { inserted.removeAttribute('data-id'); this._attachImgLoad(inserted); }
+        if (inserted) { inserted.classList.remove('dragging'); inserted.removeAttribute('data-id'); this._attachImgLoad(inserted); }
         this._afterChange();
       }
     }, true);
@@ -797,15 +1334,7 @@ export class Editor {
           'text/plain': new Blob([src], { type: 'text/plain' })
         };
         if (/^data:image\/png/i.test(src)) {
-          try {
-            const base64 = src.split(',')[1];
-            if (base64) {
-              const byteChars = atob(base64);
-              const byteNums = new Uint8Array(byteChars.length);
-              for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
-              items['image/png'] = new Blob([byteNums], { type: 'image/png' });
-            }
-          } catch (_) {}
+          try { items['image/png'] = await (await fetch(src)).blob(); } catch (_) {}
         }
         await navigator.clipboard.write([new ClipboardItem(items)]);
         return true;
@@ -940,9 +1469,40 @@ export class Editor {
     return this.editor;
   }
 
+  _showDropIndicator(x, y) {
+    const indicator = document.getElementById('dropIndicator');
+    if (!indicator) return;
+    const caret = this._caretFromPoint(x, y);
+    if (!caret || !this.editor.contains(caret.startContainer)) {
+      this._hideDropIndicator();
+      return;
+    }
+    const block = this._blockFromNode(caret.startContainer);
+    const editorRect = this.editor.getBoundingClientRect();
+    const style = getComputedStyle(this.editor);
+    let top;
+    if (block && block !== this.editor && block.getBoundingClientRect) {
+      const rect = block.getBoundingClientRect();
+      top = y < rect.top + rect.height / 2 ? rect.top : rect.bottom;
+    } else {
+      top = Math.max(editorRect.top, Math.min(y, editorRect.bottom));
+    }
+    indicator.style.top = Math.round(top - 1) + 'px';
+    indicator.style.left = Math.round(editorRect.left + parseFloat(style.paddingLeft || 0)) + 'px';
+    indicator.style.right = Math.round(window.innerWidth - editorRect.right + parseFloat(style.paddingRight || 0)) + 'px';
+    indicator.classList.add('visible');
+  }
+
+  _hideDropIndicator() {
+    const indicator = document.getElementById('dropIndicator');
+    if (indicator) indicator.classList.remove('visible');
+  }
   /* ---------- 外部拖入图片文件 ---------- */
   _bindDragDrop() {
     let depth = 0;
+    const showIndicator = (x, y) => this._showDropIndicator(x, y);
+    const hideIndicator = () => this._hideDropIndicator();
+
     window.addEventListener('dragenter', (e) => {
       if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0) {
         depth++;
@@ -950,34 +1510,52 @@ export class Editor {
       }
     });
     window.addEventListener('dragover', (e) => {
-      if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0) e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0) {
+        e.preventDefault();
+        if (this.editor.contains(e.target)) showIndicator(e.clientX, e.clientY);
+        else hideIndicator();
+      }
     });
     window.addEventListener('dragleave', () => {
       depth--;
-      if (depth <= 0) { depth = 0; if (this.dropOverlay) this.dropOverlay.classList.remove('show'); }
+      if (depth <= 0) { depth = 0; if (this.dropOverlay) this.dropOverlay.classList.remove('show'); hideIndicator(); }
     });
     window.addEventListener('drop', async (e) => {
-      if (!this.editor.contains(e.target)) return;
-      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-      const imgs = [];
-      for (let i = 0; i < e.dataTransfer.files.length; i++) {
-        const f = e.dataTransfer.files[i];
-        if (f.type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name)) imgs.push(f);
-      }
-      if (imgs.length) {
-        e.preventDefault();
-        if (this.dropOverlay) this.dropOverlay.classList.remove('show');
-        depth = 0;
-        const r = this._caretFromPoint(e.clientX, e.clientY);
-        if (r) { const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
-        else this._placeCaretAtEnd();
-        for (const f of imgs) {
-          try { const url = await this._readAsDataURL(f); this.insertImage(url); }
-          catch (err) { this.onToast('图片插入失败：' + f.name); }
+      hideIndicator();
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        const imgs = [];
+        for (let i = 0; i < e.dataTransfer.files.length; i++) {
+          const f = e.dataTransfer.files[i];
+          if (f.type.indexOf('image/') === 0 || /\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name)) imgs.push(f);
         }
-        this.onToast('已插入 ' + imgs.length + ' 张图片');
+        if (imgs.length) {
+          e.preventDefault();
+          if (this.dropOverlay) this.dropOverlay.classList.remove('show');
+          depth = 0;
+          const inEditor = this.editor.contains(e.target);
+          let dropRange = inEditor
+            ? this._blockInsertionRangeFromPoint(e.clientX, e.clientY)
+            : null;
+          if (!dropRange) {
+            dropRange = document.createRange();
+            dropRange.selectNodeContents(this.editor);
+            dropRange.collapse(false);
+          } else {
+            dropRange = dropRange.cloneRange();
+          }
+          for (const f of imgs) {
+            try {
+              const url = await this._readAsDataURL(f);
+              this.insertImage(url, dropRange);
+              dropRange = this._blockInsertionRangeFromSelection() || dropRange;
+            } catch (err) { this.onToast('图片插入失败：' + f.name); }
+          }
+          this.onToast('已插入 ' + imgs.length + ' 张图片');
+        }
       }
       if (this.dropOverlay) this.dropOverlay.classList.remove('show');
+      this.editor.querySelectorAll('.img-container.dragging').forEach(c => c.classList.remove('dragging'));
+      this._removeImageDragPreview();
       depth = 0;
     });
   }
@@ -1003,7 +1581,7 @@ export class Editor {
     return new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(r.result);
-      r.onerror = () => reject(new Error('读取文件失败'));
+      r.onerror = reject;
       r.readAsDataURL(blob);
     });
   }
@@ -1027,6 +1605,7 @@ export class Editor {
     this.editor.addEventListener('paste', async (e) => {
       const cd = e.clipboardData || window.clipboardData;
       if (!cd) return;
+      this._prepareEmptyEditorForPaste();
       const html = cd.getData('text/html');
       if (html && this._shouldPasteAsHTML(html)) {
         e.preventDefault();
@@ -1075,10 +1654,9 @@ export class Editor {
       } else {
         // 纯文本：若含 URL 则自动转为超链接，否则放行默认
         const text = cd.getData('text/plain') || '';
-        if (text && /https?:\/\/\S+/i.test(text)) {
+        if (text && /(?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(text)) {
           e.preventDefault();
-          const html = this._escapeHtml(text).replace(/\n/g, '<br>')
-            .replace(/(https?:\/\/[^\s<]+)/ig, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+          const html = this._linkifyPlainText(text);
           document.execCommand('insertHTML', false, html);
           setTimeout(() => this._afterPasteCleanup(), 60);
         } else {
@@ -1086,6 +1664,31 @@ export class Editor {
         }
       }
     });
+  }
+
+  _linkifyPlainText(text) {
+    const escaped = this._escapeHtml(text).replace(/\n/g, '<br>');
+    return escaped.replace(/(^|[\s([{])((?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<]*)/ig,
+      (all, prefix, raw) => {
+        const match = raw.match(/^(.*?)([.,!?;:，。！？；：)\]]*)$/);
+        const url = match ? match[1] : raw;
+        const trailing = match ? match[2] : '';
+        const href = this._normalizeUrl(url);
+        if (!href) return all;
+        return prefix + '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + url + '</a>' + trailing;
+      });
+  }
+  _prepareEmptyEditorForPaste() {
+    const hasContent = (this.editor.textContent || '').trim() ||
+      this.editor.querySelector('img, table, hr, video, audio, iframe');
+    if (hasContent) return;
+    this.editor.innerHTML = '<p><br></p>';
+    const range = document.createRange();
+    range.selectNodeContents(this.editor.firstElementChild);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   _shouldPasteAsHTML(html) {
@@ -1265,7 +1868,9 @@ export class Editor {
 
   /* 粘贴后统一清理流程 */
   _afterPasteCleanup() {
+    this.normalizeLinkCards();
     this.fixImageContainers();
+    this.normalizeTables();
     this._afterChange();
     this._convertRemoteImages(); // 异步 fire-and-forget，完成后会再次 _afterChange
   }
@@ -1420,7 +2025,7 @@ export class Editor {
     const suffixMatch = before.match(/[\s\u00a0]+$/);
     const suffix = suffixMatch ? suffixMatch[0] : '';
     const body = suffix ? before.slice(0, -suffix.length) : before;
-    const match = body.match(/(?:^|[\s([{])((?:https?:\/\/|www\.)[^\s<>'"]{3,})$/i);
+    const match = body.match(/(?:^|[\s([{])((?:(?:https?:\/\/|www\.)[^\s<>'"]{3,}|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>'"]*)?))$/i);
     if (!match) return;
 
     const rawUrl = match[1].replace(/[.,!?;:]+$/g, '');
@@ -1454,6 +2059,7 @@ export class Editor {
     const text = String(raw || '').trim();
     if (/^https?:\/\//i.test(text)) return text;
     if (/^www\./i.test(text)) return 'https://' + text;
+    if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#].*)?$/i.test(text)) return 'https://' + text;
     return '';
   }
 
@@ -1463,6 +2069,34 @@ export class Editor {
     return el && el.closest ? el.closest(selector) : null;
   }
 
+  normalizeLinkCards() {
+    this.editor.querySelectorAll('a[data-link-card="1"]').forEach(card => {
+      const thumb = card.querySelector('.lc-thumb');
+      if (thumb) {
+        const wrapped = thumb.querySelector('.img-container');
+        if (wrapped) {
+          const img = wrapped.querySelector('img');
+          if (img) {
+            img.style.width = '';
+            img.style.height = '';
+            img.removeAttribute('width');
+            img.removeAttribute('height');
+            img.setAttribute('draggable', 'false');
+            thumb.insertBefore(img, wrapped);
+          }
+          wrapped.remove();
+        }
+        thumb.querySelectorAll('.rs-handle, .img-size-label').forEach(n => n.remove());        thumb.title = '打开链接';
+        thumb.setAttribute('role', 'button');
+        thumb.setAttribute('aria-label', '打开链接');
+      }
+      const open = card.querySelector('.lc-open');
+      if (open) {
+        open.title = '打开链接';
+        open.setAttribute('aria-label', '打开链接');
+      }
+    });
+  }
   async convertLinkToCard(anchor) {
     if (!anchor || anchor.tagName !== 'A') return;
     const url = anchor.getAttribute('href');
@@ -1514,13 +2148,16 @@ export class Editor {
     card.appendChild(main);
     const open = document.createElement('span');
     open.className = 'lc-open';
-    open.title = 'Open link';
-    open.textContent = '\u2197';
-    open.setAttribute('aria-label', 'Open link');
+    open.title = '打开链接';
+    open.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7,7 17,7 17,17"/></svg>';
+    open.setAttribute('aria-label', '打开链接');
     card.appendChild(open);
     if (meta.image) {
       const thumb = document.createElement('div');
       thumb.className = 'lc-thumb';
+      thumb.title = '打开链接';
+      thumb.setAttribute('role', 'button');
+      thumb.setAttribute('aria-label', '打开链接');
       const img = document.createElement('img');
       img.src = meta.image;
       img.alt = '';
@@ -1540,6 +2177,31 @@ export class Editor {
     const parent = anchor.parentNode;
     while (anchor.firstChild) parent.insertBefore(anchor.firstChild, anchor);
     parent.removeChild(anchor);
+    this._afterChange();
+  }
+
+  // 链接卡片 → 普通链接
+  convertCardToLink(card) {
+    if (!card || card.getAttribute('data-link-card') !== '1') return;
+    const url = card.getAttribute('href');
+    if (!url) return;
+    const titleEl = card.querySelector('.lc-title');
+    const text = titleEl ? titleEl.textContent.trim() : url;
+    const domainEl = card.querySelector('.lc-domain');
+    const display = domainEl ? domainEl.textContent.trim() : text;
+    // 构建普通链接 <a>
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = display;
+    // 若卡片独占一个块则替换整块，否则替换卡片节点
+    const block = this._currentBlock();
+    if (block && block.textContent.trim() === card.textContent.trim()) {
+      block.parentNode.replaceChild(a, block);
+    } else {
+      card.parentNode.replaceChild(a, card);
+    }
     this._afterChange();
   }
 
@@ -1624,16 +2286,23 @@ export class Editor {
   }
 
   /* ---------- 内容读写 ---------- */
-  getHTML() { return this.editor.innerHTML; }
+  getHTML() { return this._snapshotHTML(); }
   setHTML(html) {
+    this.activeTableCell = null;
+    this.tableSelection = null;
     this.editor.innerHTML = html || '<p><br></p>';
+    this.normalizeLinkCards();
     this.fixImageContainers();
     this.normalizeTables();
+    this._renderTableSelection();
     this._afterChange();
   }
   clear() {
+    this.activeTableCell = null;
+    this.tableSelection = null;
     this.editor.innerHTML = '<p><br></p>';
     this._selectImage(null);
+    this._renderTableSelection();
     this._afterChange();
   }
 
@@ -1739,7 +2408,7 @@ export class Editor {
         const img = item.querySelector('img');
         if (img) {
           let w = parseFloat(item.style.width) || 0;
-          if (!w) { w = img.naturalWidth || 300; }
+          if (!w) { const orig = this.editor.querySelector('.img-grid .img-container img'); w = orig ? orig.naturalWidth : 300; }
           w = Math.min(w, cellMax);
           const cleanImg = img.cloneNode(true);
           cleanImg.style.width = Math.floor(w) + 'px';
@@ -1802,6 +2471,7 @@ export class Editor {
     // 同粘贴流程清理 + 固化远程图
     const cleaned = this._cleanPastedHTML(content);
     this.editor.innerHTML = cleaned;
+    this.normalizeLinkCards();
     this.fixImageContainers();
     this._afterChange();
     this._convertRemoteImages();

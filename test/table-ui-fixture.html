@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="../public/styles.css">
+  <style>body{margin:0;padding:24px}.editor{width:800px;min-height:400px}</style>
+</head>
+<body>
+  <div id="editor" class="editor" contenteditable="true"><p><br></p></div>
+  <div id="dropOverlay"></div>
+  <script type="module">
+    import { Editor } from '../public/editor.js';
+    window.testEditor = new Editor({
+      editor: document.getElementById('editor'),
+      dropOverlay: document.getElementById('dropOverlay'),
+      onUpdate() {},
+      onToast() {},
+      onImageSelect() {}
+    });
+    window.testReady = true;
+  </script>
+</body>
+</html>

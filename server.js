@@ -16,7 +16,16 @@ const HOST = process.env.PENMARK_HOST || '0.0.0.0';
 
 // Trust proxy（Nginx 反向代理时需要）
 if (process.env.TRUST_PROXY) {
-  app.set('trust proxy', process.env.TRUST_PROXY);
+  const rawTrustProxy = String(process.env.TRUST_PROXY).trim();
+  let trustProxy = rawTrustProxy;
+  if (/^\d+$/.test(rawTrustProxy)) {
+    trustProxy = Number(rawTrustProxy);
+  } else if (rawTrustProxy.toLowerCase() === 'true') {
+    trustProxy = true;
+  } else if (rawTrustProxy.toLowerCase() === 'false') {
+    trustProxy = false;
+  }
+  app.set('trust proxy', trustProxy);
 }
 
 // 桌面模式拒绝异常 Host，避免 DNS rebinding
@@ -34,6 +43,54 @@ app.use(express.static(path.join(__dirname, 'public')));
 /* ---------- async 路由包装器 ---------- */
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+/* ---------- 同源校验（CSRF 防护，兼容 Nginx/宝塔反向代理） ---------- */
+const WRITE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+const CONFIGURED_APP_ORIGINS = new Set(
+  String(process.env.APP_ORIGIN || '')
+    .split(',')
+    .map(value => normalizeOrigin(value.trim()))
+    .filter(Boolean)
+);
+
+function normalizeOrigin(value) {
+  if (!value) return null;
+  try { return new URL(value).origin; } catch (_) { return null; }
+}
+
+function firstForwardedValue(value) {
+  return String(value || '').split(',')[0].trim();
+}
+
+function getPublicRequestOrigin(req) {
+  const trustProxy = app.enabled('trust proxy');
+  const forwardedHost = trustProxy ? firstForwardedValue(req.headers['x-forwarded-host']) : '';
+  const forwardedProto = trustProxy ? firstForwardedValue(req.headers['x-forwarded-proto']) : '';
+  const host = forwardedHost || req.headers.host || '';
+  const protocol = forwardedProto || req.protocol || 'http';
+  return normalizeOrigin(`${protocol}://${host}`);
+}
+
+app.use((req, res, next) => {
+  if (!WRITE_METHODS.has(req.method) || !req.path.startsWith('/api/')) return next();
+
+  // 同源 fetch 通常携带 Origin；部分导航或旧浏览器只有 Referer。
+  // 无来源头的非浏览器调用仍由会话认证和桌面随机 Cookie 保护。
+  const suppliedOrigin = req.headers.origin || req.headers.referer || '';
+  if (!suppliedOrigin) return next();
+
+  const requestOrigin = normalizeOrigin(suppliedOrigin);
+  if (!requestOrigin) return res.status(403).json({ error: '请求来源无效' });
+
+  const allowedOrigins = new Set(CONFIGURED_APP_ORIGINS);
+  const proxyAwareOrigin = getPublicRequestOrigin(req);
+  if (proxyAwareOrigin) allowedOrigins.add(proxyAwareOrigin);
+
+  if (!allowedOrigins.has(requestOrigin)) {
+    return res.status(403).json({ error: '跨域请求被拒绝' });
+  }
+  next();
+});
+
 /* ---------- 健康检查 ---------- */
 app.get('/health/live', (req, res) => res.json({ ok: true }));
 
@@ -45,10 +102,11 @@ app.get('/health/ready', wrap(async (req, res) => {
 /* ---------- 登录速率限制 ---------- */
 const LOGIN_RATE_LIMIT = parseInt(process.env.LOGIN_RATE_LIMIT || '10', 10);
 const loginRateLimit = new Map();
-setInterval(() => {
+const loginRateCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [k, v] of loginRateLimit) { if (now > v.reset) loginRateLimit.delete(k); }
 }, 60000);
+if (loginRateCleanupTimer.unref) loginRateCleanupTimer.unref();
 
 function checkLoginRate(ip) {
   const now = Date.now();
@@ -113,26 +171,6 @@ app.use('/api', (req, res, next) => {
   if (req.path.startsWith('/auth/')) return next();
   if (req.path.startsWith('/public/')) return next();
   wrap(auth.authMiddleware)(req, res, next);
-});
-
-/* ---------- 同源校验（CSRF 防护） ---------- */
-app.use((req, res, next) => {
-  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-    if (req.path.startsWith('/api/') && !req.path.startsWith('/api/public/')) {
-      const origin = req.headers.origin || req.headers.referer || '';
-      const host = req.headers.host || '';
-      // 允许同源请求，或桌面模式（无 Origin）
-      if (origin && host) {
-        try {
-          const originHost = new URL(origin).host;
-          if (originHost !== host && process.env.PENMARK_DESKTOP !== '1') {
-            return res.status(403).json({ error: '跨域请求被拒绝' });
-          }
-        } catch (_) { /* 忽略无效 URL */ }
-      }
-    }
-  }
-  next();
 });
 
 /* ---------- 防 SSRF：拦截内网地址 ---------- */
@@ -731,10 +769,11 @@ app.get('/api/public/share/:token/info', wrap(async (req, res) => {
 }));
 
 const shareRateLimit = new Map();
-setInterval(() => {
+const shareRateCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [k, v] of shareRateLimit) { if (now > v.reset) shareRateLimit.delete(k); }
 }, 60000);
+if (shareRateCleanupTimer.unref) shareRateCleanupTimer.unref();
 
 app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
   const share = await db.one('SELECT * FROM shares WHERE token = $1', [req.params.token]);
