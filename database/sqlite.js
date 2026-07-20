@@ -37,7 +37,30 @@ async function execute(sql, params) {
 
 /* ---------- 事务 ---------- */
 // fn 接收一个具有 query/one/execute 方法的对象
-// 使用 better-sqlite3 的同步事务，但包装为 Promise
+// better-sqlite3 是同步的，但 fn 是异步的；如果直接 BEGIN/await fn/COMMIT
+// 期间另一请求也 BEGIN 会触发 "cannot start a transaction within a transaction"。
+// 用 mutex 串行化事务，保证同一时刻只有一个事务在运行。
+const _txQueue = [];
+let _txLocked = false;
+function _acquireTxLock() {
+  return new Promise(resolve => {
+    if (!_txLocked) {
+      _txLocked = true;
+      resolve();
+    } else {
+      _txQueue.push(resolve);
+    }
+  });
+}
+function _releaseTxLock() {
+  const next = _txQueue.shift();
+  if (next) {
+    next(); // 直接传递锁给下一个等待者
+  } else {
+    _txLocked = false;
+  }
+}
+
 async function transaction(fn) {
   const db = getDb();
   const txClient = {
@@ -55,16 +78,20 @@ async function transaction(fn) {
       return { changes: info.changes, insertId: info.lastInsertRowid ? Number(info.lastInsertRowid) : null };
     }
   };
-  // better-sqlite3 事务是同步的，但 fn 是异步的
-  // 使用 BEGIN/COMMIT/ROLLBACK 手动控制以支持异步 fn
+  await _acquireTxLock();
   db.exec('BEGIN');
   try {
     const result = await fn(txClient);
     db.exec('COMMIT');
     return result;
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch (_) {}
+    try { db.exec('ROLLBACK'); } catch (e) {
+      // ROLLBACK 失败时记录日志，便于排查（不抛出以保留原始错误）
+      console.warn('SQLite ROLLBACK 失败:', e && e.message);
+    }
     throw err;
+  } finally {
+    _releaseTxLock();
   }
 }
 

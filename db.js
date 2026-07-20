@@ -8,6 +8,7 @@ if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(path.join(dataDir, 'penmark.db'));
 db.pragma('journal_mode = WAL'); // 并发读写更稳
+db.pragma('foreign_keys = ON');   // 启用外键约束（确保删除时正确级联或拒绝）
 
 // 文档表
 db.exec(`
@@ -177,5 +178,21 @@ try {
     db.exec("ALTER TABLE shares ADD COLUMN theme TEXT DEFAULT 'light'");
   }
 } catch (e) { console.warn('shares 迁移跳过：', e.message); }
+
+// 分享页访客记录表
+db.exec(`
+CREATE TABLE IF NOT EXISTS share_visitors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_token TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  nickname TEXT NOT NULL DEFAULT '游客',
+  first_visit_at INTEGER NOT NULL,
+  last_visit_at INTEGER NOT NULL,
+  visit_count INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(share_token, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_share_visitors_token ON share_visitors(share_token);
+CREATE INDEX IF NOT EXISTS idx_share_visitors_last ON share_visitors(last_visit_at);
+`);
 
 module.exports = db;

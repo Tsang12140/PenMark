@@ -82,8 +82,9 @@ async function verifySession(token) {
     await db.execute('UPDATE sessions SET revoked_at = $1 WHERE id = $2', [now, session.id]);
     return null;
   }
-  // 更新 last_seen_at（不阻塞）
-  db.execute('UPDATE sessions SET last_seen_at = $1 WHERE id = $2', [now, session.id]).catch(() => {});
+  // 更新 last_seen_at（不阻塞，错误记录但不影响业务）
+  db.execute('UPDATE sessions SET last_seen_at = $1 WHERE id = $2', [now, session.id])
+    .catch(e => console.warn('更新 last_seen_at 失败:', e && e.message));
   return publicUser(user);
 }
 
@@ -100,7 +101,9 @@ async function revokeAllUserSessions(userId) {
 async function cleanExpiredSessions() {
   try {
     await db.execute('DELETE FROM sessions WHERE expires_at < $1 OR revoked_at IS NOT NULL', [Date.now()]);
-  } catch (e) { /* 非关键 */ }
+  } catch (e) {
+    console.warn('清理过期会话失败:', e && e.message);
+  }
 }
 
 /* ---------- 用户公开信息 ---------- */
@@ -209,6 +212,34 @@ function isDesktopRequestAuthorized(req) {
   return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
 
+/* ---------- 生产配置校验：拒绝使用默认密钥启动 ---------- */
+const INSECURE_SECRET_DEFAULTS = new Set([
+  'penmark-default-secret-change-me-in-production-2026',
+  'penmark-please-change-this-secret-to-a-long-random-string',
+  'change-me'
+]);
+const INSECURE_ADMIN_PASSWORD_DEFAULTS = new Set([
+  'change-me',
+  'change-me-please',
+  'admin'
+]);
+
+function validateProductionConfig() {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (process.env.PENMARK_DESKTOP === '1') {
+    // 桌面模式不需要外置密钥（运行时随机生成）
+    return;
+  }
+  const secret = process.env.PENMARK_SECRET;
+  if (!secret || INSECURE_SECRET_DEFAULTS.has(secret) || secret.length < 32) {
+    throw new Error('生产模式必须设置 PENMARK_SECRET 环境变量（长度至少 32 字符，且不能使用默认值）');
+  }
+  const adminPwd = process.env.ADMIN_PASSWORD;
+  if (!adminPwd || INSECURE_ADMIN_PASSWORD_DEFAULTS.has(adminPwd)) {
+    throw new Error('生产模式必须设置 ADMIN_PASSWORD 环境变量（不能使用默认值 change-me，可改用 npm run admin:create 创建后再删除该变量）');
+  }
+}
+
 /* ---------- 管理员初始化（不再每次启动覆盖密码） ---------- */
 async function seedAdmin() {
   // 桌面模式：创建本地用户，不走 .env 管理员逻辑
@@ -238,14 +269,17 @@ async function seedAdmin() {
   }
 }
 
-// 启动时执行初始化（返回 Promise 供 server.js await）
+// 启动时执行配置校验 + 初始化（返回 Promise 供 server.js await）
+validateProductionConfig();
 const ready = seedAdmin().catch(err => {
   console.error('管理员初始化失败:', err.message);
   // 不阻止启动，允许后续手动创建
 });
 
 // 定期清理过期会话
-const sessionCleanupTimer = setInterval(() => { cleanExpiredSessions().catch(() => {}); }, 3600 * 1000);
+const sessionCleanupTimer = setInterval(() => {
+  cleanExpiredSessions().catch(e => console.warn('清理过期会话失败:', e && e.message));
+}, 3600 * 1000);
 if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
 
 /* ---------- Cookie 处理 ---------- */
@@ -334,7 +368,8 @@ function base64UrlDecode(str) {
 }
 
 function generateShareToken() {
-  return crypto.randomBytes(6).toString('base64url');
+  // 96 位熵（12 字节）：避免短 token 被穷举
+  return crypto.randomBytes(12).toString('base64url');
 }
 
 function signShareSession(payload) {

@@ -89,6 +89,7 @@ async function init() {
     if (!docRes.ok) { renderError('加载失败'); return; }
     const data = await docRes.json();
     renderDoc(data);
+    setupVisitors(token);
   } catch (e) {
     renderError('网络错误：' + (e.message || e));
   }
@@ -342,6 +343,166 @@ function renderError(msg) {
       '<div class="share-error-msg">' + escapeHtml(msg) + '</div>' +
       '<a class="share-error-link" href="/">返回首页</a>' +
     '</div>';
+}
+
+/* ---------- 访客记录：Canvas 指纹 + 上报 + 右上角胶囊 ---------- */
+
+// 生成或读取访客指纹（存 localStorage，重装浏览器会变）
+function getVisitorFingerprint() {
+  try {
+    const cached = localStorage.getItem('penmark_fp');
+    if (cached && /^[a-f0-9]{16}$/.test(cached)) return cached;
+  } catch(_) {}
+
+  // Canvas 渲染指纹：画一段文字+图形，取 toDataURL 后做 hash
+  let canvasSignal = '';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 240; canvas.height = 60;
+    const ctx = canvas.getContext('2d');
+    ctx.textBaseline = 'top';
+    ctx.font = '14px "Arial"';
+    ctx.fillStyle = '#f60';
+    ctx.fillRect(0, 0, 240, 60);
+    ctx.fillStyle = '#069';
+    ctx.fillText('PenMark-知著 PenMark 游客指纹·', 2, 4);
+    ctx.fillStyle = 'rgba(102,204,0,0.7)';
+    ctx.fillText('PenMark-知著 PenMark 游客指纹·', 4, 6);
+    canvasSignal = canvas.toDataURL();
+  } catch(e) { canvasSignal = 'no-canvas'; }
+
+  // 信号集合：canvas + UA + 屏幕 + 时区 + 语言
+  const signals = [
+    canvasSignal,
+    navigator.userAgent || '',
+    navigator.language || '',
+    (navigator.languages || []).join(','),
+    screen.width + 'x' + screen.height + 'x' + (screen.colorDepth || 0),
+    new Date().getTimezoneOffset(),
+    Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  ].join('||');
+
+  // SHA-256 → 取前 16 位 hex
+  // 兜底：SHA-256 不可用时用简单 hash
+  const fallback = () => {
+    let h = 5381;
+    for (let i = 0; i < signals.length; i++) h = ((h << 5) + h + signals.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(16).padStart(8, '0') + (h >>> 8).toString(16).padStart(8, '0');
+  };
+
+  const result = (async () => {
+    try {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(signals));
+      const arr = Array.from(new Uint8Array(buf));
+      const hex = arr.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+      try { localStorage.setItem('penmark_fp', hex); } catch(_) {}
+      return hex;
+    } catch(e) {
+      const hex = fallback();
+      try { localStorage.setItem('penmark_fp', hex); } catch(_) {}
+      return hex;
+    }
+  })();
+
+  // 同步返回：第一次访问时还没算完，先用 fallback 占位，下次访问再用 SHA-256
+  // 实际上 getVisitorFingerprint 是 async 调用方，下面我们让它返回 Promise
+  return result;
+}
+
+// 生成昵称：游客 + 后 4 位 hex
+function nicknameFromFingerprint(fp) {
+  const tail = (fp || '').slice(-4);
+  return '游客 ' + tail;
+}
+
+async function setupVisitors(token) {
+  const fp = await getVisitorFingerprint();
+  const nickname = nicknameFromFingerprint(fp);
+
+  // 上报访客（同时拿到访客列表）
+  let data = null;
+  try {
+    const res = await fetch('/api/public/share/' + token + '/visit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ fingerprint: fp, nickname })
+    });
+    if (res.ok) data = await res.json();
+  } catch(e) { /* 静默失败，不影响阅读 */ }
+
+  if (data) renderVisitorCapsule(data);
+
+  // 30 秒轮询一次在线数（不写入，只拉取）
+  setInterval(async () => {
+    try {
+      const r = await fetch('/api/public/share/' + token + '/visitors', { credentials: 'same-origin' });
+      if (r.ok) renderVisitorCapsule(await r.json());
+    } catch(_) {}
+  }, 30000);
+}
+
+function renderVisitorCapsule(data) {
+  let capsule = $('shareVisitors');
+  if (!capsule) {
+    capsule = document.createElement('div');
+    capsule.className = 'share-visitors';
+    capsule.id = 'shareVisitors';
+    document.body.appendChild(capsule);
+
+    // 点击胶囊展开/收起列表
+    capsule.addEventListener('click', (e) => {
+      const trigger = e.target.closest('.sv-trigger');
+      if (!trigger) return;
+      const list = capsule.querySelector('.sv-list');
+      if (!list) return;
+      const open = list.classList.toggle('open');
+      trigger.classList.toggle('active', open);
+      if (open && capsule._data) renderVisitorList(list, capsule._data);
+    });
+
+    // 点击空白收起
+    document.addEventListener('click', (e) => {
+      if (!capsule.contains(e.target)) {
+        const list = capsule.querySelector('.sv-list');
+        if (list) list.classList.remove('open');
+        const trigger = capsule.querySelector('.sv-trigger');
+        if (trigger) trigger.classList.remove('active');
+      }
+    });
+  }
+
+  capsule._data = data;
+  const total = data.total || 0;
+  const online = data.online_30min || 0;
+  capsule.innerHTML =
+    '<button type="button" class="sv-trigger" title="查看访客">' +
+      '<span class="sv-dot' + (online > 0 ? ' online' : '') + '"></span>' +
+      '<span class="sv-text">' + total + ' 人访问' + (online > 0 ? ' · ' + online + ' 人在线' : '') + '</span>' +
+      '<svg class="sv-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>' +
+    '</button>' +
+    '<div class="sv-list"></div>';
+}
+
+function renderVisitorList(listEl, data) {
+  const visitors = data.visitors || [];
+  if (!visitors.length) {
+    listEl.innerHTML = '<div class="sv-empty">还没有访客记录</div>';
+    return;
+  }
+  let html = '<div class="sv-list-head">最近访客</div>';
+  visitors.slice(0, 20).forEach((v) => {
+    const isMe = !!v.is_me;
+    html +=
+      '<div class="sv-item' + (isMe ? ' me' : '') + '">' +
+        '<span class="sv-avatar">' + escapeHtml((v.nickname || '?').slice(-1).toUpperCase()) + '</span>' +
+        '<span class="sv-info">' +
+          '<span class="sv-name">' + escapeHtml(v.nickname || '游客') + (isMe ? '（你）' : '') + '</span>' +
+          '<span class="sv-meta">' + relativeTime(v.last_visit_at) + (v.visit_count > 1 ? ' · 访问 ' + v.visit_count + ' 次' : '') + '</span>' +
+        '</span>' +
+      '</div>';
+  });
+  listEl.innerHTML = html;
 }
 
 init();

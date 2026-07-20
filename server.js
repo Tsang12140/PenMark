@@ -99,6 +99,63 @@ app.get('/health/ready', wrap(async (req, res) => {
   res.status(h.ok ? 200 : 503).json(h);
 }));
 
+/* ---------- 通用速率限制器 ---------- */
+// 注意：进程内 Map，仅适用于单实例部署；多实例需换 Redis 等共享存储
+function createRateLimiter({ windowMs, max, keyFn, message }) {
+  const buckets = new Map();
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of buckets) { if (now > v.reset) buckets.delete(k); }
+  }, Math.min(windowMs * 2, 120000));
+  if (cleanup.unref) cleanup.unref();
+  return function rateLimit(req, res, next) {
+    const now = Date.now();
+    const key = keyFn(req);
+    let bucket = buckets.get(key);
+    if (bucket && bucket.count >= max && now < bucket.reset) {
+      return res.status(429).json({ error: message || '请求过于频繁，请稍后再试' });
+    }
+    if (!bucket || now > bucket.reset) bucket = { count: 0, reset: now + windowMs };
+    bucket.count++;
+    buckets.set(key, bucket);
+    next();
+  };
+}
+
+// AI 接口限速：每个登录用户每分钟 20 次
+const aiLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 20,
+  keyFn: req => 'ai:' + (req.user ? req.user.id : req.ip),
+  message: 'AI 请求过于频繁，请稍后再试'
+});
+// 图片代理限速：每个用户每分钟 30 次
+const proxyImageLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 30,
+  keyFn: req => 'img:' + (req.user ? req.user.id : req.ip),
+  message: '图片请求过于频繁，请稍后再试'
+});
+// OG 元数据限速：每个用户每分钟 20 次
+const ogLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 20,
+  keyFn: req => 'og:' + (req.user ? req.user.id : req.ip),
+  message: '链接抓取过于频繁，请稍后再试'
+});
+// 访客上报限速：每个 token + IP 每分钟 60 次
+const visitLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  keyFn: req => 'visit:' + (req.ip || '') + ':' + req.params.token
+});
+// 举报限速：每个用户每分钟 10 次
+const reportLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyFn: req => 'report:' + (req.user ? req.user.id : req.ip)
+});
+
 /* ---------- 登录速率限制 ---------- */
 const LOGIN_RATE_LIMIT = parseInt(process.env.LOGIN_RATE_LIMIT || '10', 10);
 const loginRateLimit = new Map();
@@ -174,13 +231,90 @@ app.use('/api', (req, res, next) => {
 });
 
 /* ---------- 防 SSRF：拦截内网地址 ---------- */
+// 完整覆盖：IPv4 私有/保留段、IPv6 私有/loopback/link-local、十进制/八进制/十六进制/短格式 IP
+const BLOCKED_HOSTNAMES = new Set([
+  'localhost',
+  'metadata.google.internal',
+  'metadata',
+  'host.docker.internal',
+  'metadata.azure.com'
+]);
+
+function parseIPv4(s) {
+  if (typeof s !== 'string' || !s) return null;
+  // 纯十进制整数形式：2130706433 → 127.0.0.1
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isInteger(n) || n < 0 || n > 0xFFFFFFFF) return null;
+    return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
+  }
+  const parts = s.split('.');
+  if (parts.length > 4) return null;
+  const octets = [];
+  for (const part of parts) {
+    if (part === '') return null;
+    let n;
+    if (/^0[xX][0-9a-fA-F]+$/.test(part)) n = parseInt(part, 16);
+    else if (/^0[0-7]+$/.test(part)) n = parseInt(part, 8);
+    else if (/^\d+$/.test(part)) n = parseInt(part, 10);
+    else return null;
+    if (!Number.isInteger(n) || n < 0 || n > 0xff) return null;
+    octets.push(n);
+  }
+  // 短格式补齐：127.1 → 127.0.0.1
+  while (octets.length < 4) octets.splice(octets.length - 1, 0, 0);
+  return octets.length === 4 ? octets : null;
+}
+
+function isPrivateIPv4(ip) {
+  const [a, b] = ip;
+  if (a === 0) return true;                                  // 0.0.0.0/8 当前网络
+  if (a === 10) return true;                                 // 10.0.0.0/8 私有 A
+  if (a === 127) return true;                                 // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return true;                    // 169.254.0.0/16 link-local
+  if (a === 172 && b >= 16 && b <= 31) return true;           // 172.16.0.0/12 私有 B
+  if (a === 192 && b === 0) return true;                      // 192.0.0.0/24 IETF
+  if (a === 192 && b === 168) return true;                    // 192.168.0.0/16 私有 C
+  if (a === 100 && b >= 64 && b <= 127) return true;          // 100.64.0.0/10 CGNAT
+  if (a === 198 && (b === 18 || b === 19)) return true;       // 198.18.0.0/15 基准测试
+  if (a === 198 && b === 51 && ip[2] === 100) return true;    // TEST-NET-2
+  if (a === 203 && b === 0 && ip[2] === 113) return true;     // TEST-NET-3
+  if (a === 192 && b === 0 && ip[2] === 2) return true;       // TEST-NET-1
+  if (a >= 224) return true;                                  // 224.0.0.0/3 组播 + 保留
+  return false;
+}
+
+function isPrivateIPv6(s) {
+  const h = String(s).toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === '::1' || h === '::') return true;                 // loopback / 未指定
+  if (h.startsWith('fc') || h.startsWith('fd')) return true;  // fc00::/7 ULA
+  if (/^fe[89ab][0-9a-f]:/.test(h) || h === 'fe80::' || /^fe[89ab][0-9a-f]::/.test(h)) return true; // fe80::/10 link-local
+  if (h.startsWith('ff')) return true;                          // ff00::/8 组播
+  if (h.startsWith('2001:db8')) return true;                    // 2001:db8::/32 文档
+  // IPv4-mapped IPv6: ::ffff:a.b.c.d
+  const m = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (m) {
+    const ip = parseIPv4(m[1]);
+    if (ip) return isPrivateIPv4(ip);
+  }
+  // IPv4-compatible: ::a.b.c.d
+  const m2 = h.match(/^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (m2) {
+    const ip = parseIPv4(m2[1]);
+    if (ip) return isPrivateIPv4(ip);
+  }
+  return false;
+}
+
 function isPrivateHost(hostname) {
-  const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '169.254.169.254', 'metadata.google.internal'];
-  if (blocked.includes(hostname)) return true;
-  if (/^10\./.test(hostname)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
-  if (/^192\.168\./.test(hostname)) return true;
-  if (hostname === '0.0.0.0') return true;
+  if (!hostname) return true;
+  const h = String(hostname).toLowerCase().replace(/^\[|\]$/g, ''); // 去掉 IPv6 方括号
+  if (BLOCKED_HOSTNAMES.has(h)) return true;
+  const ipv4 = parseIPv4(h);
+  if (ipv4) return isPrivateIPv4(ipv4);
+  // 包含冒号视为 IPv6
+  if (h.includes(':')) return isPrivateIPv6(h);
+  // 末尾带点（DNS 根解析）也接受
   return false;
 }
 
@@ -225,7 +359,7 @@ function fetchImageAsBase64(url, maxRedirects, cb) {
   req.on('timeout', () => { req.destroy(); cb(new Error('timeout')); });
 }
 
-app.get('/api/proxy-image', wrap(async (req, res) => {
+app.get('/api/proxy-image', proxyImageLimiter, wrap(async (req, res) => {
   const url = req.query.url;
   if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'invalid url' });
   fetchImageAsBase64(url, 4, (err, dataUrl, ct, size) => {
@@ -251,13 +385,33 @@ app.delete('/api/invites/:code', auth.adminOnly, wrap(async (req, res) => {
 }));
 
 /* ---------- 链接卡片元数据抓取 ---------- */
+// LRU 上限：超过 500 条时删除最早访问的，防止内存无限增长
+const OG_CACHE_MAX = 500;
 const ogCache = new Map();
+function ogCacheGet(key) {
+  if (!ogCache.has(key)) return null;
+  const value = ogCache.get(key);
+  // Map 的迭代顺序按插入顺序，重新 set 即可把这条挪到最新（LRU）
+  ogCache.delete(key);
+  ogCache.set(key, value);
+  return value;
+}
+function ogCacheSet(key, value) {
+  if (ogCache.has(key)) ogCache.delete(key);
+  ogCache.set(key, value);
+  if (ogCache.size > OG_CACHE_MAX) {
+    // 删除最旧的一条（第一个）
+    const oldestKey = ogCache.keys().next().value;
+    if (oldestKey !== undefined) ogCache.delete(oldestKey);
+  }
+}
 function fetchOG(url, depth) {
   depth = depth || 0;
   if (depth > 3) return Promise.reject(new Error('重定向过多'));
-  if (ogCache.has(url)) {
-    const c = ogCache.get(url);
-    if (Date.now() - c.t < 3600000) return Promise.resolve(c.data);
+  const cached = ogCacheGet(url);
+  if (cached) {
+    if (Date.now() - cached.t < 3600000) return Promise.resolve(cached.data);
+    ogCache.delete(url); // 过期清理
   }
   let u;
   try { u = new URL(url); } catch (_) { return Promise.reject(new Error('无效链接')); }
@@ -280,7 +434,7 @@ function fetchOG(url, depth) {
       resp.on('end', () => {
         if (tooBig) { reject(new Error('页面过大')); return; }
         const meta = parseOG(buf, url);
-        ogCache.set(url, { t: Date.now(), data: meta });
+        ogCacheSet(url, { t: Date.now(), data: meta });
         resolve(meta);
       });
       resp.on('error', reject);
@@ -342,7 +496,7 @@ function decodeEntities(s) {
   return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
-app.get('/api/og', wrap(async (req, res) => {
+app.get('/api/og', ogLimiter, wrap(async (req, res) => {
   const url = String(req.query.url || '').trim();
   if (!url) return res.status(400).json({ error: '缺少 url' });
   try {
@@ -354,6 +508,26 @@ app.get('/api/og', wrap(async (req, res) => {
 }));
 
 /* ---------- 文档 CRUD（按 user_id 隔离） ---------- */
+// 文档内容大小上限（默认 5MB），与 Nginx client_max_body_size 协同
+const DOC_MAX_BYTES = Number(process.env.PENMARK_DOC_MAX_BYTES) || 5 * 1024 * 1024;
+
+async function verifyFolderOwnership(folderId, userId) {
+  if (folderId === null || folderId === undefined) return null;
+  const fid = Number(folderId);
+  if (!Number.isInteger(fid) || fid <= 0) {
+    const err = new Error('无效的文件夹ID');
+    err.code = 'INVALID_FOLDER';
+    throw err;
+  }
+  const folder = await db.one('SELECT id FROM folders WHERE id = $1 AND user_id = $2', [fid, userId]);
+  if (!folder) {
+    const err = new Error('文件夹不存在或无权访问');
+    err.code = 'FOLDER_NOT_FOUND';
+    throw err;
+  }
+  return fid;
+}
+
 app.get('/api/documents', wrap(async (req, res) => {
   const rows = await db.query(
     'SELECT id, title, folder_id, created_at, updated_at FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC',
@@ -370,9 +544,15 @@ app.get('/api/documents/:id', wrap(async (req, res) => {
 
 app.post('/api/documents', wrap(async (req, res) => {
   const now = Date.now();
-  const folderId = req.body.folder_id || null;
+  const rawFolderId = req.body.folder_id;
+  const folderId = (rawFolderId === 0 || rawFolderId === null || rawFolderId === undefined || rawFolderId === '')
+    ? null
+    : await verifyFolderOwnership(rawFolderId, req.user.id).catch(err => {
+        if (err.code === 'FOLDER_NOT_FOUND') return null; // 容错：找不到则不挂文件夹
+        throw err;
+      });
   const title = String(req.body.title || '无标题').slice(0, 500);
-  const content = String(req.body.content || '');
+  const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const info = await db.execute(
     'INSERT INTO documents (title, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6)',
     [title, content, now, now, req.user.id, folderId]
@@ -383,36 +563,64 @@ app.post('/api/documents', wrap(async (req, res) => {
 app.put('/api/documents/:id', wrap(async (req, res) => {
   const now = Date.now();
   const title = String(req.body.title || '').slice(0, 500);
-  const content = String(req.body.content || '');
+  const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const info = await db.execute(
     'UPDATE documents SET title = $1, content = $2, updated_at = $3 WHERE id = $4 AND user_id = $5',
     [title, content, now, req.params.id, req.user.id]
   );
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
   if (req.body.folder_id !== undefined) {
-    const fid = req.body.folder_id === 0 || req.body.folder_id === null ? null : req.body.folder_id;
+    const raw = req.body.folder_id;
+    let fid;
+    if (raw === 0 || raw === null || raw === '') {
+      fid = null;
+    } else {
+      try {
+        fid = await verifyFolderOwnership(raw, req.user.id);
+      } catch (e) {
+        if (e.code === 'FOLDER_NOT_FOUND') {
+          return res.status(404).json({ error: '目标文件夹不存在或无权访问' });
+        }
+        return res.status(400).json({ error: e.message });
+      }
+    }
     await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, req.params.id, req.user.id]);
   }
-  // 异步敏感词检查（不阻塞保存）
-  setImmediate(async () => {
-    try {
-      const sensitiveWords = await db.query('SELECT word FROM sensitive_words');
-      if (sensitiveWords.length > 0) {
-        const contentLower = (String(title || '') + ' ' + String(content || '')).toLowerCase();
-        const matched = sensitiveWords.some(w => contentLower.includes(w.word.toLowerCase()));
-        if (matched) {
-          await db.execute('UPDATE documents SET flagged = 1, flag_reason = $1 WHERE id = $2 AND flagged = 0', ['命中敏感词', req.params.id]);
+  // 异步敏感词检查（不阻塞保存；错误必须被捕获避免 unhandled rejection）
+  setImmediate(() => {
+    (async () => {
+      try {
+        const sensitiveWords = await db.query('SELECT word FROM sensitive_words');
+        if (sensitiveWords.length > 0) {
+          const contentLower = (String(title || '') + ' ' + String(content || '')).toLowerCase();
+          const matched = sensitiveWords.some(w => contentLower.includes(w.word.toLowerCase()));
+          if (matched) {
+            await db.execute('UPDATE documents SET flagged = 1, flag_reason = $1 WHERE id = $2 AND flagged = 0', ['命中敏感词', req.params.id]);
+          }
         }
+      } catch (e) {
+        console.warn('敏感词检查跳过：', e && e.message);
       }
-    } catch (e) { console.warn('敏感词检查跳过：', e.message); }
+    })().catch(e => console.warn('敏感词检查异常：', e && e.message));
   });
   res.json({ updated: info.changes });
 }));
 
 app.post('/api/documents/:id/move', wrap(async (req, res) => {
   const raw = req.body.folder_id;
-  const fid = (raw === 0 || raw === null || raw === undefined || raw === '') ? null : Number(raw);
-  if (fid !== null && !Number.isInteger(fid)) return res.status(400).json({ error: '无效的文件夹ID' });
+  let fid;
+  if (raw === 0 || raw === null || raw === undefined || raw === '') {
+    fid = null;
+  } else {
+    try {
+      fid = await verifyFolderOwnership(raw, req.user.id);
+    } catch (e) {
+      if (e.code === 'FOLDER_NOT_FOUND') {
+        return res.status(404).json({ error: '目标文件夹不存在或无权访问' });
+      }
+      return res.status(400).json({ error: e.message });
+    }
+  }
   const info = await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, req.params.id, req.user.id]);
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
   res.json({ updated: info.changes });
@@ -513,17 +721,36 @@ function restoreAiAssets(html, assets) {
   });
 }
 function sanitizeAiHtmlFragment(html) {
-  return String(html || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+=(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/\s(?:href|src)=(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*'|\s*javascript:[^\s>]+)/gi, '');
+  // 1. 移除危险标签整体（含内容）
+  let out = String(html || '')
+    // script / style / iframe / object / embed / applet / frame / frameset / noscript
+    .replace(/<(script|style|iframe|object|embed|applet|frame|frameset|noscript|template|math|svg|link|meta|base|form|button|input|textarea|select)\b[\s\S]*?<\/\1\s*>/gi, '')
+    // 自闭合危险标签：iframe/object/embed/link/meta/base/svg/math
+    .replace(/<(iframe|object|embed|link|meta|base|svg|math|image)\b[^>]*\/?>/gi, '')
+    // script 残留（无闭合标签）
+    .replace(/<script\b[^>]*>/gi, '');
+  // 2. 移除所有事件处理器（on*）
+  out = out.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // 3. 移除 javascript: / vbscript: / data: 协议（href/src/xlink:href）
+  out = out.replace(/\s(?:href|src|xlink:href)\s*=\s*(?:"\s*(?:javascript|vbscript|data):[^"]*"|'\s*(?:javascript|vbscript|data):[^']*'|\s*(?:javascript|vbscript|data):[^\s>]+)/gi, '');
+  // 4. 移除 CSS 表达式与危险属性
+  out = out.replace(/style\s*=\s*"[^"]*expression\s*\([^"]*"/gi, '');
+  out = out.replace(/style\s*=\s*'[^']*expression\s*\([^']*'/gi, '');
+  // 5. 移除 formaction、formmethod 等绕过属性
+  out = out.replace(/\sform(?:action|method|target|enctype)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // 6. 移除 srcset 中的危险协议
+  out = out.replace(/srcset\s*=\s*"(?:[^"]*javascript:[^"]*)"/gi, '');
+  out = out.replace(/srcset\s*=\s*'(?:[^']*javascript:[^']*)'/gi, '');
+  // 7. 防止注释中隐藏的脚本绕过
+  out = out.replace(/<!--[\s\S]*?-->/g, '');
+  return out;
 }
 
 app.get('/api/ai/status', (req, res) => {
   res.json({ configured: ai.configured(), model: process.env.AI_MODEL || 'deepseek-chat' });
 });
 
-app.post('/api/ai/layout', wrap(async (req, res) => {
+app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
   try {
     const rawHtml = String(req.body && req.body.html || '');
     const preset = String(req.body && req.body.preset || 'share');
@@ -542,10 +769,10 @@ app.post('/api/ai/layout', wrap(async (req, res) => {
   }
 }));
 
-app.post('/api/ai/rewrite-selection', wrap(async (req, res) => {
+app.post('/api/ai/rewrite-selection', aiLimiter, wrap(async (req, res) => {
   try {
-    const selectedText = String(req.body && req.body.selectedText || '');
-    const instruction = String(req.body && req.body.instruction || '');
+    const selectedText = String(req.body && req.body.selectedText || '').slice(0, Number(process.env.AI_SELECTION_MAX_CHARS || 10000));
+    const instruction = String(req.body && req.body.instruction || '').slice(0, 500);
     const contextText = String(req.body && req.body.contextText || '').slice(0, Number(process.env.AI_CONTEXT_MAX_CHARS || 24000));
     if (!selectedText.trim()) return res.status(400).json({ error: 'empty selection' });
     const replacement = await ai.rewriteSelection(selectedText, instruction, contextText);
@@ -576,18 +803,32 @@ app.get('/api/admin/users', auth.adminOnly, wrap(async (req, res) => {
 
 app.put('/api/admin/users/:id', auth.adminOnly, wrap(async (req, res) => {
   const { is_banned, can_share, admin_note } = req.body;
+  const targetId = Number(req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return res.status(400).json({ error: '无效的用户ID' });
+  }
+  // 禁止管理员封禁自己或修改自己的分享权限（防止误操作锁死自己）
+  if (is_banned !== undefined && is_banned && targetId === req.user.id) {
+    return res.status(400).json({ error: '不能封禁自己' });
+  }
+  if (can_share !== undefined && !can_share && targetId === req.user.id) {
+    return res.status(400).json({ error: '不能撤销自己的分享权限' });
+  }
   const updates = [];
   const values = [];
   let idx = 1;
   if (is_banned !== undefined) { updates.push(`is_banned = $${idx++}`); values.push(is_banned ? 1 : 0); }
   if (can_share !== undefined) { updates.push(`can_share = $${idx++}`); values.push(can_share ? 1 : 0); }
-  if (admin_note !== undefined) { updates.push(`admin_note = $${idx++}`); values.push(admin_note); }
+  if (admin_note !== undefined) {
+    updates.push(`admin_note = $${idx++}`);
+    values.push(String(admin_note).slice(0, 500));
+  }
   if (updates.length === 0) return res.json({ ok: true });
-  values.push(req.params.id);
+  values.push(targetId);
   const info = await db.execute(`UPDATE users SET ${updates.join(', ')} WHERE id = $${idx}`, values);
   if (info.changes === 0) return res.status(404).json({ error: '用户不存在' });
   // 封禁用户时撤销所有会话
-  if (is_banned) await auth.revokeAllUserSessions(Number(req.params.id));
+  if (is_banned) await auth.revokeAllUserSessions(targetId);
   res.json({ ok: true });
 }));
 
@@ -604,16 +845,36 @@ app.post('/api/trash/:id/restore', wrap(async (req, res) => {
 }));
 
 app.delete('/api/trash/:id', wrap(async (req, res) => {
-  const info = await db.execute("DELETE FROM documents WHERE id = $1 AND user_id = $2", [req.params.id, req.user.id]);
-  if (info.changes === 0) return res.status(404).json({ error: '文档不存在' });
+  const targetId = Number(req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    return res.status(400).json({ error: '无效的文档ID' });
+  }
+  try {
+    await db.transaction(async (tx) => {
+      // 先收集要清理的 share token，再删除访客记录、分享、举报，最后删除文档
+      // SQLite 启用 foreign_keys 后必须按外键依赖顺序删除
+      const shares = await tx.query('SELECT token FROM shares WHERE doc_id = $1', [targetId]);
+      for (const s of shares) {
+        await tx.execute('DELETE FROM share_visitors WHERE share_token = $1', [s.token]);
+      }
+      await tx.execute('DELETE FROM shares WHERE doc_id = $1', [targetId]);
+      await tx.execute('DELETE FROM reports WHERE doc_id = $1', [targetId]);
+      const info = await tx.execute('DELETE FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL', [targetId, req.user.id]);
+      if (info.changes === 0) throw new Error('NOT_FOUND');
+    });
+  } catch (e) {
+    if (e.message === 'NOT_FOUND') return res.status(404).json({ error: '文档不存在' });
+    return res.status(500).json({ error: '删除失败：' + (e.message || e) });
+  }
   res.json({ ok: true });
 }));
 
 /* ---------- 举报 ---------- */
-app.post('/api/reports', wrap(async (req, res) => {
+app.post('/api/reports', reportLimiter, wrap(async (req, res) => {
   const { doc_id, reason } = req.body;
   if (!doc_id) return res.status(400).json({ error: '缺少文档ID' });
-  await db.execute("INSERT INTO reports (doc_id, reporter_id, reason, created_at) VALUES ($1, $2, $3, $4)", [doc_id, req.user.id, reason || '', Date.now()]);
+  const cleanReason = String(reason || '').slice(0, 500);
+  await db.execute("INSERT INTO reports (doc_id, reporter_id, reason, created_at) VALUES ($1, $2, $3, $4)", [doc_id, req.user.id, cleanReason, Date.now()]);
   res.json({ ok: true });
 }));
 
@@ -828,10 +1089,100 @@ app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
     }
   }
   const now = Date.now();
+  const title = String(req.body.title || '无标题').slice(0, 500);
+  const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3 WHERE id = $4 AND deleted_at IS NULL',
-    [String(req.body.title || '无标题'), String(req.body.content || ''), now, share.doc_id]);
+    [title, content, now, share.doc_id]);
   if (info.changes === 0) return res.status(404).json({ error: '文档不存在' });
   res.json({ updated: info.changes });
+}));
+
+// 访客上报：前端生成 fingerprint（Canvas+UA hash），后端 UPSERT 记录最近访问
+app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) => {
+  const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
+  if (!share) return res.status(404).json({ error: '链接无效' });
+  if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
+
+  const fingerprint = String(req.body.fingerprint || '').slice(0, 64);
+  if (!/^[a-f0-9]{8,64}$/i.test(fingerprint)) return res.status(400).json({ error: 'fingerprint 不合法' });
+  const nickname = String(req.body.nickname || '游客').slice(0, 20).replace(/[<>]/g, '');
+  const now = Date.now();
+
+  // UPSERT：同 (token, fingerprint) 则累加 visit_count、刷新 last_visit_at
+  try {
+    const existing = await db.one(
+      'SELECT id FROM share_visitors WHERE share_token = $1 AND fingerprint = $2',
+      [share.token, fingerprint]
+    );
+    if (existing) {
+      await db.execute(
+        'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2 WHERE id = $3',
+        [now, nickname, existing.id]
+      );
+    } else {
+      await db.execute(
+        'INSERT INTO share_visitors (share_token, fingerprint, nickname, first_visit_at, last_visit_at, visit_count) VALUES ($1, $2, $3, $4, $4, 1)',
+        [share.token, fingerprint, nickname, now]
+      );
+    }
+  } catch (e) {
+    // 并发插入冲突时退化为更新
+    await db.execute(
+      'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1 WHERE share_token = $2 AND fingerprint = $3',
+      [now, share.token, fingerprint]
+    ).catch(() => null);
+  }
+
+  // 同时返回最新访客列表，避免前端再发一次请求
+  const recent = await db.query(
+    'SELECT nickname, last_visit_at, visit_count, CASE WHEN fingerprint = $2 THEN 1 ELSE 0 END AS is_me FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
+    [share.token, fingerprint]
+  );
+  const totalRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
+    [share.token]
+  );
+  const cutoff = now - 30 * 60 * 1000;
+  const onlineRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
+    [share.token, cutoff]
+  );
+  res.json({
+    visitors: recent.map(v => ({
+      nickname: v.nickname,
+      last_visit_at: v.last_visit_at,
+      visit_count: v.visit_count,
+      is_me: !!v.is_me
+    })),
+    total: Number(totalRow && totalRow.cnt || 0),
+    online_30min: Number(onlineRow && onlineRow.cnt || 0)
+  });
+}));
+
+// 访客列表查询：用于刷新（不写入）
+app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
+  const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
+  if (!share) return res.status(404).json({ error: '链接无效' });
+  if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
+
+  const recent = await db.query(
+    'SELECT nickname, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
+    [share.token]
+  );
+  const totalRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
+    [share.token]
+  );
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  const onlineRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
+    [share.token, cutoff]
+  );
+  res.json({
+    visitors: recent,
+    total: Number(totalRow && totalRow.cnt || 0),
+    online_30min: Number(onlineRow && onlineRow.cnt || 0)
+  });
 }));
 
 app.get('/s/:token', wrap(async (req, res) => {

@@ -167,6 +167,7 @@ export class Editor {
     this._afterChange();
   }
   insertQuote() { this.exec('formatBlock', '<BLOCKQUOTE>'); }
+  insertTodo() { this._insertTodoBlock(); this._afterChange(); }
   insertCodeInline() {
     const sel = window.getSelection();
     if (!sel.rangeCount) return;
@@ -1933,7 +1934,8 @@ export class Editor {
           newP.innerHTML = nextNum + '、';
           if (block.parentNode) {
             block.parentNode.insertBefore(newP, block.nextSibling);
-            this._placeCaretAtStart(newP);
+            // 光标放在「N、」之后，让用户直接接着输入内容
+            this._placeCaretAtEnd(newP);
           }
           this._afterChange();
           return;
@@ -1957,7 +1959,8 @@ export class Editor {
           const newItem = this._buildTodoItem('');
           if (block.parentNode) {
             block.parentNode.insertBefore(newItem, block.nextSibling);
-            this._placeCaretAtStart(newItem);
+            // 光标放进新待办的 .todo-text 里（而不是 todo-item 整体的开头，否则会在 .todo-check 左侧）
+            this._placeCaretAtStart(newItem.querySelector('.todo-text') || newItem);
           }
           this._afterChange();
           return;
@@ -2011,6 +2014,17 @@ export class Editor {
     const range = document.createRange();
     range.selectNodeContents(node);
     range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // 把光标定位到节点末尾
+  _placeCaretAtEnd(node) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(false);
     sel.removeAllRanges();
     sel.addRange(range);
   }

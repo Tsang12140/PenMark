@@ -21,6 +21,14 @@ const aiModalClose = $('aiModalClose');
 
 let currentDoc = null;
 let saveTimer = null;
+
+/* ---------- 标签页标题：跟随当前文档名 ---------- */
+const PENMARK_SUFFIX = ' - 知著 PenMark';
+
+function updateDocumentTitle(title) {
+  const t = (title || '').trim() || '无标题';
+  document.title = t + PENMARK_SUFFIX;
+}
 let switching = false; // 切换文档时屏蔽自动保存
 
 /* ---------- Toast ---------- */
@@ -89,6 +97,7 @@ function handleAction(action) {
   switch (action) {
     case 'hr': editor.insertHR(); break;
     case 'quote': editor.insertQuote(); break;
+    case 'todo': editor.insertTodo(); break;
     case 'link': editor.insertLink(); break;
     case 'code': editor.insertCodeInline(); break;
     case 'codeblock': editor.insertCodeBlock(); break;
@@ -136,6 +145,9 @@ editorEl.addEventListener('click', () => {
 });
 
 function updateTextFloatMenu() {
+  // 如果快速 AI 输入框正在输入，保持浮动菜单现状（防止输入时菜单消失）
+  const aiQuickEl = $('fmAiQuick');
+  if (aiQuickEl && document.activeElement === aiQuickEl) return;
   if (pinnedLinkCard && performance.now() < pinnedLinkCardUntil && editorEl.contains(pinnedLinkCard)) {
     floatMenu.classList.remove('compact');
     floatMenu.classList.add('card-context');
@@ -156,21 +168,35 @@ function updateTextFloatMenu() {
   }
 
   if (!sel.isCollapsed) {
-    // 有选区：显示完整菜单
+    // 有选区：显示完整浮动菜单（飞书式）
     floatMenu.classList.remove('compact');
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) { hideFloatMenu(); return; }
     showFloatMenu(floatMenu, rect, 'top');
+    restoreFmAiQuickIfRecent();
     refreshFloatMenuState();
   } else {
-    // 无选区（光标定位）：显示精简菜单（标题层级），定位在当前行左侧
-    const block = getCurrentBlockElement();
-    if (!block) { hideFloatMenu(); return; }
-    const rect = block.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) { hideFloatMenu(); return; }
-    floatMenu.classList.remove('compact');
-    showFloatMenu(floatMenu, rect, 'top');
-    refreshFloatMenuState();
+    // 光标定位（无选区）：飞书逻辑是不显示文字浮动菜单
+    // 块操作通过行首 ⋮⋮ 悬浮按钮触发
+    hideFloatMenu();
+  }
+}
+
+/* ---------- 快速 AI 输入框：1 分钟内保留内容，超过自动清理 ---------- */
+let fmAiQuickLastInput = '';
+let fmAiQuickLastTime = 0;
+const FMAI_KEEP_MS = 60 * 1000; // 1 分钟
+
+function restoreFmAiQuickIfRecent() {
+  const el = $('fmAiQuick');
+  if (!el) return;
+  // 距离上次输入 1 分钟内：恢复内容；超过：清空
+  if (fmAiQuickLastTime && Date.now() - fmAiQuickLastTime < FMAI_KEEP_MS) {
+    el.value = fmAiQuickLastInput;
+  } else {
+    el.value = '';
+    fmAiQuickLastInput = '';
+    fmAiQuickLastTime = 0;
   }
 }
 
@@ -321,9 +347,184 @@ window.addEventListener('resize', () => { hideFloatMenu(); floatMenuImg.hidden =
 // 点击编辑器外隐藏
 document.addEventListener('mousedown', (e) => {
   if (e.target.closest('.float-menu')) return;
+  if (e.target.closest('.block-handle')) return;
   if (!editorEl.contains(e.target) && !e.target.closest('.img-container')) {
     hideFloatMenu();
     floatMenuImg.hidden = true;
+    hideBlockHandle();
+  }
+});
+
+/* ---------- 行首块操作按钮 ⋮⋮（飞书式） ---------- */
+const blockHandle = $('blockHandle');
+const BLOCK_SEL = 'p,h1,h2,h3,h4,h5,h6,blockquote,pre,li,div';
+const BLOCK_TAGS_RE = /^(P|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE|LI|DIV)$/;
+let hoverBlock = null;          // 当前 hover 的块级元素
+let blockHandleRaf = 0;         // rAF 节流
+
+function findHoverBlock(target) {
+  if (!target) return null;
+  let el = target.nodeType === 1 ? target : target.parentElement;
+  if (!el) return null;
+  const block = el.closest ? el.closest(BLOCK_SEL) : null;
+  if (!block || !editorEl.contains(block) || block === editorEl) return null;
+  // 嵌套结构（表格、img-grid）只取最外层
+  let parent = block.parentElement;
+  while (parent && parent !== editorEl) {
+    if (BLOCK_TAGS_RE.test(parent.tagName)) return parent; // 用更外层的块
+    parent = parent.parentElement;
+  }
+  return block;
+}
+
+editorEl.addEventListener('mousemove', (e) => {
+  const block = findHoverBlock(e.target);
+  if (block === hoverBlock) return; // 没变化
+  hoverBlock = block;
+  if (blockHandleRaf) return;
+  blockHandleRaf = requestAnimationFrame(() => {
+    blockHandleRaf = 0;
+    positionBlockHandle(hoverBlock);
+  });
+});
+
+editorEl.addEventListener('mouseleave', () => {
+  hoverBlock = null;
+  hideBlockHandle();
+});
+
+function positionBlockHandle(block) {
+  if (!block) { hideBlockHandle(); return; }
+  const rect = block.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) { hideBlockHandle(); return; }
+  // 只在编辑器可视范围内显示
+  const editorRect = editorEl.getBoundingClientRect();
+  if (rect.bottom < editorRect.top + 10 || rect.top > editorRect.bottom - 10) {
+    hideBlockHandle();
+    return;
+  }
+  blockHandle.style.left = (rect.left - 26) + 'px';
+  blockHandle.style.top = (rect.top + Math.max(0, (rect.height - 22) / 2)) + 'px';
+  blockHandle._block = block;
+  blockHandle.hidden = false;
+  // 下一帧添加 visible 让 opacity 过渡生效
+  requestAnimationFrame(() => blockHandle.classList.add('visible'));
+}
+
+function hideBlockHandle() {
+  blockHandle.classList.remove('visible');
+  // 等过渡完再 hidden，避免突兀消失
+  setTimeout(() => {
+    if (!blockHandle.classList.contains('visible')) blockHandle.hidden = true;
+  }, 130);
+}
+
+// 滚动/resize 时跟随
+window.addEventListener('scroll', () => {
+  if (hoverBlock) positionBlockHandle(hoverBlock);
+}, true);
+window.addEventListener('resize', () => {
+  if (hoverBlock) positionBlockHandle(hoverBlock);
+});
+
+// 点击 ⋮⋮：把光标定位到块首，弹出块菜单
+// 拖拽 ⋮⋮：移动当前块到目标位置（飞书核心交互）
+let dragState = null;
+const dragIndicator = document.createElement('div');
+dragIndicator.className = 'block-drag-indicator';
+dragIndicator.hidden = true;
+document.body.appendChild(dragIndicator);
+
+blockHandle.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault(); // 防止失焦
+  const block = blockHandle._block;
+  if (!block || !editorEl.contains(block)) return;
+  dragState = {
+    block,
+    startX: e.clientX,
+    startY: e.clientY,
+    moved: false,
+    targetBlock: null,
+    targetPos: null  // 'before' | 'after'
+  };
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!dragState) return;
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  if (!dragState.moved && Math.hypot(dx, dy) > 5) {
+    dragState.moved = true;
+    blockHandle.classList.add('dragging');
+    editorEl.classList.add('block-dragging');
+  }
+  if (!dragState.moved) return;
+  // 找出当前鼠标位置对应的块级元素
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  let target = el ? (el.nodeType === 1 ? el : el.parentElement) : null;
+  if (target) target = target.closest ? target.closest(BLOCK_SEL) : null;
+  if (!target || !editorEl.contains(target) || target === editorEl || target === dragState.block) {
+    dragState.targetBlock = null;
+    dragIndicator.hidden = true;
+    return;
+  }
+  const rect = target.getBoundingClientRect();
+  const mid = rect.top + rect.height / 2;
+  const pos = e.clientY < mid ? 'before' : 'after';
+  dragState.targetBlock = target;
+  dragState.targetPos = pos;
+  // 显示蓝色横线
+  dragIndicator.hidden = false;
+  dragIndicator.style.left = rect.left + 'px';
+  dragIndicator.style.width = rect.width + 'px';
+  dragIndicator.style.top = (pos === 'before' ? rect.top - 1 : rect.bottom - 1) + 'px';
+});
+
+document.addEventListener('mouseup', () => {
+  if (!dragState) return;
+  const wasMoved = dragState.moved;
+  const targetBlock = dragState.targetBlock;
+  const targetPos = dragState.targetPos;
+  const srcBlock = dragState.block;
+  dragState = null;
+  blockHandle.classList.remove('dragging');
+  editorEl.classList.remove('block-dragging');
+  dragIndicator.hidden = true;
+  if (wasMoved) {
+    // 拖拽完成：执行移动
+    if (targetBlock && targetBlock !== srcBlock) {
+      try {
+        if (targetPos === 'before') targetBlock.parentNode.insertBefore(srcBlock, targetBlock);
+        else targetBlock.parentNode.insertBefore(srcBlock, targetBlock.nextSibling);
+        editor._afterChange();
+        // 把光标定位到移动后的块
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(srcBlock);
+          range.collapse(true);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch (_) {}
+      } catch (err) { console.warn('move block failed', err); }
+    }
+  } else {
+    // 没拖动 → 视为点击，弹出块菜单
+    editorEl.focus();
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(srcBlock);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_) {}
+    floatMenu.classList.remove('card-context');
+    buildCtxMenu(srcBlock);
+    const rect = blockHandle.getBoundingClientRect();
+    positionCtxMenu(rect.left, rect.right + 4, rect.top - 4);
+    blockHandle.setAttribute('aria-expanded', 'true');
   }
 });
 
@@ -374,6 +575,11 @@ function buildCtxMenu(block) {
   html += ctxBtn('quote', '引用');
   html += ctxBtn('codeblock', '代码块');
   html += ctxBtn('hr', '分隔线');
+  html += '<div class="ctx-sep"></div>';
+  html += ctxBtn('duplicate', '重复本块');
+  html += ctxBtn('copy', '复制本块');
+  html += ctxBtn('cut', '剪切本块');
+  html += ctxBtn('delete', '删除本块', false, null, 'danger');
   ctxMenu.innerHTML = html;
 }
 
@@ -389,13 +595,17 @@ function menuIcon(action, block) {
     hr: '<path d="M4 12h16"/>',
     card: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h10M7 13h7"/>',
     open: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6H5V6h6"/>',
-    unwrap: '<path d="m9 15 6-6M7 17l-2 2a3 3 0 0 1-4-4l3-3M17 7l2-2a3 3 0 0 1 4 4l-3 3"/>'
+    unwrap: '<path d="m9 15 6-6M7 17l-2 2a3 3 0 0 1-4-4l3-3M17 7l2-2a3 3 0 0 1 4 4l-3 3"/>',
+    duplicate: '<rect x="8" y="8" width="13" height="13" rx="1"/><path d="M3 16V4a1 1 0 0 1 1-1h12"/>',
+    copy: '<rect x="8" y="8" width="13" height="13" rx="1"/><path d="M3 16V4a1 1 0 0 1 1-1h12"/>',
+    cut: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8 8l12 8M8 16l12-8"/>',
+    delete: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'
   };
   return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (paths[action] || '') + '</svg>';
 }
 
-function ctxBtn(action, label, active, block) {
-  return '<button class="ctx-btn' + (active ? ' active' : '') + '" data-ctx="' + action + '"' +
+function ctxBtn(action, label, active, block, modifier) {
+  return '<button class="ctx-btn' + (active ? ' active' : '') + (modifier ? ' ' + modifier : '') + '" data-ctx="' + action + '"' +
     (block ? ' data-block="' + block + '"' : '') + '>' +
     '<span class="ctx-icon">' + menuIcon(action, block) + '</span><span>' + label + '</span>' +
     (active ? '<span class="ctx-check">✓</span>' : '') + '</button>';
@@ -417,7 +627,7 @@ function positionCtxMenu(x, y, aboveY) {
   ctxMenu.style.top = top + 'px';
 }
 
-function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); }
+function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); if (blockHandle) blockHandle.setAttribute('aria-expanded', 'false'); }
 
 ctxMenu.addEventListener('mousedown', (e) => e.preventDefault()); // 不失焦
 ctxMenu.addEventListener('click', (e) => {
@@ -539,6 +749,7 @@ async function saveCurrent(opts) {
     const now = Date.now();
     currentDoc.updated_at = now;
     saveStateEl.textContent = '已保存 ' + timeStr();
+    updateDocumentTitle(title);
     // 更新列表中该项的标题和时间（不重新拉列表，避免抖动）
     updateListItem(currentDoc, { reorder: opts.reorder !== false });
   } catch (e) {
@@ -897,6 +1108,7 @@ async function newDocInFolder(folderId) {
     editor.clear();
     saveStateEl.textContent = '新文档';
     docTitleEl.focus();
+    updateDocumentTitle('无标题');
     toast('已新建文档');
   } catch (e) { toast('新建失败：' + (e.message || e)); }
   finally { switching = false; }
@@ -1055,6 +1267,7 @@ async function openDoc(id) {
     updateStats();
     refreshToolbar();
     updateOutline(true);
+    updateDocumentTitle(doc.title);
   } catch (e) { toast('打开失败：' + (e.message || e)); }
   finally { switching = false; }
 }
@@ -1073,6 +1286,7 @@ async function newDoc() {
     });
     saveStateEl.textContent = '新文档';
     docTitleEl.focus();
+    updateDocumentTitle('无标题');
     toast('已新建文档');
   } catch (e) { toast('新建失败：' + (e.message || e)); }
   finally { switching = false; }
@@ -1098,7 +1312,10 @@ async function confirmDelete(doc) {
 }
 
 /* ---------- 标题 ---------- */
-docTitleEl.addEventListener('input', () => scheduleAutoSave());
+docTitleEl.addEventListener('input', () => {
+  updateDocumentTitle(docTitleEl.value);
+  scheduleAutoSave();
+});
 
 /* ---------- 搜索 ---------- */
 let searchTimer = null;
@@ -1688,25 +1905,33 @@ function openAiRewriteModal() {
       '<div class="ai-note">AI \u4f1a\u8bfb\u53d6\u5168\u6587\u4f5c\u4e3a\u80cc\u666f\uff0c\u4f46\u53ea\u66ff\u6362\u4f60\u9009\u4e2d\u7684\u8fd9\u6bb5\u3002</div>' +
       '<div class="ai-preset-row">' + presetHtml + '</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
-      '<div class="ai-field"><label>\u6307\u4ee4</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="\u4f8b\u5982\uff1a\u53ea\u505a\u6392\u7248\uff0c\u4e0d\u6539\u5b57"></textarea></div>' +
-      '<div class="ai-preview empty" id="aiRewritePreview">\u70b9\u51fb\u751f\u6210\u540e\u5728\u8fd9\u91cc\u9884\u89c8</div>' +
+      '<div class="ai-field"><label>\u6307\u4ee4</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="\u8f93\u5165\u5bf9\u9009\u4e2d\u6587\u5b57\u7684\u5904\u7406\u8981\u6c42\uff0c\u6216\u70b9\u4e0a\u65b9\u9884\u8bbe\u5957\u7528\u53c2\u8003\u6307\u4ee4"></textarea></div>' +
+      '<div class="ai-preview empty" id="aiRewritePreview">\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d\u5148\u770b\u6548\u679c\uff1b\u6216\u76f4\u63a5\u70b9\u300c\u5e94\u7528\u300d\u4e00\u952e\u751f\u6210\u5e76\u66ff\u6362\uff08\u53ef\u64a4\u9500\uff09</div>' +
       '<div class="ai-actions">' +
         '<button class="ai-action" id="aiRewriteRun" disabled>\u751f\u6210\u9884\u89c8</button>' +
-        '<button class="ai-action primary" id="aiRewriteApply" disabled>\u66ff\u6362\u9009\u533a</button>' +
+        '<button class="ai-action" id="aiRewriteApply">\u5e94\u7528</button>' +
       '</div>' +
     '</div>');
   const input = $('aiRewriteInstruction');
-  input.value = AI_REWRITE_PRESETS[0].value;
+  const runBtn = $('aiRewriteRun');
+  const applyBtn = $('aiRewriteApply');
+  let aiReady = false;
+  input.value = '';
   input.focus();
+  // 输入框为空时禁用「生成预览」，引导用户先写指令
+  const updateRunBtn = () => { runBtn.disabled = !(aiReady && input.value.trim().length > 0); };
+  input.addEventListener('input', updateRunBtn);
   aiModalBody.querySelectorAll('[data-rewrite-preset]').forEach(btn => {
     btn.addEventListener('click', () => {
       input.value = AI_REWRITE_PRESETS[Number(btn.getAttribute('data-rewrite-preset'))].value;
       input.focus();
+      updateRunBtn();
     });
   });
-  $('aiRewriteRun').addEventListener('click', () => runAiRewrite(selectedText));
-  refreshAiStatus('aiRewriteRun');
-  $('aiRewriteApply').addEventListener('click', applyAiRewriteResult);
+  runBtn.addEventListener('click', () => runAiRewrite(selectedText));
+  applyBtn.addEventListener('click', () => applyAiRewriteResult(selectedText));
+  runBtn.disabled = true;
+  refreshAiStatus('aiRewriteRun').then(ok => { aiReady = ok; updateRunBtn(); });
 }
 
 async function runAiRewrite(selectedText) {
@@ -1715,15 +1940,16 @@ async function runAiRewrite(selectedText) {
   const preview = $('aiRewritePreview');
   const instruction = $('aiRewriteInstruction').value.trim();
   runBtn.disabled = true;
-  applyBtn.disabled = true;
   preview.classList.add('empty');
   preview.textContent = '\u6b63\u5728\u5904\u7406\uff0c\u7a0d\u7b49\u4e00\u4e0b...';
+  // 重新生成预览时，应用按钮先回到弱色，生成成功后再变强调色
+  applyBtn.classList.remove('primary');
   try {
     const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText() });
     pendingAiRewriteText = res.replacement || '';
     preview.classList.remove('empty');
     preview.innerHTML = textToEditorHtml(pendingAiRewriteText);
-    applyBtn.disabled = !pendingAiRewriteText;
+    if (pendingAiRewriteText) applyBtn.classList.add('primary');
   } catch (e) {
     preview.classList.add('empty');
     preview.textContent = '\u751f\u6210\u5931\u8d25\uff1a' + (e.message || e);
@@ -1732,13 +1958,152 @@ async function runAiRewrite(selectedText) {
   }
 }
 
-function applyAiRewriteResult() {
-  if (!pendingAiRewriteText || !restoreAiSelection()) return;
-  document.execCommand('insertHTML', false, textToEditorHtml(pendingAiRewriteText));
-  markEditorChanged();
-  hideFloatMenu();
-  closeAiModal();
-  toast('AI \u5df2\u66ff\u6362\u9009\u533a');
+async function applyAiRewriteResult(selectedText) {
+  const applyBtn = $('aiRewriteApply');
+  // 1) 已生成预览：直接应用预览内容
+  if (pendingAiRewriteText) {
+    if (!restoreAiSelection()) return;
+    document.execCommand('insertHTML', false, textToEditorHtml(pendingAiRewriteText));
+    markEditorChanged();
+    hideFloatMenu();
+    closeAiModal();
+    toast('AI \u5df2\u66ff\u6362\u9009\u533a');
+    return;
+  }
+  // 2) 没有预览：直接调用 API 生成并替换，附悬浮撤销气泡
+  const instruction = $('aiRewriteInstruction').value.trim();
+  if (!instruction) { toast('\u8bf7\u5148\u8f93\u5165\u6307\u4ee4\u6216\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d'); return; }
+  if (!restoreAiSelection()) return;
+  // 保存当前选区内容用于撤销
+  const undoRange = savedAiRange.cloneRange();
+  const undoFrag = undoRange.cloneContents();
+  const undoHolder = document.createElement('div');
+  undoHolder.appendChild(undoFrag);
+  const originalHtml = undoHolder.innerHTML;
+  // 禁用按钮 + 显示加载态
+  applyBtn.disabled = true;
+  const prevText = applyBtn.textContent;
+  applyBtn.textContent = '\u751f\u6210\u4e2d\u2026';
+  try {
+    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText() });
+    if (!res || !res.replacement) { toast('AI \u672a\u8fd4\u56de\u5185\u5bb9'); return; }
+    document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
+    markEditorChanged();
+    hideFloatMenu();
+    closeAiModal();
+    showAiUndoBubble(originalHtml);
+  } catch (e) {
+    toast('AI \u5931\u8d25\uff1a' + (e.message || e));
+  } finally {
+    applyBtn.disabled = false;
+    applyBtn.textContent = prevText;
+  }
+}
+
+/* ---------- 快速 AI：浮动菜单内嵌输入框，回车直接改写选区 ---------- */
+const fmAiQuick = $('fmAiQuick');
+if (fmAiQuick) {
+  // 阻止输入框点击事件冒泡到 floatMenu 的隐藏逻辑
+  fmAiQuick.addEventListener('mousedown', (e) => e.stopPropagation());
+  // 记录输入内容 + 时间戳，用于 1 分钟内恢复
+  fmAiQuick.addEventListener('input', () => {
+    fmAiQuickLastInput = fmAiQuick.value;
+    fmAiQuickLastTime = Date.now();
+  });
+  fmAiQuick.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runQuickAi();
+    } else if (e.key === 'Escape') {
+      fmAiQuick.value = '';
+      fmAiQuickLastInput = '';
+      fmAiQuickLastTime = 0;
+      fmAiQuick.blur();
+      hideFloatMenu();
+    }
+  });
+}
+
+async function runQuickAi() {
+  const instruction = fmAiQuick.value.trim();
+  if (!instruction) { toast('请输入指令'); fmAiQuick.focus(); return; }
+  const selectedText = saveAiSelection();
+  if (!selectedText) { toast('请先选中要改写的文字'); return; }
+  // 保存原文用于撤销气泡
+  const undoRange = savedAiRange.cloneRange();
+  const undoFrag = undoRange.cloneContents();
+  const undoHolder = document.createElement('div');
+  undoHolder.appendChild(undoFrag);
+  const originalHtml = undoHolder.innerHTML;
+
+  // 调用期间不清空输入框（失败可重试，成功后才清空）
+  fmAiQuick.placeholder = '✨ AI 思考中…';
+  fmAiQuick.disabled = true;
+  try {
+    const res = await api('/api/ai/rewrite-selection', 'POST', {
+      selectedText,
+      instruction,
+      contextText: getDocumentContextText()
+    });
+    if (!res || !res.replacement) { toast('AI 未返回内容'); return; }
+    // 恢复选区
+    restoreAiSelection();
+    // 直接替换选区（用 execCommand 留下 undo 记录）
+    document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
+    markEditorChanged();
+    // 成功：清空输入和保留状态，下次重新开始
+    fmAiQuick.value = '';
+    fmAiQuickLastInput = '';
+    fmAiQuickLastTime = 0;
+    hideFloatMenu();
+    showAiUndoBubble(originalHtml);
+  } catch (e) {
+    toast('AI 失败：' + (e.message || e));
+  } finally {
+    fmAiQuick.disabled = false;
+    fmAiQuick.placeholder = '✨ 改写成...';
+  }
+}
+
+/* 悬浮撤销气泡：替换后显示，点击恢复原文 */
+let aiUndoBubble = null;
+let aiUndoTimer = null;
+function showAiUndoBubble(originalHtml) {
+  if (aiUndoBubble) aiUndoBubble.remove();
+  if (aiUndoTimer) clearTimeout(aiUndoTimer);
+  aiUndoBubble = document.createElement('div');
+  aiUndoBubble.className = 'ai-undo-bubble';
+  aiUndoBubble.innerHTML =
+    '<span class="ai-undo-text">已用 AI 改写</span>' +
+    '<button type="button" class="ai-undo-btn" title="恢复原文">撤销</button>';
+  document.body.appendChild(aiUndoBubble);
+  // 定位在编辑器顶部居中
+  const er = editorEl.getBoundingClientRect();
+  const bw = aiUndoBubble.offsetWidth;
+  aiUndoBubble.style.left = (er.left + er.width / 2 - bw / 2) + 'px';
+  aiUndoBubble.style.top = (er.top + 14) + 'px';
+  aiUndoBubble.querySelector('.ai-undo-btn').addEventListener('click', () => {
+    // 当前光标位置回退为原文
+    try {
+      const sel = window.getSelection();
+      if (sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        r.deleteContents();
+        const tmp = document.createElement('div');
+        tmp.innerHTML = originalHtml;
+        const frag = document.createDocumentFragment();
+        while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+        r.insertNode(frag);
+        markEditorChanged();
+      }
+    } catch (_) {}
+    hideAiUndoBubble();
+  });
+  aiUndoTimer = setTimeout(hideAiUndoBubble, 8000);
+}
+function hideAiUndoBubble() {
+  if (aiUndoBubble) { aiUndoBubble.remove(); aiUndoBubble = null; }
+  if (aiUndoTimer) { clearTimeout(aiUndoTimer); aiUndoTimer = null; }
 }
 
 let shortcutHelpEl = null;
@@ -1845,6 +2210,7 @@ function escapeHtml(s) {
 /* ---------- 初始化 ---------- */
 async function init() {
   initTheme();
+  updateDocumentTitle('主页');
   initDesktop();
   try {
     // 先校验登录态

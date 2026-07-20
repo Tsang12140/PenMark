@@ -123,7 +123,9 @@ async function transaction(fn) {
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
+    try { await client.query('ROLLBACK'); } catch (e) {
+      console.warn('PostgreSQL ROLLBACK 失败:', e && e.message);
+    }
     throw err;
   } finally {
     client.release();

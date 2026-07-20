@@ -103,6 +103,7 @@
         <button class="tb-btn" data-cmd="strikeThrough" title="删除线 Ctrl+Shift+X"><s>S</s></button>
         <button class="tb-btn" data-cmd="insertUnorderedList" title="无序列表 Ctrl+Shift+8">•</button>
         <button class="tb-btn" data-cmd="insertOrderedList" title="有序列表 Ctrl+Shift+7">1.</button>
+        <button class="tb-btn" data-action="todo" title="待办事项"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="8" r="3.5"/><path d="M3.5 8l1.2 1.2 1.8-1.8" fill="none"/></svg></button>
         <button class="tb-btn" data-action="quote" title="引用块 Ctrl+Alt+Q"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M3 6c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3H3V6zm6 0c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3H9V6z"/></svg></button>
       </div>
 
@@ -118,7 +119,7 @@
       <div class="tb-group">
         <button class="tb-btn" data-action="undo" title="撤销 Ctrl+Z"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h7a4 4 0 0 1 0 8H6"/><path d="M3 7l3-3M3 7l3 3"/></svg></button>
         <button class="tb-btn" data-action="redo" title="重做 Ctrl+Y"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7H6a4 4 0 0 0 0 8h4"/><path d="M13 7l-3-3M13 7l-3 3"/></svg></button>
-        <button class="tb-btn" data-cmd="removeFormat" title="清除格式 Ctrl+\\"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l10 10"/><path d="M8 2.5L6 8l3 3 5.5-2L13 4.5z"/></svg></button>
+        <button class="tb-btn" data-cmd="removeFormat" title="清除格式 Ctrl+\\"><svg width="15" height="15" viewBox="0 0 1024 1024" fill="currentColor"><path d="M1024 1012.48a2119.68 2119.68 0 0 1-45.312-409.6v-228.864a145.92 145.92 0 0 0-146.944-146.176h-128v-128a100.096 100.096 0 0 0-99.84-99.84h-182.016a100.608 100.608 0 0 0-100.352 99.84v128h-128a145.92 145.92 0 0 0-145.664 146.176v228.608a2139.904 2139.904 0 0 1-45.312 409.6L0 1024h1024zM421.888 99.84h182.016v128h-182.272v-128z m274.432 742.4l3.328-146.944a51.2 51.2 0 0 0-25.6-43.52 48.896 48.896 0 0 0-51.2 0 51.2 51.2 0 0 0-25.6 43.52l-2.304 121.344-4.352 69.12L588.8 921.6h-185.856a532.992 532.992 0 0 0 23.296-160.256 51.2 51.2 0 1 0-100.096 0A420.352 420.352 0 0 1 296.448 921.6H120.832l2.304-13.824a2033.92 2033.92 0 0 0 25.6-307.2v-39.168h728.576v67.072a2063.104 2063.104 0 0 0 25.6 281.6l2.304 13.824h-216.064zM877.312 460.8H148.48v-91.392a45.568 45.568 0 0 1 45.312-40.96h642.56a45.312 45.312 0 0 1 40.96 45.312z"/></svg></button>
       </div>
 
       <div style="flex:1"></div>
@@ -185,8 +186,9 @@
   <button class="fm-btn" data-action="code" title="行内代码"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18"/></svg></button>
   <span class="fm-divider"></span>
   <button class="fm-btn ai-fm-btn" data-action="aiRewrite" title="AI"><svg class="ai-bulb" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/><path class="ai-bulb-spark" d="M18.8 4.2l.4-1.2.4 1.2 1.2.4-1.2.4-.4 1.2-.4-1.2-1.2-.4 1.2-.4Z"/><path class="ai-bulb-spark" d="M4.8 7.6l.3-.9.3.9.9.3-.9.3-.3.9-.3-.9-.9-.3.9-.3Z"/></svg></button>
+  <input class="fm-ai-quick" id="fmAiQuick" type="text" maxlength="50" placeholder="✨ 改写成..." title="输入指令后回车，AI 直接改写选区（最多 50 字，可撤销）">
   <span class="fm-divider"></span>
-  <button class="fm-btn" data-cmd="removeFormat" title="清除格式"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h12M11 5 7 17M4 20 20 4M12 19h7"/></svg></button>
+  <button class="fm-btn" data-cmd="removeFormat" title="清除格式"><svg viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor"><path d="M1024 1012.48a2119.68 2119.68 0 0 1-45.312-409.6v-228.864a145.92 145.92 0 0 0-146.944-146.176h-128v-128a100.096 100.096 0 0 0-99.84-99.84h-182.016a100.608 100.608 0 0 0-100.352 99.84v128h-128a145.92 145.92 0 0 0-145.664 146.176v228.608a2139.904 2139.904 0 0 1-45.312 409.6L0 1024h1024zM421.888 99.84h182.016v128h-182.272v-128z m274.432 742.4l3.328-146.944a51.2 51.2 0 0 0-25.6-43.52 48.896 48.896 0 0 0-51.2 0 51.2 51.2 0 0 0-25.6 43.52l-2.304 121.344-4.352 69.12L588.8 921.6h-185.856a532.992 532.992 0 0 0 23.296-160.256 51.2 51.2 0 1 0-100.096 0A420.352 420.352 0 0 1 296.448 921.6H120.832l2.304-13.824a2033.92 2033.92 0 0 0 25.6-307.2v-39.168h728.576v67.072a2063.104 2063.104 0 0 0 25.6 281.6l2.304 13.824h-216.064zM877.312 460.8H148.48v-91.392a45.568 45.568 0 0 1 45.312-40.96h642.56a45.312 45.312 0 0 1 40.96 45.312z"/></svg></button>
 </div>
 
 <!-- 图片选中浮动菜单 -->
@@ -205,6 +207,14 @@
 
 <!-- 右键上下文菜单 -->
 <div class="ctx-menu" id="ctxMenu" hidden></div>
+
+<!-- 行首块操作按钮 ⋮⋮ -->
+<button class="block-handle" id="blockHandle" type="button" hidden title="块操作" aria-haspopup="menu" aria-expanded="false">
+  <svg viewBox="0 0 16 16" aria-hidden="true">
+    <circle cx="5" cy="4" r="1.4"/><circle cx="5" cy="8" r="1.4"/><circle cx="5" cy="12" r="1.4"/>
+    <circle cx="11" cy="4" r="1.4"/><circle cx="11" cy="8" r="1.4"/><circle cx="11" cy="12" r="1.4"/>
+  </svg>
+</button>
 
 <div class="toast-stack" id="toastStack"></div>
 <input type="file" id="importInput" class="hidden-input" accept=".html,.htm">
