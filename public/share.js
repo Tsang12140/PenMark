@@ -160,33 +160,83 @@ function renderDoc(data) {
     ? '<span class="share-badge edit">可编辑</span>'
     : '<span class="share-badge view">仅查看</span>';
 
+  // 编辑按钮（仅可编辑权限时出现）；默认查看，点击后切换为编辑
+  const editBtn = canEdit
+    ? '<button type="button" class="share-edit-btn" id="shareEditBtn" title="点击进入编辑">编辑</button>'
+    : '';
+
   let html =
-    '<div class="share-meta">' +
-      '<div class="share-doc-title">' + escapeHtml(doc.title || '无标题') + '</div>' +
-      '<div class="share-doc-info">' + badge +
-        '<span class="share-date">更新于 ' + relativeTime(doc.updated_at) + '</span>' +
-        '<span class="share-brand" aria-label="知著 PenMark">' +
-          '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
-          '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
-        '</span>' +
+    '<div class="share-paper">' +
+      '<div class="share-paper-head">' +
+        '<h1 class="share-paper-title">' + escapeHtml(doc.title || '无标题') + '</h1>' +
+        '<div class="share-paper-info">' + badge +
+          '<span class="share-date">更新于 ' + relativeTime(doc.updated_at) + '</span>' +
+          editBtn +
+          '<span class="share-brand" aria-label="知著 PenMark">' +
+            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
+            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
+          '</span>' +
+        '</div>' +
       '</div>' +
-    '</div>';
+      '<div class="share-paper-body">';
+
+  // 默认渲染为只读视图；canEdit 时也先查看，点击编辑按钮才解锁
+  html += '<div class="share-reader" id="shareReader">' + (doc.content || '<p><br></p>') + '</div>';
+  html += '<div class="share-footer">— 文档结束 —</div>';
+  html += '</div>'; // .share-paper-body
 
   if (canEdit) {
-    
-    html += '<div class="share-edit-notice">\u8f7b\u7f16\u8f91\u6a21\u5f0f\uff1a\u9002\u5408\u5c11\u91cf\u6539\u5b57\u548c\u8865\u5145\uff0c\u590d\u6742\u6392\u7248\u3001\u8868\u683c\u548c\u56fe\u7247\u8bf7\u56de\u5230\u4e3b\u7f16\u8f91\u5668\u5904\u7406\u3002</div>';
-html += '<div class="share-editor" id="shareEditor" contenteditable="true" spellcheck="true">' + (doc.content || '<p><br></p>') + '</div>';
-    html += '<div class="share-save-bar"><span class="share-save-dot" id="saveDot"></span><span id="shareSaveState">已就绪</span></div>';
-  } else {
-    html += '<div class="share-reader" id="shareReader">' + (doc.content || '<p><br></p>') + '</div>';
-    html += '<div class="share-footer">— 文档结束 —</div>';
+    html += '<div class="share-save-bar" id="shareSaveBar" hidden><span class="share-save-dot" id="saveDot"></span><span id="shareSaveState">已就绪</span></div>';
   }
+
+  html += '</div>'; // .share-paper
 
   container.innerHTML = html;
 
-  if (canEdit) setupEditor(token);
+  if (canEdit) setupShareEditToggle(token);
   setupProgress();
   setupTOC();
+}
+
+// 可编辑分享页：默认查看，点编辑按钮才解锁编辑
+function setupShareEditToggle(token) {
+  const btn = $('shareEditBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const reader = $('shareReader');
+    if (!reader) return;
+    const content = reader.innerHTML;
+    const editor = document.createElement('div');
+    editor.className = 'share-editor';
+    editor.id = 'shareEditor';
+    editor.setAttribute('contenteditable', 'true');
+    editor.setAttribute('spellcheck', 'true');
+    editor.innerHTML = content;
+    reader.parentNode.replaceChild(editor, reader);
+
+    // 显示轻编辑提示与保存状态条
+    const notice = document.createElement('div');
+    notice.className = 'share-edit-notice';
+    notice.textContent = '轻编辑模式：适合少量改字和补充，复杂排版、表格和图片请回到主编辑器处理。';
+    editor.parentNode.insertBefore(notice, editor);
+
+    const saveBar = $('shareSaveBar');
+    if (saveBar) saveBar.hidden = false;
+
+    btn.remove();
+    setupEditor(token);
+    setupTOC();
+    editor.focus();
+    // 光标定位到末尾
+    try {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch(_) {}
+  });
 }
 
 function setupEditor(token) {
@@ -194,6 +244,16 @@ function setupEditor(token) {
   const stateEl = $('shareSaveState');
   const dotEl = $('saveDot');
   let saveTimer = null;
+
+  // 待办事项勾选委托：点击 .todo-check 切换 .checked + .todo-item.done
+  editorEl.addEventListener('click', (e) => {
+    const check = e.target.closest('.todo-check');
+    if (!check) return;
+    const item = check.closest('.todo-item');
+    const checked = check.classList.toggle('checked');
+    if (item) item.classList.toggle('done', checked);
+    editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 
   editorEl.addEventListener('input', () => {
     stateEl.textContent = '编辑中…';

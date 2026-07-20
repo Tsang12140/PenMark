@@ -574,6 +574,57 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .editor ul,.editor ol{margin:.6em 0;padding-left:1.8em;}
 .editor li{margin:.25em 0;}
 .editor hr{border:none;border-top:1px solid var(--line);margin:1.6em 0;}
+
+/* 待办事项（行内格式） */
+.todo-item{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  margin:.5em 0;
+  padding:4px 0;
+  font-family:var(--sans);
+  font-size:1em;
+  line-height:1.6;
+}
+.todo-item .todo-check{
+  flex:0 0 auto;
+  width:18px;
+  height:18px;
+  margin-top:2px;
+  border:1.5px solid var(--ink-faint);
+  border-radius:50%;
+  background:transparent;
+  cursor:pointer;
+  display:inline-block;
+  position:relative;
+  user-select:none;
+  transition:border-color .15s, background .15s;
+}
+.todo-item .todo-check:hover{border-color:var(--accent);}
+.todo-item .todo-check.checked{
+  border-color:var(--accent);
+  background:var(--accent);
+}
+.todo-item .todo-check.checked::after{
+  content:"";
+  position:absolute;
+  left:5px; top:1px;
+  width:5px; height:10px;
+  border:solid #fff;
+  border-width:0 2px 2px 0;
+  transform:rotate(45deg);
+}
+.todo-item .todo-text{
+  flex:1 1 auto;
+  min-width:0;
+  outline:none;
+  word-break:break-word;
+}
+.todo-item.done .todo-text{
+  color:var(--ink-faint);
+  text-decoration:line-through;
+  text-decoration-color:rgba(150,156,152,.6);
+}
 .editor a{color:#2563eb;text-decoration:underline;text-underline-offset:3px;}
 .editor:focus-visible{outline:none;}
 
@@ -2058,23 +2109,31 @@ body.share-page{
   min-height:16px;
 }
 
-/* 文档头部 */
-.share-meta{
-  margin-bottom:36px;
+/* 纸张容器：把标题、信息、正文都放进一张白纸里 */
+.share-paper{
+  background:var(--bg-editor);
+  border:1px solid var(--line-soft);
+  border-radius:10px;
+  box-shadow:0 1px 3px rgba(32,41,46,.06), 0 12px 36px rgba(32,41,46,.08);
+  padding:48px 56px 56px;
+  overflow:hidden;
+}
+.share-paper-head{
   text-align:center;
   padding-bottom:20px;
+  margin-bottom:28px;
   border-bottom:1px solid var(--line-soft);
 }
-.share-doc-title{
+.share-paper-title{
   font-family:var(--serif);
   font-size:28px;
   font-weight:600;
   color:var(--ink);
   letter-spacing:2px;
   line-height:1.4;
-  margin-bottom:12px;
+  margin:0 0 12px;
 }
-.share-doc-info{
+.share-paper-info{
   display:flex;
   align-items:center;
   justify-content:center;
@@ -2083,6 +2142,21 @@ body.share-page{
   color:var(--ink-faint);
   flex-wrap:wrap;
 }
+.share-edit-btn{
+  appearance:none;
+  height:26px;
+  padding:0 14px;
+  border:1px solid var(--accent);
+  background:transparent;
+  color:var(--accent);
+  border-radius:13px;
+  font-family:var(--sans);
+  font-size:12px;
+  font-weight:500;
+  cursor:pointer;
+  transition:background .15s, color .15s;
+}
+.share-edit-btn:hover{background:var(--accent);color:var(--primary-ink);}
 .share-badge{
   padding:2px 10px;
   border-radius:10px;
@@ -2104,6 +2178,10 @@ body.share-page{
 .share-brand .brand-logo-dark{display:none;}
 [data-theme="dark"] .share-brand .brand-logo-light{display:none;}
 [data-theme="dark"] .share-brand .brand-logo-dark{display:block;}
+
+/* 只读分享页里的待办勾选：不显示手型，hover 不变色 */
+.share-reader .todo-check{cursor:default;}
+.share-reader .todo-check:hover{border-color:var(--ink-faint);}
 
 /* 阅读区 / 编辑区 */
 .share-reader,.share-editor{
@@ -2293,8 +2371,10 @@ body.share-page{
   .share-toc{display:none;}
 }
 @media (max-width:760px){
-  .share-container{padding:40px 18px 100px;}
-  .share-doc-title{font-size:22px;}
+  .share-container{padding:24px 14px 100px;}
+  .share-paper{padding:28px 18px 32px;border-radius:8px;}
+  .share-paper-head{padding-bottom:16px;margin-bottom:20px;}
+  .share-paper-title{font-size:22px;letter-spacing:1px;}
   .share-reader,.share-editor{font-size:16px;line-height:1.8;}
 }
 

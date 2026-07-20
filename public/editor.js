@@ -34,6 +34,7 @@ export class Editor {
     this._bindDragDrop();
     this._bindImageDelegation();
     this._bindMarkdownShortcut();
+    this._bindTodoInteraction();
     this._bindInput();
     this._bindKeydown();
     this._bindTableEditing();
@@ -1893,7 +1894,8 @@ export class Editor {
         { re: /^### $/, type: 'h3' }, { re: /^#### $/, type: 'h4' },
         { re: /^- $/, type: 'ul' }, { re: /^\* $/, type: 'ul' },
         { re: /^> $/, type: 'quote' }, { re: /^``` $/, type: 'code' },
-        { re: /^1\. $/, type: 'ol' }
+        { re: /^1\. $/, type: 'ol' },
+        { re: /^\[\] $/, type: 'todo' }, { re: /^\[ \] $/, type: 'todo' }
       ];
       for (const p of patterns) {
         if (p.re.test(before)) {
@@ -1909,11 +1911,120 @@ export class Editor {
           else if (p.type === 'code') document.execCommand('formatBlock', false, '<PRE>');
           else if (p.type === 'ul') document.execCommand('insertUnorderedList');
           else if (p.type === 'ol') document.execCommand('insertOrderedList');
+          else if (p.type === 'todo') this._insertTodoBlock();
           else document.execCommand('formatBlock', false, '<' + p.type.toUpperCase() + '>');
           this._afterChange();
           return;
         }
       }
+
+      // Enter 键续号：中文编号「N、」与待办事项
+      if (e.key === 'Enter') {
+        const text = (block.textContent || '').trim();
+        // 1) 中文编号续号：形如「1、内容」「12、内容」
+        const cnMatch = text.match(/^(\d+)、([\s\S]*)$/);
+        if (cnMatch) {
+          const nextNum = parseInt(cnMatch[1], 10) + 1;
+          const rest = cnMatch[2];
+          // 空行回车退出续号
+          if (!rest) return;
+          e.preventDefault();
+          const newP = document.createElement('p');
+          newP.innerHTML = nextNum + '、';
+          if (block.parentNode) {
+            block.parentNode.insertBefore(newP, block.nextSibling);
+            this._placeCaretAtStart(newP);
+          }
+          this._afterChange();
+          return;
+        }
+        // 2) 待办回车续号：todo-item 里回车 → 新建空待办；空待办回车 → 转回普通段
+        if (block.classList && block.classList.contains('todo-item')) {
+          const inner = (block.textContent || '').trim();
+          if (!inner) {
+            // 空待办回车 → 转为普通段，退出续号
+            e.preventDefault();
+            const p = document.createElement('p');
+            p.innerHTML = '<br>';
+            if (block.parentNode) {
+              block.parentNode.replaceChild(p, block);
+              this._placeCaretAtStart(p);
+            }
+            this._afterChange();
+            return;
+          }
+          e.preventDefault();
+          const newItem = this._buildTodoItem('');
+          if (block.parentNode) {
+            block.parentNode.insertBefore(newItem, block.nextSibling);
+            this._placeCaretAtStart(newItem);
+          }
+          this._afterChange();
+          return;
+        }
+      }
+    });
+  }
+
+  // 构造一个待办事项 DOM：.todo-item > .todo-check + 文本
+  _buildTodoItem(text) {
+    const div = document.createElement('div');
+    div.className = 'todo-item';
+    div.setAttribute('data-type', 'todo');
+    const check = document.createElement('span');
+    check.className = 'todo-check';
+    check.setAttribute('contenteditable', 'false');
+    check.setAttribute('role', 'checkbox');
+    check.setAttribute('aria-checked', 'false');
+    div.appendChild(check);
+    const txt = document.createElement('span');
+    txt.className = 'todo-text';
+    txt.innerHTML = text || '\u200B';
+    div.appendChild(txt);
+    return div;
+  }
+
+  // 在当前光标处插入一个待办事项块
+  _insertTodoBlock() {
+    const sel = window.getSelection();
+    const item = this._buildTodoItem('\u200B');
+    if (sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(item);
+    } else {
+      this.editor.appendChild(item);
+    }
+    // 后面留一个空段落，方便继续输入普通文字
+    const p = document.createElement('p');
+    p.innerHTML = '<br>';
+    if (item.parentNode) {
+      item.parentNode.insertBefore(p, item.nextSibling);
+    }
+    this._placeCaretAtStart(item.querySelector('.todo-text') || item);
+  }
+
+  // 把光标定位到节点开头
+  _placeCaretAtStart(node) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // 待办勾选交互：点击 .todo-check 切换 .checked + .todo-item.done
+  _bindTodoInteraction() {
+    this.editor.addEventListener('click', (e) => {
+      const check = e.target.closest('.todo-check');
+      if (!check) return;
+      const item = check.closest('.todo-item');
+      const checked = check.classList.toggle('checked');
+      check.setAttribute('aria-checked', checked ? 'true' : 'false');
+      if (item) item.classList.toggle('done', checked);
+      this._afterChange();
     });
   }
 
