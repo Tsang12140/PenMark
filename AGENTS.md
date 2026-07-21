@@ -51,3 +51,43 @@
 - 它是否遗漏了可预期的键盘入口？
 
 只要答案有风险，就先改设计。
+
+## 图标系统：统一 Lucide，禁止 emoji 与字符画
+
+所有 UI 图标必须走 [Lucide](https://lucide.dev) 开源图标库路线，与格式刷、加粗、链接等已统一图标保持一致画风。
+禁止使用以下方案作为图标：
+- emoji（如 ✨ 📝 🔧 ⚙️）
+- 字符画 / 文本符号（如 ⟳ ↺ ⤢ ⇤ ↔ ✕ ⋮⋮ ▾ ◐）
+- 自造 16×16 简陋 SVG（如 `viewBox="0 0 16 16"` 的早期手写图标）
+- 阿里 iconfont 仅作灵感参考，不直接引入（依赖外网且账号私有，不便团队复现）
+
+### Lucide 标准属性
+
+每个 SVG 必须显式声明以下属性：
+```html
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+     stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+     aria-hidden="true">
+  <!-- path / line / polyline / circle / rect 等 -->
+</svg>
+```
+
+- `viewBox` 永远是 `0 0 24 24`，不要混用 16×16 或 1024×1024
+- 默认描边式（fill="none" stroke="currentColor"），不要用填充式
+- `stroke-width` 默认 2（按钮内可微调到 2.1～2.4，保持视觉重量）
+- 尺寸由外层 CSS 或 width/height 属性控制，不影响 viewBox
+- 特殊情况（如状态指示小圆点）才用 fill="currentColor"
+
+### 命名与选取
+
+- 优先去 https://lucide.dev 搜对应语义图标，复制其 path
+- 选中后把 path 嵌入项目 HTML，不要引外链 JS（保持离线可用）
+- 常用对照：加粗=`bold`、链接=`link`、代码=`code`、删除=`trash-2`、设置=`settings`、用户=`user`、退出=`log-out`、新建=`file-plus`、文件夹=`folder`、格式刷=`paintbrush`、清除格式=`eraser`
+
+### 落地校验
+
+新增或修改图标后，必须本地硬刷新（Ctrl+F5）核对：
+- 亮色 / 雾纸 / 夜墨三套主题下都可见
+- 桌面端 + 移动端尺寸都合适（移动端按钮 44×44 触达区）
+- 与相邻图标视觉重量一致，不要一个粗一个细
+

@@ -132,6 +132,10 @@ try {
   if (!docCols.some(c => c.name === 'flag_reason')) {
     db.exec("ALTER TABLE documents ADD COLUMN flag_reason TEXT DEFAULT ''");
   }
+  // 版本号字段：多端同步用，每次 PUT 自增 1
+  if (!docCols.some(c => c.name === 'version')) {
+    db.exec("ALTER TABLE documents ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+  }
 } catch (e) { console.warn('documents 迁移跳过：', e.message); }
 
 // 举报表
@@ -186,6 +190,7 @@ CREATE TABLE IF NOT EXISTS share_visitors (
   share_token TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
   nickname TEXT NOT NULL DEFAULT '游客',
+  user_id INTEGER,
   first_visit_at INTEGER NOT NULL,
   last_visit_at INTEGER NOT NULL,
   visit_count INTEGER NOT NULL DEFAULT 1,
@@ -193,6 +198,65 @@ CREATE TABLE IF NOT EXISTS share_visitors (
 );
 CREATE INDEX IF NOT EXISTS idx_share_visitors_token ON share_visitors(share_token);
 CREATE INDEX IF NOT EXISTS idx_share_visitors_last ON share_visitors(last_visit_at);
+CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id);
+`);
+
+// share_visitors 增量迁移：加 user_id 列（NULL=未识别游客，非 NULL=注册用户回访）
+try {
+  const svCols = db.prepare("PRAGMA table_info(share_visitors)").all();
+  if (!svCols.some(c => c.name === 'user_id')) {
+    db.exec("ALTER TABLE share_visitors ADD COLUMN user_id INTEGER");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id)");
+  }
+} catch (e) { console.warn('share_visitors 迁移跳过：', e.message); }
+
+// 文档版本快照表（每次保存内容差异 > 50 字符时自动落一条）
+db.exec(`
+CREATE TABLE IF NOT EXISTS document_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  chars_diff INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (doc_id) REFERENCES documents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_versions_doc ON document_versions(doc_id, created_at DESC);
+`);
+
+// AI 对话历史表（按文档保留：关闭面板/刷新后再打开仍能看到）
+db.exec(`
+CREATE TABLE IF NOT EXISTS ai_chat_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (doc_id) REFERENCES documents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_doc ON ai_chat_history(doc_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_user ON ai_chat_history(user_id);
+`);
+
+// 编辑器动作日志表（记录改写/排版/插入等 AI 辅助动作，供 AI 对话感知）
+db.exec(`
+CREATE TABLE IF NOT EXISTS editor_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  action_type TEXT NOT NULL,
+  before_text TEXT NOT NULL DEFAULT '',
+  after_text TEXT NOT NULL DEFAULT '',
+  instruction TEXT NOT NULL DEFAULT '',
+  meta TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (doc_id) REFERENCES documents(id)
+);
+CREATE INDEX IF NOT EXISTS idx_editor_actions_doc ON editor_actions(doc_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_editor_actions_user ON editor_actions(user_id);
 `);
 
 module.exports = db;

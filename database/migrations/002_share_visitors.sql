@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS share_visitors (
   share_token TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
   nickname TEXT NOT NULL DEFAULT '游客',
+  user_id INTEGER,
   first_visit_at BIGINT NOT NULL,
   last_visit_at BIGINT NOT NULL,
   visit_count INTEGER NOT NULL DEFAULT 1,
@@ -12,3 +13,4 @@ CREATE TABLE IF NOT EXISTS share_visitors (
 );
 CREATE INDEX IF NOT EXISTS idx_share_visitors_token ON share_visitors(share_token);
 CREATE INDEX IF NOT EXISTS idx_share_visitors_last ON share_visitors(last_visit_at);
+CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id);

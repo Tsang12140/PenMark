@@ -9,3 +9,4 @@ dist-desktop/
 .electron-gyp/
 .electron-builder-cache/
 .github/
+_test_login.json

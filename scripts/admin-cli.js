@@ -75,7 +75,8 @@ async function createAdmin() {
   const uErr = validateUsername(username);
   if (uErr) { console.error('错误：' + uErr); process.exit(1); }
 
-  const existing = await db.one('SELECT id FROM users WHERE username = $1', [username]);
+  // 用户名大小写不敏感：Admin / admin 视作同一账号
+  const existing = await db.one('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [username]);
   if (existing) {
     console.error('错误：用户名已存在。如需重置密码请使用 npm run admin:reset-password');
     process.exit(1);
@@ -110,7 +111,8 @@ async function resetPassword() {
   console.log('=== 重置管理员密码 ===\n');
   const username = await readLine('管理员用户名: ');
 
-  const user = await db.one('SELECT id, username, nickname FROM users WHERE username = $1 AND is_admin = 1', [username]);
+  // 用户名大小写不敏感
+  const user = await db.one('SELECT id, username, nickname FROM users WHERE LOWER(username) = LOWER($1) AND is_admin = 1', [username]);
   if (!user) {
     console.error('错误：未找到该管理员账号');
     process.exit(1);

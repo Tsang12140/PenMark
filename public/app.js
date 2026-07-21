@@ -22,6 +22,156 @@ const aiModalClose = $('aiModalClose');
 let currentDoc = null;
 let saveTimer = null;
 
+/* ---------- 多端同步：版本号轮询（轻量级，B 端发现他人改动时弹横幅） ---------- */
+let versionCheckTimer = null;
+let lastEditedAt = 0;             // 最近一次用户输入时间戳；编辑中不打扰
+let dismissedVersion = 0;         // 用户已"稍后"过的版本号；同版本不重复弹
+const VERSION_POLL_INTERVAL = 8000; // 8 秒一次轮询
+const EDITING_QUIET_WINDOW = 3000;  // 距离上次输入 3 秒内不弹横幅
+
+function startVersionPolling() {
+  stopVersionPolling();
+  stopShareStatsPolling();
+  versionCheckTimer = setInterval(checkDocVersion, VERSION_POLL_INTERVAL);
+  document.addEventListener('visibilitychange', onVisibilityChangeForVersion);
+}
+
+function stopVersionPolling() {
+  if (versionCheckTimer) { clearInterval(versionCheckTimer); versionCheckTimer = null; }
+  document.removeEventListener('visibilitychange', onVisibilityChangeForVersion);
+}
+
+function onVisibilityChangeForVersion() {
+  if (!document.hidden && currentDoc) checkDocVersion();
+}
+
+async function checkDocVersion() {
+  if (!currentDoc) return;
+  // 编辑活跃期不弹横幅，避免打断输入
+  if (Date.now() - lastEditedAt < EDITING_QUIET_WINDOW) return;
+  try {
+    const r = await fetch('/api/documents/' + currentDoc.id + '/version', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const v = await r.json();
+    if (!v || typeof v.version !== 'number') return;
+    if (v.version > (currentDoc.version || 1) && v.version > dismissedVersion) {
+      showVersionBanner(v);
+    }
+  } catch (e) { /* 静默：网络抖动等不影响编辑 */ }
+}
+
+/* ---------- 分享访客统计轮询（飞书式：编辑器内显示被访问情况） ---------- */
+let shareStatsTimer = null;
+const SHARE_STATS_INTERVAL = 30000; // 30 秒一次
+
+function startShareStatsPolling() {
+  stopShareStatsPolling();
+  refreshShareStats();
+  shareStatsTimer = setInterval(refreshShareStats, SHARE_STATS_INTERVAL);
+}
+
+function stopShareStatsPolling() {
+  if (shareStatsTimer) { clearInterval(shareStatsTimer); shareStatsTimer = null; }
+  const btn = document.getElementById('shareStatsBtn');
+  if (btn) btn.hidden = true;
+}
+
+async function refreshShareStats() {
+  if (!currentDoc) return;
+  const btn = document.getElementById('shareStatsBtn');
+  if (!btn) return;
+  // 仅管理员或被授权用户拉取统计
+  if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { btn.hidden = true; return; }
+  try {
+    const r = await fetch('/api/documents/' + currentDoc.id + '/share-stats', { credentials: 'same-origin' });
+    if (!r.ok) { btn.hidden = true; return; }
+    const data = await r.json();
+    if (!data.shared || data.expired) { btn.hidden = true; return; }
+    btn.hidden = false;
+    const total = data.total || 0;
+    const online = data.online_30min || 0;
+    btn.classList.toggle('online', online > 0);
+    const text = btn.querySelector('.ss-text');
+    if (text) {
+      text.textContent = online > 0 ? (online + ' 在线 · ' + total + ' 访问') : (total + ' 访问');
+    }
+    btn.title = online > 0 ? (online + ' 人在线，共 ' + total + ' 人访问过') : ('共 ' + total + ' 人访问过');
+  } catch (e) { /* 静默 */ }
+}
+
+function showVersionBanner(v) {
+  let banner = document.getElementById('versionBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'versionBanner';
+    banner.className = 'version-banner';
+    banner.innerHTML = '';
+    document.body.appendChild(banner);
+  } else {
+    banner.innerHTML = '';
+  }
+  const text = document.createElement('span');
+  text.className = 'vb-text';
+  text.textContent = '其他端已修改此文档';
+  banner.appendChild(text);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'vb-btn vb-refresh';
+  refreshBtn.textContent = '刷新查看';
+  refreshBtn.onclick = async () => {
+    banner.classList.remove('show');
+    // 先把本地草稿保存，避免被覆盖
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    saveStateEl.textContent = '同步中…';
+    try {
+      await saveCurrent({ reorder: false });
+      const doc = await api('/api/documents/' + currentDoc.id);
+      currentDoc = doc;
+      docTitleEl.value = doc.title === '无标题' ? '' : doc.title;
+      editor.setHTML(doc.content || '');
+      saveStateEl.textContent = '已加载最新';
+      toast('已加载最新版本');
+      dismissedVersion = 0;
+      refreshToolbar();
+      updateOutline(true);
+      updateDocumentTitle(doc.title);
+    } catch (e) {
+      toast('刷新失败：' + (e.message || e));
+      saveStateEl.textContent = '刷新失败';
+    }
+  };
+  banner.appendChild(refreshBtn);
+
+  const laterBtn = document.createElement('button');
+  laterBtn.className = 'vb-btn vb-later';
+  laterBtn.textContent = '稍后';
+  laterBtn.onclick = () => {
+    banner.classList.remove('show');
+    dismissedVersion = v.version;
+  };
+  banner.appendChild(laterBtn);
+
+  banner.classList.add('show');
+}
+
+function hideVersionBanner() {
+  const banner = document.getElementById('versionBanner');
+  if (banner) banner.classList.remove('show');
+}
+
+// 调试辅助：在 Console 输入 window.__pmDebug() 可查看同步状态
+window.__pmDebug = function() {
+  return {
+    currentDoc: currentDoc ? { id: currentDoc.id, title: currentDoc.title, version: currentDoc.version } : null,
+    dismissedVersion,
+    lastEditedAt,
+    msSinceLastEdit: Date.now() - lastEditedAt,
+    pollingActive: !!versionCheckTimer,
+    bannerVisible: !!(document.getElementById('versionBanner') && document.getElementById('versionBanner').classList.contains('show'))
+  };
+};
+window.__pmCheckNow = checkDocVersion;
+
 /* ---------- 标签页标题：跟随当前文档名 ---------- */
 const PENMARK_SUFFIX = ' - 知著 PenMark';
 
@@ -40,12 +190,93 @@ function toast(msg) {
   setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 2100);
 }
 
+/* ---------- 统一确认/输入弹窗（替代原生 confirm/prompt） ---------- */
+const dialogModal = $('dialogModal');
+const dialogTitle = $('dialogTitle');
+const dialogDesc = $('dialogDesc');
+const dialogInput = $('dialogInput');
+const dialogConfirm = $('dialogConfirm');
+const dialogCancel = $('dialogCancel');
+const dialogClose = $('dialogClose');
+let _dialogResolver = null;
+
+function _openDialog({ title, desc, confirmText, cancelText, danger, input, value, placeholder }) {
+  if (!dialogModal) return Promise.resolve(input ? null : false);
+  dialogTitle.textContent = title || (input ? '请输入' : '请确认');
+  dialogDesc.textContent = desc || '';
+  dialogConfirm.textContent = confirmText || '确认';
+  dialogCancel.textContent = cancelText || '取消';
+  dialogConfirm.classList.toggle('btn-danger', !!danger);
+  dialogConfirm.classList.toggle('btn-primary', !danger);
+  if (input) {
+    dialogInput.hidden = false;
+    dialogInput.value = value || '';
+    dialogInput.placeholder = placeholder || '';
+  } else {
+    dialogInput.hidden = true;
+  }
+  dialogModal.hidden = false;
+  return new Promise(resolve => {
+    _dialogResolver = resolve;
+    // 输入框模式下，弹窗打开后自动聚焦并选中
+    setTimeout(() => {
+      if (input) {
+        dialogInput.focus();
+        dialogInput.select();
+      } else {
+        dialogConfirm.focus();
+      }
+    }, 30);
+  });
+}
+
+function showConfirm(options) {
+  if (typeof options === 'string') options = { desc: options };
+  return _openDialog(Object.assign({}, options, { input: false }));
+}
+
+function showPrompt(options) {
+  if (typeof options === 'string') options = { desc: options };
+  return _openDialog(Object.assign({}, options, { input: true }));
+}
+
+function _closeDialog(result) {
+  if (!dialogModal) return;
+  dialogModal.hidden = true;
+  const r = _dialogResolver;
+  _dialogResolver = null;
+  if (r) r(result);
+}
+
+if (dialogConfirm) dialogConfirm.addEventListener('click', () => {
+  if (!dialogInput.hidden) {
+    _closeDialog(dialogInput.value);
+  } else {
+    _closeDialog(true);
+  }
+});
+if (dialogCancel) dialogCancel.addEventListener('click', () => _closeDialog(dialogInput.hidden ? false : null));
+if (dialogClose) dialogClose.addEventListener('click', () => _closeDialog(dialogInput.hidden ? false : null));
+if (dialogModal) dialogModal.addEventListener('pointerdown', (e) => {
+  if (e.target === dialogModal) _closeDialog(dialogInput.hidden ? false : null);
+});
+if (dialogInput) dialogInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); _closeDialog(dialogInput.value); }
+  if (e.key === 'Escape') { e.preventDefault(); _closeDialog(null); }
+});
+document.addEventListener('keydown', (e) => {
+  if (!dialogModal || dialogModal.hidden) return;
+  if (e.key === 'Escape') _closeDialog(dialogInput.hidden ? false : null);
+  if (e.key === 'Enter' && dialogInput.hidden) { e.preventDefault(); _closeDialog(true); }
+});
+
 /* ---------- 编辑器 ---------- */
 const editor = new Editor({
   editor: editorEl,
   dropOverlay,
-  onUpdate: () => { updateStats(); scheduleAutoSave(); updateOutline(); },
+  onUpdate: () => { lastEditedAt = Date.now(); updateStats(); scheduleAutoSave(); updateOutline(); },
   onToast: toast,
+  onPrompt: showPrompt,
   onImageSelect: (container) => updateImageFloatMenu(container)
 });
 
@@ -105,6 +336,7 @@ function handleAction(action) {
     case 'toc': editor.insertTOC(); break;
     case 'undo': editor.undo(); break;
     case 'redo': editor.redo(); break;
+    case 'paintFormat': activatePaintFormat(); break;
     case 'importHtml': importInput.click(); break;
     case 'exportHTML': exportHTML(); break;
     case 'exportMD': exportMarkdown(); break;
@@ -113,6 +345,7 @@ function handleAction(action) {
     case 'share': openShareModal(); break;
     
     case 'aiLayout': openAiLayoutModal(); break;
+    case 'aiChat': toggleAiPanel(); break;
     case 'aiRewrite': openAiRewriteModal(); break;
     case 'reading': toggleReadingMode(); break;
   }
@@ -124,7 +357,23 @@ function refreshToolbar() {
 }
 
 document.addEventListener('selectionchange', () => {
-  if (document.activeElement === editorEl) refreshToolbar();
+  if (document.activeElement === editorEl) {
+    refreshToolbar();
+    // 编辑器重新被聚焦：浏览器会重新显示原生选区高亮，
+    // 清除 AI 自定义高亮避免视觉重复
+    clearAiSelectionHighlight();
+  }
+  // 持续保存编辑器内的非折叠选区到 savedAiRange。
+  // 这样无论用户接下来点击哪里（包括 AI 输入框），
+  // savedAiRange 都保留最后一次有效的编辑器选区，
+  // 彻底解决 mousedown 时机错过导致选区丢失的问题。
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+    const range = sel.getRangeAt(0);
+    if (editorEl.contains(range.commonAncestorContainer)) {
+      savedAiRange = range.cloneRange();
+    }
+  }
 });
 
 /* ---------- 飞书式浮动菜单：选中显示完整菜单，点击显示精简菜单（标题层级） ---------- */
@@ -135,6 +384,11 @@ let pinnedLinkCardUntil = 0;
 let floatMenuRange = null;
 
 editorEl.addEventListener('mouseup', () => {
+  // 格式刷：mouseup 时应用保存的格式到新选区
+  if (paintFormatState && !window.getSelection().isCollapsed) {
+    setTimeout(applyPaintFormat, 10);
+    return;
+  }
   setTimeout(updateTextFloatMenu, 10);
 });
 editorEl.addEventListener('keyup', () => {
@@ -143,6 +397,66 @@ editorEl.addEventListener('keyup', () => {
 editorEl.addEventListener('click', () => {
   setTimeout(updateTextFloatMenu, 10);
 });
+
+/* ---------- 格式刷：复制选区格式 → 应用到目标选区 ---------- */
+let paintFormatState = null; // { bold, italic, underline, strikeThrough, color, fontSize, fontFamily }
+function activatePaintFormat() {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+    toast('请先选中要复制格式的文字');
+    return;
+  }
+  const f = {};
+  try {
+    f.bold = document.queryCommandState('bold');
+    f.italic = document.queryCommandState('italic');
+    f.underline = document.queryCommandState('underline');
+    f.strikeThrough = document.queryCommandState('strikeThrough');
+  } catch (_) {}
+  let node = sel.anchorNode;
+  if (node && node.nodeType === 3) node = node.parentNode;
+  if (node) {
+    const cs = window.getComputedStyle(node);
+    f.color = cs.color;
+    f.fontSize = cs.fontSize;
+    f.fontFamily = cs.fontFamily;
+  }
+  paintFormatState = f;
+  document.body.classList.add('paint-format-mode');
+  const fmBtn = $('paintFormatBtn');
+  if (fmBtn) fmBtn.classList.add('active');
+  const tbBtn = $('paintFormatToolbarBtn');
+  if (tbBtn) tbBtn.classList.add('active');
+  hideFloatMenu();
+  toast('格式刷已激活 · 选中文字应用 · Esc 取消');
+}
+function applyPaintFormat() {
+  if (!paintFormatState) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  const f = paintFormatState;
+  editorEl.focus();
+  try {
+    if (f.bold !== document.queryCommandState('bold')) document.execCommand('bold');
+    if (f.italic !== document.queryCommandState('italic')) document.execCommand('italic');
+    if (f.underline !== document.queryCommandState('underline')) document.execCommand('underline');
+    if (f.strikeThrough !== document.queryCommandState('strikeThrough')) document.execCommand('strikeThrough');
+  } catch (_) {}
+  if (f.color) document.execCommand('foreColor', false, f.color);
+  if (f.fontSize) document.execCommand('fontSize', false, f.fontSize);
+  if (f.fontFamily) document.execCommand('fontName', false, f.fontFamily);
+  markEditorChanged();
+  exitPaintFormat();
+  toast('已应用格式');
+}
+function exitPaintFormat() {
+  paintFormatState = null;
+  document.body.classList.remove('paint-format-mode');
+  const fmBtn = $('paintFormatBtn');
+  if (fmBtn) fmBtn.classList.remove('active');
+  const tbBtn = $('paintFormatToolbarBtn');
+  if (tbBtn) tbBtn.classList.remove('active');
+}
 
 function updateTextFloatMenu() {
   // 如果快速 AI 输入框正在输入，保持浮动菜单现状（防止输入时菜单消失）
@@ -318,6 +632,8 @@ floatMenu.addEventListener('click', (e) => {
       positionCtxMenu(rect.left, rect.bottom + 6, rect.top - 6);
       btn.setAttribute('aria-expanded', 'true');
     }
+  } else if (action === 'paintFormat') {
+    activatePaintFormat();
   } else if (action) handleAction(action);
   refreshFloatMenuState();
 });
@@ -342,7 +658,13 @@ floatMenuImg.addEventListener('click', (e) => {
 
 // 滚动/resize 时隐藏浮动菜单
 editorEl.addEventListener('scroll', hideFloatMenu);
-window.addEventListener('scroll', hideFloatMenu, true);
+// 注意：capture 模式会捕获浮动菜单内部的滚动（如 AI 输入框文字超出框宽时的内部滚动），
+// 必须过滤掉这些来源，否则输入超出框宽就会触发 hideFloatMenu 导致菜单秒消失
+window.addEventListener('scroll', (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest('.float-menu')) return;
+  hideFloatMenu();
+}, true);
 window.addEventListener('resize', () => { hideFloatMenu(); floatMenuImg.hidden = true; });
 // 点击编辑器外隐藏
 document.addEventListener('mousedown', (e) => {
@@ -674,7 +996,12 @@ async function handleCtxAction(action, block, anchor) {
 document.addEventListener('mousedown', (e) => { if (!e.target.closest('.ctx-menu')) hideCtxMenu(); });
 window.addEventListener('scroll', hideCtxMenu, true);
 window.addEventListener('resize', hideCtxMenu);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    hideCtxMenu();
+    if (paintFormatState) { exitPaintFormat(); toast('已取消格式刷'); }
+  }
+});
 
 function openEditorLink(anchor) {
   if (!anchor || !anchor.href) return;
@@ -743,11 +1070,17 @@ async function saveCurrent(opts) {
   const title = docTitleEl.value.trim() || '无标题';
   const content = editor.getHTML();
   try {
-    await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
+    const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
     currentDoc.title = title;
     currentDoc.content = content;
-    const now = Date.now();
+    const now = (res && res.updated_at) || Date.now();
     currentDoc.updated_at = now;
+    if (res && typeof res.version === 'number') {
+      currentDoc.version = res.version;
+      // 自己保存成功后，dismissedVersion 不再适用，重置
+      dismissedVersion = 0;
+      hideVersionBanner();
+    }
     saveStateEl.textContent = '已保存 ' + timeStr();
     updateDocumentTitle(title);
     // 更新列表中该项的标题和时间（不重新拉列表，避免抖动）
@@ -800,6 +1133,10 @@ function isDesktopMode() {
   return !!(window.desktop && window.desktop.isDesktop);
 }
 function handleAuthFailure() {
+  // 多端同步轮询停掉
+  stopVersionPolling();
+  stopShareStatsPolling();
+  hideVersionBanner();
   // 桌面模式：本地认证不应跳登录页，显示错误即可
   if (isDesktopMode()) {
     document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;color:#c0392b;font-family:sans-serif;padding:24px;text-align:center">' +
@@ -810,8 +1147,9 @@ function handleAuthFailure() {
   }
   window.location.href = '/login.html';
 }
-async function api(url, method, body) {
+async function api(url, method, body, opts = {}) {
   const opt = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
+  if (opts.signal) opt.signal = opts.signal;
   if (body !== undefined) opt.body = JSON.stringify(body);
   const r = await fetch(url, opt);
   if (r.status === 401) {
@@ -821,9 +1159,27 @@ async function api(url, method, body) {
   if (!r.ok) {
     let errBody = null;
     try { errBody = await r.json(); } catch (e) {}
-    throw new Error((errBody && errBody.error) || ('HTTP ' + r.status));
+    // 常见英文错误翻译成中文（避免移动端 toast 看不懂）
+    const raw = (errBody && errBody.error) || ('HTTP ' + r.status);
+    const cn = translateApiError(raw);
+    throw new Error(cn);
   }
   return r.json();
+}
+
+// 将常见英文 API 错误翻译为中文
+function translateApiError(msg) {
+  if (!msg) return msg;
+  const map = {
+    'unauthorized': '未登录或登录已过期',
+    'not found': '未找到该资源',
+    'invalid url': '链接格式不正确',
+    'forbidden': '没有权限',
+  };
+  if (map[msg]) return map[msg];
+  // 含 "not found" 的也翻译
+  if (/not found/i.test(msg)) return msg.replace(/not found/i, '未找到');
+  return msg;
 }
 
 /* ---------- 文档列表 + 文件夹 ---------- */
@@ -1103,13 +1459,17 @@ async function newDocInFolder(folderId) {
     expandedFolders.add(folderId);
     persistExpanded();
     await loadSidebar();
-    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId };
+    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId, version: 1 };
     docTitleEl.value = '';
     editor.clear();
     saveStateEl.textContent = '新文档';
     docTitleEl.focus();
     updateDocumentTitle('无标题');
     toast('已新建文档');
+    dismissedVersion = 0;
+    hideVersionBanner();
+    startVersionPolling();
+    startShareStatsPolling();
   } catch (e) { toast('新建失败：' + (e.message || e)); }
   finally { switching = false; }
 }
@@ -1241,7 +1601,7 @@ async function pasteDocToFolder(folderId) {
 }
 
 async function deleteFolder(folder) {
-  if (!confirm('删除文件夹「' + folder.name + '」？里面的文档会移到「未分类」。')) return;
+  if (!await showConfirm({ title: '删除文件夹', desc: '删除文件夹「' + folder.name + '」？里面的文档会移到「未分类」。', confirmText: '删除', danger: true })) return;
   try {
     await api('/api/folders/' + folder.id, 'DELETE');
     expandedFolders.delete(folder.id);
@@ -1252,7 +1612,11 @@ async function deleteFolder(folder) {
 }
 
 async function openDoc(id) {
-  if (currentDoc && currentDoc.id === id) return;
+  if (currentDoc && currentDoc.id === id) {
+    // 已是当前文档：仅确保移动端切到编辑器视图
+    enterMobileEditor();
+    return;
+  }
   switching = true;
   try {
     if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveCurrent({ reorder: false }); }
@@ -1268,6 +1632,18 @@ async function openDoc(id) {
     refreshToolbar();
     updateOutline(true);
     updateDocumentTitle(doc.title);
+    // 多端同步：开启版本号轮询
+    dismissedVersion = 0;
+    hideVersionBanner();
+    startVersionPolling();
+    startShareStatsPolling();
+    hideDashboard();
+    enterMobileEditor();
+    // 若 AI 面板已打开，切换文档时刷新对话历史与上下文提示
+    if (aiPanel && !aiPanel.hidden) {
+      refreshAiPanelContext();
+      loadAiChatHistory(doc.id);
+    }
   } catch (e) { toast('打开失败：' + (e.message || e)); }
   finally { switching = false; }
 }
@@ -1278,7 +1654,7 @@ async function newDoc() {
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '' });
     await loadSidebar();
-    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now() };
+    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), version: 1 };
     docTitleEl.value = '';
     editor.clear();
     Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
@@ -1288,6 +1664,12 @@ async function newDoc() {
     docTitleEl.focus();
     updateDocumentTitle('无标题');
     toast('已新建文档');
+    dismissedVersion = 0;
+    hideVersionBanner();
+    startVersionPolling();
+    startShareStatsPolling();
+    hideDashboard();
+    enterMobileEditor();
   } catch (e) { toast('新建失败：' + (e.message || e)); }
   finally { switching = false; }
 }
@@ -1296,7 +1678,7 @@ $('newDocBtn').addEventListener('click', newDoc);
 $('newFolderBtn').addEventListener('click', createFolder);
 
 async function confirmDelete(doc) {
-  if (!confirm('删除「' + (doc.title || '无标题') + '」？此操作不可恢复。')) return;
+  if (!await showConfirm({ title: '删除文档', desc: '删除「' + (doc.title || '无标题') + '」？此操作不可恢复。', confirmText: '删除', danger: true })) return;
   try {
     await api('/api/documents/' + doc.id, 'DELETE');
     if (currentDoc && currentDoc.id === doc.id) {
@@ -1378,25 +1760,34 @@ function toggleTheme() {
 }
 $('themeToggle').addEventListener('click', toggleTheme);
 
-/* ---------- 移动端侧边栏抽屉 ---------- */
+/* ---------- 移动端主页/编辑器双层架构 ---------- */
 const sidebarEl = $('sidebar');
-const mobileBackdrop = $('mobileBackdrop');
-function openSidebar() {
-  sidebarEl.classList.add('open');
-  mobileBackdrop.classList.add('show');
+const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
+function isMobile() { return MOBILE_MQ.matches; }
+
+// 进入编辑器视图（移动端）
+function enterMobileEditor() {
+  if (!isMobile()) return;
+  document.body.classList.add('mobile-editor-active');
+  closeMobileSheet();
+  hideVersionBanner();
 }
-function closeSidebar() {
-  sidebarEl.classList.remove('open');
-  mobileBackdrop.classList.remove('show');
-}
-$('mobileMenuBtn').addEventListener('click', openSidebar);
-mobileBackdrop.addEventListener('click', closeSidebar);
-// 选择文档后自动收起侧边栏（窄屏下）
-docListEl.addEventListener('click', (e) => {
-  if (window.innerWidth <= 760 && e.target.closest('.doc-item') && !e.target.classList.contains('doc-del')) {
-    closeSidebar();
+// 返回主页视图（移动端）：保存当前文档，切回主页
+async function mobileBack() {
+  if (!isMobile()) return;
+  // 先保存未保存的草稿，避免丢失
+  if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  if (currentDoc) {
+    try { await saveCurrent({ reorder: false }); } catch (e) { /* 忽略保存失败，仍允许返回 */ }
   }
-});
+  document.body.classList.remove('mobile-editor-active');
+  closeMobileSheet();
+  // 主页底部导航高亮"文档"
+  document.querySelectorAll('.mbn-item').forEach(el => el.classList.remove('active'));
+  const docsTab = document.getElementById('mbnDocs');
+  if (docsTab) docsTab.classList.add('active');
+}
+$('mobileMenuBtn').addEventListener('click', mobileBack);
 
 /* ---------- 导入 HTML 文件 ---------- */
 importInput.addEventListener('change', () => {
@@ -1797,6 +2188,273 @@ if (aiModal) {
   });
 }
 
+/* ---------- AI 对话面板（右侧丝滑滑入） ---------- */
+const aiPanel = $('aiPanel');
+const aiPanelOverlay = $('aiPanelOverlay');
+const aiPanelClose = $('aiPanelClose');
+const aiPanelContext = $('aiPanelContext');
+const aiPanelMessages = $('aiPanelMessages');
+const aiPanelInput = $('aiPanelInput');
+const aiPanelSend = $('aiPanelSend');
+const aiQuickTags = $('aiQuickTags');
+const aiChatBtn = $('aiChatBtn');
+let aiPanelHistory = []; // 当前文档对话历史（按文档保留）
+let aiPanelThinking = false;
+let aiPanelLoadedDocId = null;
+
+function toggleAiPanel() {
+  if (!aiPanel) return;
+  if (aiPanel.hidden) openAiPanel(); else closeAiPanel();
+}
+
+function openAiPanel() {
+  if (!aiPanel) return;
+  aiPanel.hidden = false;
+  aiPanelOverlay.hidden = false;
+  // 双 RAF：先显示出来再触发动画类，过渡才生效
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    aiPanel.classList.add('show');
+    aiPanelOverlay.classList.add('show');
+  }));
+  if (aiChatBtn) aiChatBtn.classList.add('active');
+  refreshAiPanelContext();
+  // 拉取当前文档历史
+  const docId = currentDoc && currentDoc.id;
+  if (docId && docId !== aiPanelLoadedDocId) {
+    loadAiChatHistory(docId);
+  } else if (!docId) {
+    aiPanelHistory = [];
+    aiPanelLoadedDocId = null;
+    renderAiPanelMessages();
+    refreshAiPanelContext();
+  }
+  setTimeout(() => { if (aiPanelInput) aiPanelInput.focus(); }, 280);
+}
+
+function closeAiPanel() {
+  if (!aiPanel) return;
+  aiPanel.classList.remove('show');
+  aiPanelOverlay.classList.remove('show');
+  if (aiChatBtn) aiChatBtn.classList.remove('active');
+  // 等过渡结束再 hidden，避免硬切
+  setTimeout(() => {
+    if (!aiPanel.classList.contains('show')) { aiPanel.hidden = true; aiPanelOverlay.hidden = true; }
+  }, 280);
+}
+
+function refreshAiPanelContext() {
+  if (!aiPanelContext) return;
+  if (currentDoc && currentDoc.id) {
+    const t = (currentDoc.title || '无标题').trim();
+    aiPanelContext.textContent = '当前文档：' + (t.length > 22 ? t.slice(0, 22) + '…' : t);
+  } else {
+    aiPanelContext.textContent = '未选择文档';
+  }
+}
+
+async function loadAiChatHistory(docId) {
+  try {
+    const rows = await api('/api/documents/' + docId + '/chat-history', 'GET');
+    aiPanelHistory = rows.map(r => ({ role: r.role, content: r.content, created_at: r.created_at }));
+    aiPanelLoadedDocId = docId;
+    renderAiPanelMessages();
+    refreshAiPanelContext();
+    // 滚到底部
+    if (aiPanelMessages) aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+  } catch (e) {
+    // 表尚未建好或网络异常时静默：用户仍可发送（首条会触发后端建表）
+    aiPanelHistory = [];
+    aiPanelLoadedDocId = docId;
+    renderAiPanelMessages();
+  }
+}
+
+function renderAiPanelMessages() {
+  if (!aiPanelMessages) return;
+  aiPanelMessages.innerHTML = '';
+  if (aiPanelHistory.length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'ai-msg-hint';
+    hint.textContent = currentDoc ? '问我任何关于本文的问题，或试试下面的快捷指令。' : '请先选择一个文档，再开始对话。';
+    aiPanelMessages.appendChild(hint);
+    return;
+  }
+  for (const m of aiPanelHistory) {
+    aiPanelMessages.appendChild(buildAiMessageEl(m.role, m.content));
+  }
+}
+
+function buildAiMessageEl(role, content) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ai-msg ' + (role === 'user' ? 'ai-msg-user' : 'ai-msg-ai');
+  wrap.textContent = content;
+  if (role === 'assistant') {
+    const actions = document.createElement('div');
+    actions.className = 'ai-msg-actions';
+    const insertBtn = document.createElement('button');
+    insertBtn.className = 'ai-msg-action';
+    insertBtn.type = 'button';
+    insertBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>插入到文档';
+    insertBtn.addEventListener('click', () => insertAiMessageToEditor(content));
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'ai-msg-action';
+    copyBtn.type = 'button';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制';
+    copyBtn.addEventListener('click', () => copyAiMessage(content, copyBtn));
+    actions.appendChild(insertBtn);
+    actions.appendChild(copyBtn);
+    wrap.appendChild(actions);
+  }
+  return wrap;
+}
+
+function appendAiMessage(role, content) {
+  aiPanelHistory.push({ role, content });
+  if (aiPanelMessages) {
+    // 移除空状态提示
+    const hint = aiPanelMessages.querySelector('.ai-msg-hint');
+    if (hint) hint.remove();
+    aiPanelMessages.appendChild(buildAiMessageEl(role, content));
+    aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+  }
+}
+
+function buildTypingEl() {
+  const el = document.createElement('div');
+  el.className = 'ai-msg ai-msg-ai ai-msg-typing-wrap';
+  const typing = document.createElement('div');
+  typing.className = 'ai-msg-typing';
+  typing.innerHTML = '<span></span><span></span><span></span>';
+  el.appendChild(typing);
+  return el;
+}
+
+function insertAiMessageToEditor(text) {
+  if (!text) return;
+  editorEl.focus();
+  // 恢复上次选区，没有就追加到光标位置
+  document.execCommand('insertHTML', false, escapeHtml(text).replace(/\n/g, '<br>'));
+  editor._afterChange && editor._afterChange();
+  toast('已插入到文档');
+}
+
+function copyAiMessage(text, btn) {
+  if (!text) return;
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(fallback);
+  } else {
+    fallback();
+  }
+  if (btn) {
+    const old = btn.innerHTML;
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>已复制';
+    setTimeout(() => { btn.innerHTML = old; }, 1500);
+  } else {
+    toast('已复制');
+  }
+}
+
+async function sendAiMessage() {
+  if (!aiPanelInput || aiPanelThinking) return;
+  const text = aiPanelInput.value.trim();
+  if (!text) return;
+  if (!currentDoc || !currentDoc.id) {
+    toast('请先选择一个文档');
+    return;
+  }
+  // 在加入新消息前快照历史，发给后端（避免把当前消息重复带进 history）
+  const historySnapshot = aiPanelHistory.slice(-20).map(m => ({ role: m.role, content: m.content }));
+  // 渲染用户消息
+  appendAiMessage('user', text);
+  aiPanelInput.value = '';
+  autoGrowAiInput();
+  // 显示 typing
+  aiPanelThinking = true;
+  if (aiPanelSend) aiPanelSend.disabled = true;
+  if (aiPanelMessages) {
+    const typingEl = buildTypingEl();
+    aiPanelMessages.appendChild(typingEl);
+    aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+  }
+  try {
+    const data = await api('/api/ai/chat', 'POST', {
+      docId: currentDoc.id,
+      message: text,
+      history: historySnapshot
+    });
+    // 移除 typing
+    if (aiPanelMessages) {
+      const t = aiPanelMessages.querySelector('.ai-msg-typing-wrap');
+      if (t) t.remove();
+    }
+    appendAiMessage('assistant', data.reply || '');
+    if (aiPanelMessages) aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+  } catch (e) {
+    if (aiPanelMessages) {
+      const t = aiPanelMessages.querySelector('.ai-msg-typing-wrap');
+      if (t) t.remove();
+    }
+    appendAiMessage('assistant', '（请求失败：' + (e.message || e) + '）');
+    toast('AI 请求失败');
+  } finally {
+    aiPanelThinking = false;
+    if (aiPanelSend) aiPanelSend.disabled = false;
+    if (aiPanelInput) aiPanelInput.focus();
+  }
+}
+
+function autoGrowAiInput() {
+  if (!aiPanelInput) return;
+  aiPanelInput.style.height = 'auto';
+  aiPanelInput.style.height = Math.min(aiPanelInput.scrollHeight, 120) + 'px';
+}
+
+if (aiPanelClose) aiPanelClose.addEventListener('click', closeAiPanel);
+// 面板常驻：点击外部不再关闭，用户可继续在文档里编辑、选区、选插入位置
+// overlay 已设为 pointer-events:none，不会拦截文档点击
+if (aiPanelSend) aiPanelSend.addEventListener('click', sendAiMessage);
+if (aiPanelInput) {
+  aiPanelInput.addEventListener('input', autoGrowAiInput);
+  aiPanelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendAiMessage();
+    }
+  });
+}
+if (aiQuickTags) {
+  aiQuickTags.addEventListener('click', (e) => {
+    const tag = e.target.closest('.ai-tag');
+    if (!tag) return;
+    const prompt = tag.getAttribute('data-prompt') || '';
+    if (!aiPanelInput) return;
+    // 选区有内容时附上选区
+    const sel = window.getSelection();
+    const selText = sel && sel.toString ? sel.toString().trim() : '';
+    if (selText && editorEl.contains(sel.anchorNode)) {
+      aiPanelInput.value = prompt + '\n\n选区：\n' + selText;
+    } else {
+      aiPanelInput.value = prompt;
+    }
+    autoGrowAiInput();
+    aiPanelInput.focus();
+    // 光标放到末尾
+    const len = aiPanelInput.value.length;
+    aiPanelInput.setSelectionRange(len, len);
+  });
+}
+
+
 function getDocumentContextText() {
   return (docTitleEl.value.trim() + '\n\n' + (editorEl.innerText || '')).trim().slice(0, 24000);
 }
@@ -1816,6 +2474,23 @@ function restoreAiSelection() {
   sel.removeAllRanges();
   sel.addRange(savedAiRange);
   return true;
+}
+
+/* AI 选区视觉保持：用 CSS Custom Highlight API 给 savedAiRange 加半透明高亮，
+   这样点击 AI 输入框后虽然浏览器原生选区高亮消失，但视觉上仍能看到选区范围。
+   不破坏 DOM，不影响编辑器内容。 */
+function setAiSelectionHighlight(range) {
+  if (!window.Highlight || !CSS || !CSS.highlights) return;
+  if (!range) { CSS.highlights.delete('ai-selection'); return; }
+  try {
+    const hl = new Highlight(range);
+    CSS.highlights.set('ai-selection', hl);
+  } catch (_) {}
+}
+function clearAiSelectionHighlight() {
+  if (window.Highlight && CSS && CSS.highlights) {
+    CSS.highlights.delete('ai-selection');
+  }
 }
 
 function textToEditorHtml(text) {
@@ -1869,7 +2544,7 @@ async function runAiLayout(preset) {
   preview.classList.add('empty');
   preview.textContent = '正在排版，稍等一下…';
   try {
-    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset });
+    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset, docId: currentDoc && currentDoc.id });
     pendingAiLayoutHtml = res.html || '';
     preview.classList.remove('empty');
     preview.innerHTML = pendingAiLayoutHtml || '';
@@ -1945,7 +2620,7 @@ async function runAiRewrite(selectedText) {
   // 重新生成预览时，应用按钮先回到弱色，生成成功后再变强调色
   applyBtn.classList.remove('primary');
   try {
-    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText() });
+    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id });
     pendingAiRewriteText = res.replacement || '';
     preview.classList.remove('empty');
     preview.innerHTML = textToEditorHtml(pendingAiRewriteText);
@@ -1985,7 +2660,7 @@ async function applyAiRewriteResult(selectedText) {
   const prevText = applyBtn.textContent;
   applyBtn.textContent = '\u751f\u6210\u4e2d\u2026';
   try {
-    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText() });
+    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id });
     if (!res || !res.replacement) { toast('AI \u672a\u8fd4\u56de\u5185\u5bb9'); return; }
     document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
     markEditorChanged();
@@ -2002,13 +2677,43 @@ async function applyAiRewriteResult(selectedText) {
 
 /* ---------- 快速 AI：浮动菜单内嵌输入框，回车直接改写选区 ---------- */
 const fmAiQuick = $('fmAiQuick');
+const fmAiSubmit = $('fmAiSubmit');
+const fmAiPreview = $('fmAiPreview');
+let aiAbortController = null;
+
+// 提交按钮状态切换
+function setAiSubmitLoading(loading) {
+  if (!fmAiSubmit) return;
+  fmAiSubmit.classList.toggle('loading', !!loading);
+  fmAiSubmit.title = loading ? '停止' : '提交（回车）';
+  const submitIcon = fmAiSubmit.querySelector('.fm-ai-submit-icon');
+  const stopIcon = fmAiSubmit.querySelector('.fm-ai-stop-icon');
+  if (submitIcon) submitIcon.hidden = !!loading;
+  if (stopIcon) stopIcon.hidden = !loading;
+}
+
 if (fmAiQuick) {
-  // 阻止输入框点击事件冒泡到 floatMenu 的隐藏逻辑
-  fmAiQuick.addEventListener('mousedown', (e) => e.stopPropagation());
+  // 关键修复：preventDefault 阻止默认 focus 切换，但显式调用 focus() 仍会改全局选区。
+  // 所以在 focus 前先 saveAiSelection（已由 selectionchange 持续保存），
+  // 同时启用 CSS Custom Highlight 让选区视觉上保持高亮。
+  fmAiQuick.addEventListener('mousedown', (e) => {
+    saveAiSelection(); // 在 focus 改变选区前再保存一次（兜底）
+    e.preventDefault();
+    e.stopPropagation();
+    fmAiQuick.focus();
+    // 启用 AI 选区视觉保持高亮
+    setAiSelectionHighlight(savedAiRange);
+  });
   // 记录输入内容 + 时间戳，用于 1 分钟内恢复
   fmAiQuick.addEventListener('input', () => {
     fmAiQuickLastInput = fmAiQuick.value;
     fmAiQuickLastTime = Date.now();
+    // 任务 6：检测溢出，超出输入框长度时下方显示全文
+    updateAiPreview();
+  });
+  // input 失焦：清除 AI 选区高亮
+  fmAiQuick.addEventListener('blur', () => {
+    clearAiSelectionHighlight();
   });
   fmAiQuick.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -2018,50 +2723,110 @@ if (fmAiQuick) {
       fmAiQuick.value = '';
       fmAiQuickLastInput = '';
       fmAiQuickLastTime = 0;
+      clearAiSelectionHighlight();
+      hideAiPreview();
       fmAiQuick.blur();
       hideFloatMenu();
     }
   });
 }
 
+// 提交/停止按钮：mousedown 阻止 input 失焦，click 触发提交或停止
+if (fmAiSubmit) {
+  fmAiSubmit.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  fmAiSubmit.addEventListener('click', () => {
+    if (aiAbortController) {
+      // 当前在 loading，点击即停止
+      aiAbortController.abort();
+      return;
+    }
+    runQuickAi();
+  });
+}
+
+// 任务 6：输入框溢出时下方显示全文
+function updateAiPreview() {
+  if (!fmAiPreview || !fmAiQuick) return;
+  const value = fmAiQuick.value;
+  if (!value) { hideAiPreview(); return; }
+  // 检测是否溢出：临时 clone 测量，或直接看 scrollWidth
+  const overflowed = fmAiQuick.scrollWidth > fmAiQuick.clientWidth + 1;
+  if (overflowed) {
+    fmAiPreview.textContent = value;
+    fmAiPreview.hidden = false;
+  } else {
+    hideAiPreview();
+  }
+}
+function hideAiPreview() {
+  if (fmAiPreview) { fmAiPreview.hidden = true; fmAiPreview.textContent = ''; }
+}
+
 async function runQuickAi() {
   const instruction = fmAiQuick.value.trim();
   if (!instruction) { toast('请输入指令'); fmAiQuick.focus(); return; }
-  const selectedText = saveAiSelection();
+  // 焦点已移到 input 内时 saveAiSelection 会返回空，
+  // 此时回退到 mousedown 时预先保存的 savedAiRange
+  let selectedText = saveAiSelection();
+  if (!selectedText && savedAiRange) {
+    selectedText = savedAiRange.toString();
+  }
   if (!selectedText) { toast('请先选中要改写的文字'); return; }
-  // 保存原文用于撤销气泡
-  const undoRange = savedAiRange.cloneRange();
-  const undoFrag = undoRange.cloneContents();
-  const undoHolder = document.createElement('div');
-  undoHolder.appendChild(undoFrag);
-  const originalHtml = undoHolder.innerHTML;
+
+  // 创建 AbortController 用于停止
+  aiAbortController = new AbortController();
+  setAiSubmitLoading(true);
 
   // 调用期间不清空输入框（失败可重试，成功后才清空）
-  fmAiQuick.placeholder = '✨ AI 思考中…';
+  fmAiQuick.placeholder = 'AI 思考中…';
   fmAiQuick.disabled = true;
   try {
     const res = await api('/api/ai/rewrite-selection', 'POST', {
       selectedText,
       instruction,
-      contextText: getDocumentContextText()
-    });
+      contextText: getDocumentContextText(),
+      docId: currentDoc && currentDoc.id
+    }, { signal: aiAbortController.signal });
     if (!res || !res.replacement) { toast('AI 未返回内容'); return; }
     // 恢复选区
     restoreAiSelection();
-    // 直接替换选区（用 execCommand 留下 undo 记录）
-    document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
+    // 用 mark 包裹改写内容插入，便于呼吸高亮动画；
+    // 同时 execCommand insertHTML 会进入原生 undo 栈，用户按 Ctrl+Z 可直接撤销。
+    const html = '<mark class="ai-flash">' + textToEditorHtml(res.replacement) + '</mark>';
+    document.execCommand('insertHTML', false, html);
     markEditorChanged();
+    // 任务 4：呼吸高亮动画结束后 unwrap mark，避免影响排版
+    setTimeout(() => {
+      document.querySelectorAll('mark.ai-flash').forEach(m => {
+        const p = m.parentNode;
+        if (!p) return;
+        while (m.firstChild) p.insertBefore(m.firstChild, m);
+        p.removeChild(m);
+      });
+    }, 1700);
     // 成功：清空输入和保留状态，下次重新开始
     fmAiQuick.value = '';
     fmAiQuickLastInput = '';
     fmAiQuickLastTime = 0;
+    hideAiPreview();
     hideFloatMenu();
-    showAiUndoBubble(originalHtml);
+    clearAiSelectionHighlight();
+    // 任务 5：撤销走原生 Ctrl+Z，不再显示撤销气泡
+    toast('已改写 · 按 Ctrl+Z 撤销');
   } catch (e) {
-    toast('AI 失败：' + (e.message || e));
+    if (e && e.name === 'AbortError') {
+      toast('已停止');
+    } else {
+      toast('AI 失败：' + (e.message || e));
+    }
   } finally {
+    aiAbortController = null;
+    setAiSubmitLoading(false);
     fmAiQuick.disabled = false;
-    fmAiQuick.placeholder = '✨ 改写成...';
+    fmAiQuick.placeholder = '改写成...';
   }
 }
 
@@ -2110,7 +2875,8 @@ let shortcutHelpEl = null;
 const shortcutGroups = [
   ['AI', [
     ['Ctrl/\u2318 + Alt + A', '\u6574\u7bc7 AI \u6392\u7248'],
-    ['Ctrl/\u2318 + Alt + I', '\u9009\u533a AI \u6539\u5199/\u6392\u7248']
+    ['Ctrl/\u2318 + Alt + I', '\u9009\u533a AI \u6539\u5199/\u6392\u7248'],
+    ['Ctrl/\u2318 + J', 'AI \u5bf9\u8bdd\u9762\u677f']
   ]],
   ['文档', [
     ['Ctrl/⌘ + N', '新建文章'],
@@ -2125,7 +2891,8 @@ const shortcutGroups = [
     ['Ctrl/⌘ + U', '下划线'],
     ['Ctrl/⌘ + Shift + X', '删除线'],
     ['Ctrl/⌘ + K', '插入链接'],
-    ['Ctrl/⌘ + \\', '清除格式']
+    ['Ctrl/⌘ + \\', '清除格式'],
+    ['Ctrl/⌘ + Shift + P', '格式刷']
   ]],
   ['段落', [
     ['Ctrl/⌘ + Alt + 0', '正文'],
@@ -2195,6 +2962,8 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'h' && e.shiftKey && !e.altKey) { e.preventDefault(); exportHTML(); }
   else if (k === 'd' && e.shiftKey && !e.altKey) { e.preventDefault(); exportMarkdown(); }
   else if (k === 'w' && e.shiftKey && !e.altKey) { e.preventDefault(); exportWord(); }
+  else if (k === 'p' && e.shiftKey && !e.altKey) { e.preventDefault(); activatePaintFormat(); }
+  else if (k === 'j' && !e.altKey && !e.shiftKey) { e.preventDefault(); toggleAiPanel(); }
 });
 
 // 离开前保存
@@ -2220,11 +2989,18 @@ async function init() {
     currentUser = meBody.user;
     updateUserBadge();
     updateShareButton();
+    updateMobileChrome();
+    // 鉴权通过，显示正文（移除 pre-auth 隐藏类）
+    document.body.classList.remove('pre-auth');
 
     const docs = await api('/api/documents');
-    if (docs.length) {
+    if (isMobile()) {
+      // 移动端：默认停在主页，不自动打开文档
       await loadSidebar();
-      await openDoc(docs[0].id);
+    } else if (docs.length) {
+      // 桌面端：加载侧边栏，进入主页仪表盘（不自动打开最近文档）
+      await loadSidebar();
+      showDashboard();
     } else {
       // 首次使用，创建欢迎文档
       const res = await api('/api/documents', 'POST', {
@@ -2241,11 +3017,117 @@ async function init() {
   }
 }
 
+/* ---------- 桌面端主页仪表盘 ---------- */
+const dashboardEl = $('dashboard');
+
+function showDashboard() {
+  if (!dashboardEl) return;
+  renderDashboard();
+  dashboardEl.hidden = false;
+  document.body.classList.add('dashboard-active');
+  updateDocumentTitle('主页');
+}
+
+function hideDashboard() {
+  if (!dashboardEl) return;
+  dashboardEl.hidden = true;
+  document.body.classList.remove('dashboard-active');
+}
+
+// 渲染仪表盘内容（统计 + 最近文档）
+async function renderDashboard() {
+  const dashUserName = $('dashUserName');
+  if (dashUserName && currentUser) {
+    dashUserName.textContent = currentUser.nickname || currentUser.username || '朋友';
+  }
+  let docs = [];
+  try { docs = await api('/api/documents'); }
+  catch (e) { /* 静默：仪表盘可重试 */ }
+
+  const total = docs.length;
+  const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+  const weekUpdated = docs.filter(d => (d.updated_at || 0) > weekAgo).length;
+  let totalWords = 0;
+  docs.forEach(d => {
+    const text = (d.content || '').replace(/<[^>]+>/g, '');
+    totalWords += text.length;
+  });
+  $('statTotal').textContent = total;
+  $('statWeek').textContent = weekUpdated;
+  $('statWords').textContent = totalWords > 9999 ? (totalWords / 10000).toFixed(1) + '万' : totalWords;
+
+  const dashDocs = $('dashDocs');
+  if (!dashDocs) return;
+  const recent = docs.slice().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).slice(0, 6);
+  if (!recent.length) {
+    dashDocs.innerHTML = '<div class="dash-empty">还没有文档，点击右上角"新建文档"开始</div>';
+    return;
+  }
+  dashDocs.innerHTML = recent.map(d => {
+    const text = (d.content || '').replace(/<[^>]+>/g, '').trim();
+    const snippet = text.slice(0, 80) || '空文档';
+    const dateStr = formatDateShort(new Date(d.updated_at || Date.now()));
+    return '<button class="dash-doc" data-id="' + d.id + '">' +
+      '<div class="dash-doc-title">' + escapeHtml(d.title || '无标题') + '</div>' +
+      '<div class="dash-doc-snippet">' + escapeHtml(snippet) + '</div>' +
+      '<div class="dash-doc-meta">' + dateStr + '</div>' +
+    '</button>';
+  }).join('');
+  dashDocs.querySelectorAll('.dash-doc').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.getAttribute('data-id'));
+      if (id) openDoc(id);
+    });
+  });
+}
+
+function formatDateShort(d) {
+  const now = new Date();
+  const diff = now - d;
+  if (diff < 60 * 1000) return '刚刚';
+  if (diff < 60 * 60 * 1000) return Math.floor(diff / 60000) + ' 分钟前';
+  if (diff < 24 * 60 * 60 * 1000) return Math.floor(diff / 3600000) + ' 小时前';
+  if (diff < 7 * 24 * 60 * 60 * 1000) return Math.floor(diff / 86400000) + ' 天前';
+  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+// 仪表盘按钮
+const dashNewBtn = $('dashNewBtn');
+if (dashNewBtn) dashNewBtn.addEventListener('click', () => { newDoc(); });
+const dashImportBtn = $('dashImportBtn');
+if (dashImportBtn) dashImportBtn.addEventListener('click', () => { handleAction('importHtml'); });
+
+// 点击左上角品牌 logo：返回仪表盘（仅桌面端，且当前在编辑文档时）
+const brandLockup = document.querySelector('.brand-lockup');
+if (brandLockup) {
+  brandLockup.style.cursor = 'pointer';
+  brandLockup.title = '返回主页';
+  brandLockup.addEventListener('click', async () => {
+    if (isMobile() || !currentDoc) return;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    try { await saveCurrent({ reorder: false }); } catch (e) { /* 保存失败仍允许返回 */ }
+    currentDoc = null;
+    docTitleEl.value = '';
+    editor.clear();
+    if (saveStateEl) saveStateEl.textContent = '';
+    hideVersionBanner();
+    stopVersionPolling();
+  stopShareStatsPolling();
+    showDashboard();
+  });
+}
+
 function updateUserBadge() {
   const badge = $('userBadge');
   if (!badge || !currentUser) return;
   badge.querySelector('.user-name').textContent = currentUser.nickname || currentUser.username;
   badge.style.display = '';
+  // 移动端"我的"标签也展示昵称
+  const meTab = document.getElementById('mbnMe');
+  if (meTab) {
+    const label = meTab.querySelector('span');
+    if (label) label.textContent = (currentUser.nickname || currentUser.username || '').slice(0, 6) || '我的';
+  }
 }
 
 // 设置入口仅管理员可见；分享入口对管理员及被授权用户可见
@@ -2254,10 +3136,296 @@ function updateShareButton() {
   if (shareBtn) shareBtn.style.display = (currentUser && (currentUser.isAdmin || currentUser.can_share)) ? '' : 'none';
   const settingsBtn = $('settingsBtn');
   if (settingsBtn) settingsBtn.style.display = (currentUser && currentUser.isAdmin) ? '' : 'none';
+  // 移动端分享按钮和设置入口同步
+  const mobileShareBtn = document.getElementById('mobileShareBtn');
+  if (mobileShareBtn) {
+    mobileShareBtn.hidden = !(currentUser && (currentUser.isAdmin || currentUser.can_share));
+  }
+  const mbnSettings = document.getElementById('mbnSettings');
+  if (mbnSettings) mbnSettings.hidden = !(currentUser && currentUser.isAdmin);
+}
+
+// 初始化移动端 chrome（底部导航、迷你工具栏）
+function updateMobileChrome() {
+  // 迷你工具栏按钮：转发到既有 handleAction / editor.exec
+  const mobileToolbar = document.getElementById('mobileToolbar');
+  if (mobileToolbar && !mobileToolbar.dataset.bound) {
+    mobileToolbar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.mt-btn');
+      if (!btn) return;
+      const cmd = btn.getAttribute('data-cmd');
+      const action = btn.getAttribute('data-action');
+      if (cmd) { editor.exec(cmd); refreshToolbar(); }
+      else if (action === 'share') { openShareModal(); }
+      else if (action) {
+        handleAction(action);
+        // 编辑动作执行后立即关闭底部抽屉
+        closeMobileSheet();
+      }
+    });
+    mobileToolbar.dataset.bound = '1';
+  }
+
+  // "更多"按钮：打开底部抽屉
+  const mobileMoreBtn = document.getElementById('mobileMoreBtn');
+  if (mobileMoreBtn && !mobileMoreBtn.dataset.bound) {
+    mobileMoreBtn.addEventListener('click', openMobileSheet);
+    mobileMoreBtn.dataset.bound = '1';
+  }
+
+  // 关闭抽屉
+  const sheetOverlay = document.getElementById('sheetOverlay');
+  const mobileSheetClose = document.getElementById('mobileSheetClose');
+  if (sheetOverlay && !sheetOverlay.dataset.bound) {
+    sheetOverlay.addEventListener('click', closeMobileSheet);
+    sheetOverlay.dataset.bound = '1';
+  }
+  if (mobileSheetClose && !mobileSheetClose.dataset.bound) {
+    mobileSheetClose.addEventListener('click', closeMobileSheet);
+    mobileSheetClose.dataset.bound = '1';
+  }
+
+  // 移动端底部导航
+  const mbnSearch = document.getElementById('mbnSearch');
+  if (mbnSearch && !mbnSearch.dataset.bound) {
+    mbnSearch.addEventListener('click', () => {
+      const si = document.getElementById('searchInput');
+      if (si) { si.focus(); si.scrollIntoView({ block: 'center' }); }
+      setActiveMbn(mbnSearch);
+    });
+    mbnSearch.dataset.bound = '1';
+  }
+  const mbnNewDoc = document.getElementById('mbnNewDoc');
+  if (mbnNewDoc && !mbnNewDoc.dataset.bound) {
+    mbnNewDoc.addEventListener('click', () => { newDoc(); });
+    mbnNewDoc.dataset.bound = '1';
+  }
+  const mbnTrash = document.getElementById('mbnTrash');
+  if (mbnTrash && !mbnTrash.dataset.bound) {
+    mbnTrash.addEventListener('click', () => { openTrash(); });
+    mbnTrash.dataset.bound = '1';
+  }
+  const mbnSettings = document.getElementById('mbnSettings');
+  if (mbnSettings && !mbnSettings.dataset.bound) {
+    mbnSettings.addEventListener('click', () => { if (currentUser && currentUser.isAdmin) openSettings(); });
+    mbnSettings.dataset.bound = '1';
+  }
+  const mbnMe = document.getElementById('mbnMe');
+  if (mbnMe && !mbnMe.dataset.bound) {
+    mbnMe.addEventListener('click', () => {
+      openMobileSheet('me');
+      setActiveMbn(mbnMe);
+    });
+    mbnMe.dataset.bound = '1';
+  }
+  const mbnDocs = document.getElementById('mbnDocs');
+  if (mbnDocs && !mbnDocs.dataset.bound) {
+    mbnDocs.addEventListener('click', () => {
+      // 已经在主页
+      setActiveMbn(mbnDocs);
+      // 如果在编辑器视图，返回主页
+      if (document.body.classList.contains('mobile-editor-active')) mobileBack();
+    });
+    mbnDocs.dataset.bound = '1';
+  }
+
+  // 移动端分享按钮
+  const mobileShareBtn = document.getElementById('mobileShareBtn');
+  if (mobileShareBtn && !mobileShareBtn.dataset.bound) {
+    mobileShareBtn.addEventListener('click', () => { openShareModal(); });
+    mobileShareBtn.dataset.bound = '1';
+  }
+}
+
+function setActiveMbn(el) {
+  document.querySelectorAll('.mbn-item').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+}
+
+/* ---------- 移动端底部抽屉：折叠工具网格 / 我的菜单 ---------- */
+function openMobileSheet(mode) {
+  mode = mode || 'tools';
+  const sheet = document.getElementById('mobileSheet');
+  const overlay = document.getElementById('sheetOverlay');
+  if (!sheet || !overlay) return;
+  const titleEl = sheet.querySelector('.ms-title');
+  if (titleEl) titleEl.textContent = mode === 'me' ? '我的' : '更多工具';
+  populateMobileSheet(mode);
+  sheet.hidden = false;
+  overlay.hidden = false;
+  // 强制重排，启动过渡
+  void sheet.offsetHeight;
+  sheet.classList.add('show');
+  overlay.classList.add('show');
+  sheet.setAttribute('aria-hidden', 'false');
+}
+
+function closeMobileSheet() {
+  const sheet = document.getElementById('mobileSheet');
+  const overlay = document.getElementById('sheetOverlay');
+  if (!sheet || !overlay) return;
+  sheet.classList.remove('show');
+  overlay.classList.remove('show');
+  sheet.setAttribute('aria-hidden', 'true');
+  // 等过渡完再隐藏
+  setTimeout(() => {
+    if (!sheet.classList.contains('show')) { sheet.hidden = true; overlay.hidden = true; }
+  }, 250);
+}
+
+// 根据模式构建底部抽屉内容
+function populateMobileSheet(mode) {
+  const body = document.getElementById('msBody');
+  if (!body) return;
+  body.innerHTML = ''; // 每次都重建，确保内容与 mode 一致
+  if (mode === 'me') { populateMeSheet(body); return; }
+  populateToolsSheet(body);
+}
+
+// "我的"菜单：用户信息卡 + 主题切换 + 退出登录
+function populateMeSheet(body) {
+  const name = (currentUser && (currentUser.nickname || currentUser.username)) || '未登录';
+  const uname = (currentUser && currentUser.username) || '';
+  const initial = (name || '?').slice(0, 1).toUpperCase();
+  const isAdmin = currentUser && currentUser.isAdmin;
+
+  const card = document.createElement('div');
+  card.className = 'ms-me-card';
+  card.innerHTML =
+    '<div class="ms-me-avatar">' + escapeHtml(initial) + '</div>' +
+    '<div class="ms-me-info">' +
+      '<div class="ms-me-name">' + escapeHtml(name) + (isAdmin ? ' <span class="ms-me-badge">管理员</span>' : '') + '</div>' +
+      (uname ? '<div class="ms-me-username">@' + escapeHtml(uname) + '</div>' : '') +
+    '</div>';
+  body.appendChild(card);
+
+  const section = document.createElement('div');
+  section.className = 'ms-section';
+  const grid = document.createElement('div');
+  grid.className = 'ms-grid';
+
+  // 主题切换
+  const themeBtn = document.createElement('button');
+  themeBtn.className = 'ms-item';
+  themeBtn.innerHTML =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke-linecap="round"/></svg><span>切换主题</span>';
+  themeBtn.addEventListener('click', () => { closeMobileSheet(); toggleTheme(); });
+  grid.appendChild(themeBtn);
+
+  // 退出登录（桌面模式隐藏）
+  if (!window.desktop || !window.desktop.isDesktop) {
+    const logoutBtnEl = document.createElement('button');
+    logoutBtnEl.className = 'ms-item ms-item-danger';
+    logoutBtnEl.innerHTML =
+      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5V3a1 1 0 0 0-1-1H3.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8a1 1 0 0 0 1-1v-1.5M11 5l3 3-3 3M6 8h8"/></svg><span>退出登录</span>';
+    logoutBtnEl.addEventListener('click', async () => {
+      closeMobileSheet();
+      stopVersionPolling();
+  stopShareStatsPolling();
+      hideVersionBanner();
+      try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) {}
+      window.location.href = '/login.html';
+    });
+    grid.appendChild(logoutBtnEl);
+  }
+
+  section.appendChild(grid);
+  body.appendChild(section);
+}
+
+// 构建底部抽屉里的折叠工具网格
+function populateToolsSheet(body) {
+  const fmtIcon = (svg) => svg;
+  const items = [
+    { section: '段落', children: [
+      { label: '标题1', action: () => editor.exec('formatBlock', '<H1>') },
+      { label: '标题2', action: () => editor.exec('formatBlock', '<H2>') },
+      { label: '标题3', action: () => editor.exec('formatBlock', '<H3>') },
+      { label: '正文',  action: () => editor.exec('formatBlock', '<P>') },
+      { label: '引用',  action: () => editor.exec('formatBlock', '<BLOCKQUOTE>'), svg: '<svg viewBox="0 0 24 24"><path d="M5 8c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3H5V8zm9 0c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3h-3V8z" fill="currentColor" stroke="none"/></svg>' },
+      { label: '代码块', action: () => editor.insertCodeBlock(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M5 6l-2 2 2 2M11 6l2 2-2 2"/></svg>' },
+    ]},
+    { section: '格式', children: [
+      { label: '删除线', cmd: 'strikeThrough', text: 'S' },
+      { label: '无序列表', cmd: 'insertUnorderedList', svg: '<svg viewBox="0 0 16 16"><circle cx="3" cy="4" r="1.2" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1.2" fill="currentColor" stroke="none"/><path d="M7 4h7M7 8h7M7 12h7"/></svg>' },
+      { label: '有序列表', cmd: 'insertOrderedList', svg: '<svg viewBox="0 0 16 16"><path d="M2 4h1v1H2zM2 8h1.5l-1 1H2zM2 12h1.5v.5H2.5v.5H2v-1zM7 4h7M7 8h7M7 12h7"/></svg>' },
+      { label: '行内代码', action: () => editor.insertCodeInline(), svg: '<svg viewBox="0 0 16 16"><path d="M5 4L1 8l4 4M11 4l4 4-4 4"/></svg>' },
+      { label: '清除格式', cmd: 'removeFormat', svg: '<svg viewBox="0 0 16 16"><path d="M3 3l10 10M5 4l5 5"/><path d="M8 12h6"/></svg>' },
+    ]},
+    { section: '插入', children: [
+      { label: '表格', action: () => editor.insertTable(3, 3), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M1.5 6h13M1.5 10h13M5.5 2.5v11M10.5 2.5v11"/></svg>' },
+      { label: '分隔线', action: () => editor.insertHR(), svg: '<svg viewBox="0 0 16 16"><path d="M2 8h12"/><circle cx="4" cy="8" r="0.8" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="0.8" fill="currentColor" stroke="none"/><circle cx="12" cy="8" r="0.8" fill="currentColor" stroke="none"/></svg>' },
+      { label: '目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h7M2.5 12h7"/></svg>' },
+      { label: '图片', action: () => importInput.click(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2 11l3-3 3 2 3-3 3 3"/></svg>' },
+    ]},
+    { section: 'AI', children: [
+      { label: 'AI 排版', action: () => openAiLayoutModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/></svg>' },
+      { label: 'AI 改写', action: () => openAiRewriteModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l1.5 4.5L18 10l-4.5 1.5L12 16l-1.5-4.5L6 10l4.5-1.5z"/></svg>' },
+    ]},
+    { section: '字体', children: [
+      { label: '字体', select: 'fontSelect' },
+      { label: '主题', action: () => toggleTheme(), svg: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke-linecap="round"/></svg>' },
+    ]},
+    { section: '文件', children: [
+      { label: '导出 Word', action: () => exportWord(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
+      { label: '导出 HTML', action: () => exportHTML(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
+      { label: '导出 MD', action: () => exportMarkdown(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
+      { label: '导出图片', action: () => openExportImageModal(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2 11l3-3 3 2 3-3 3 3"/></svg>' },
+      { label: '阅读模式', action: () => toggleReadingMode(), svg: '<svg viewBox="0 0 16 16"><path d="M2.5 4.5h5a2 2 0 0 1 2 2v7a1.5 1.5 0 0 0-1.5-1.5h-5.5zM13.5 4.5h-5a2 2 0 0 0-2 2v7a1.5 1.5 0 0 1 1.5-1.5h5.5z"/></svg>' },
+    ]},
+  ];
+
+  body.innerHTML = '';
+  items.forEach(sec => {
+    const section = document.createElement('div');
+    section.className = 'ms-section';
+    const title = document.createElement('div');
+    title.className = 'ms-section-title';
+    title.textContent = sec.section;
+    section.appendChild(title);
+    const grid = document.createElement('div');
+    grid.className = 'ms-grid';
+    sec.children.forEach(item => {
+      const btn = document.createElement('button');
+      btn.className = 'ms-item';
+      if (item.select) {
+        // 字体下拉
+        const sel = document.getElementById(item.select);
+        if (sel) {
+          const clone = sel.cloneNode(true);
+          clone.className = 'ms-select';
+          clone.id = '';
+          clone.value = sel.value;
+          clone.addEventListener('change', () => {
+            sel.value = clone.value;
+            sel.dispatchEvent(new Event('change'));
+          });
+          grid.appendChild(clone);
+          return;
+        }
+      }
+      let iconHtml = '';
+      if (item.svg) iconHtml = item.svg;
+      else if (item.text) iconHtml = '<' + (item.cmd === 'strikeThrough' ? 's' : 'b') + '>' + item.text + '</' + (item.cmd === 'strikeThrough' ? 's' : 'b') + '>';
+      btn.innerHTML = iconHtml + '<span>' + item.label + '</span>';
+      btn.addEventListener('click', () => {
+        closeMobileSheet();
+        if (item.cmd) editor.exec(item.cmd);
+        else if (item.action) item.action();
+        refreshToolbar();
+      });
+      grid.appendChild(btn);
+    });
+    section.appendChild(grid);
+    body.appendChild(section);
+  });
 }
 
 $('logoutBtn').addEventListener('click', async () => {
   if (window.desktop && window.desktop.isDesktop) return; // 桌面模式无退出登录
+  stopVersionPolling();
+  stopShareStatsPolling();
+  hideVersionBanner();
   try {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
   } catch (_) {}
@@ -2514,7 +3682,7 @@ function renderInviteList(list) {
   settingsModalBody.querySelectorAll('.invite-del').forEach(btn => {
     btn.addEventListener('click', async () => {
       const code = btn.getAttribute('data-code');
-      if (!confirm('确定删除邀请码 ' + code + '？')) return;
+      if (!await showConfirm({ title: '删除邀请码', desc: '确定删除邀请码 ' + code + '？', confirmText: '删除', danger: true })) return;
       try {
         await api('/api/invites/' + encodeURIComponent(code), 'DELETE');
         toast('已删除');
@@ -2591,7 +3759,7 @@ async function openTrash() {
     trashModalBody.querySelectorAll('.trash-delete').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.getAttribute('data-id');
-        if (!confirm('永久删除不可恢复，确定？')) return;
+        if (!await showConfirm({ title: '永久删除', desc: '永久删除不可恢复，确定？', confirmText: '永久删除', danger: true })) return;
         try {
           await api('/api/trash/' + id, 'DELETE');
           toast('已永久删除');
@@ -2625,6 +3793,12 @@ const shareModalBody = $('shareModalBody');
 $('shareModalClose').addEventListener('click', () => shareModal.hidden = true);
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.hidden = true; });
 
+// 访客统计小胶囊：点击打开分享弹窗（与分享按钮行为一致，便于查看详情）
+const shareStatsBtnEl = document.getElementById('shareStatsBtn');
+if (shareStatsBtnEl) {
+  shareStatsBtnEl.addEventListener('click', () => openShareModal());
+}
+
 async function openShareModal() {
   if (!currentDoc) { toast('请先选择文档'); return; }
   if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { toast('无分享权限'); return; }
@@ -2651,6 +3825,7 @@ function renderShareForm(share) {
         const res = await api('/api/documents/' + currentDoc.id + '/share', 'POST', { permission: 'view' });
         toast('已开启分享');
         renderShareForm({ permission: res.permission, has_password: res.has_password, expire_at: res.expire_at, url: res.url });
+        refreshShareStats();
       } catch (e) { toast('开启失败：' + (e.message || e)); }
     });
     return;
@@ -2833,11 +4008,12 @@ async function updateShare(patch) {
 
 async function revokeShare() {
   if (!currentDoc) return;
-  if (!confirm('撤销分享？持有链接的人将无法再访问。')) return;
+  if (!await showConfirm({ title: '撤销分享', desc: '撤销分享？持有链接的人将无法再访问。', confirmText: '撤销', danger: true })) return;
   try {
     await api('/api/documents/' + currentDoc.id + '/share', 'DELETE');
     toast('已撤销分享');
     renderShareForm(null);
+    refreshShareStats();
   } catch (e) { toast('撤销失败：' + (e.message || e)); }
 }
 
@@ -2979,6 +4155,32 @@ window.addEventListener('resize', () => {
   if (!docOutline.hidden) positionOutline();
   else updateOutline();
 });
+
+/* 监听 .document-shell 尺寸变化（滚动条出现/消失、侧边栏展开收起等），
+   同步 .doc-outline 位置，避免大纲浮窗偏移到正文区（"目录贴正文"症状根因） */
+(function initOutlineResizeObserver() {
+  const tryInit = () => {
+    const shell = document.querySelector('.document-shell');
+    if (!shell || !window.ResizeObserver) return false;
+    let roTimer = null;
+    const ro = new ResizeObserver(() => {
+      if (roTimer) clearTimeout(roTimer);
+      roTimer = setTimeout(() => {
+        if (!docOutline.hidden) positionOutline();
+      }, 50);
+    });
+    ro.observe(shell);
+    // 侧边栏宽度变化也会影响位置，一并监听
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) ro.observe(sidebar);
+    return true;
+  };
+  if (!tryInit()) {
+    // shell 可能晚于本脚本出现，延迟重试
+    setTimeout(tryInit, 500);
+    setTimeout(tryInit, 1500);
+  }
+})();
 /* ---------- 阅读模式 ---------- */
 const readingExitBtn = $('readingExit');
 let readingMode = false;

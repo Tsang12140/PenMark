@@ -126,7 +126,8 @@ async function getUserById(id) {
 
 /* ---------- 登录 ---------- */
 async function login(username, password, req) {
-  const user = await db.one('SELECT * FROM users WHERE username = $1', [String(username).trim()]);
+  // 用户名大小写不敏感：admin / Admin / ADMIN 都能登录同一个账号
+  const user = await db.one('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [String(username).trim()]);
   if (!user) return { ok: false, error: '账号不存在' };
   if (user.is_banned) return { ok: false, error: '账号已被禁用' };
   if (!verifyPassword(password, user.password_salt, user.password_hash)) {
@@ -160,8 +161,8 @@ async function register(username, nickname, password, inviteCode, req) {
         throw new Error('INVITE_INVALID');
       }
 
-      // 2. 检查用户名唯一
-      const existing = await tx.one('SELECT id FROM users WHERE username = $1', [trimmedUsername]);
+      // 2. 检查用户名唯一（大小写不敏感：Admin / admin 视作同一账号）
+      const existing = await tx.one('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [trimmedUsername]);
       if (existing) throw new Error('USERNAME_EXISTS');
 
       // 3. 创建用户
@@ -189,7 +190,7 @@ async function register(username, nickname, password, inviteCode, req) {
 let _desktopUser = null;
 async function ensureDesktopUser() {
   if (_desktopUser) return _desktopUser;
-  let u = await db.one('SELECT id, username, nickname, is_admin FROM users WHERE username = $1', ['desktop']);
+  let u = await db.one('SELECT id, username, nickname, is_admin FROM users WHERE LOWER(username) = LOWER($1)', ['desktop']);
   if (!u) {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt);

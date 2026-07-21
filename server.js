@@ -12,7 +12,8 @@ const ai = require('./ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const HOST = process.env.PENMARK_HOST || '0.0.0.0';
+// 默认 '::' 让 Node 同时监听 IPv4 与 IPv6（双栈），避免浏览器把 localhost 解析到 ::1 后连不上 IPv4-only 的 0.0.0.0
+const HOST = process.env.PENMARK_HOST || '::';
 
 // Trust proxy（Nginx 反向代理时需要）
 if (process.env.TRUST_PROXY) {
@@ -564,11 +565,22 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
   const now = Date.now();
   const title = String(req.body.title || '').slice(0, 500);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
+  const docId = req.params.id;
+  const userId = req.user.id;
+
+  // 读取旧内容用于版本快照差异计算（不阻塞主保存路径：失败仅 warn）
+  let prevRow = null;
+  try {
+    prevRow = await db.one('SELECT title, content, version FROM documents WHERE id = $1 AND user_id = $2', [docId, userId]);
+  } catch (e) { /* 表不存在或数据库异常时静默忽略 */ }
+
   const info = await db.execute(
-    'UPDATE documents SET title = $1, content = $2, updated_at = $3 WHERE id = $4 AND user_id = $5',
-    [title, content, now, req.params.id, req.user.id]
+    'UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND user_id = $5',
+    [title, content, now, docId, userId]
   );
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  // 回查最新版本号，回传给客户端用于多端同步判断
+  const vRow = await db.one('SELECT version, updated_at FROM documents WHERE id = $1', [docId]);
   if (req.body.folder_id !== undefined) {
     const raw = req.body.folder_id;
     let fid;
@@ -584,9 +596,9 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
         return res.status(400).json({ error: e.message });
       }
     }
-    await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, req.params.id, req.user.id]);
+    await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, docId, userId]);
   }
-  // 异步敏感词检查（不阻塞保存；错误必须被捕获避免 unhandled rejection）
+  // 异步敏感词检查 + 版本快照写入（不阻塞保存；错误必须被捕获避免 unhandled rejection）
   setImmediate(() => {
     (async () => {
       try {
@@ -595,15 +607,57 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
           const contentLower = (String(title || '') + ' ' + String(content || '')).toLowerCase();
           const matched = sensitiveWords.some(w => contentLower.includes(w.word.toLowerCase()));
           if (matched) {
-            await db.execute('UPDATE documents SET flagged = 1, flag_reason = $1 WHERE id = $2 AND flagged = 0', ['命中敏感词', req.params.id]);
+            await db.execute('UPDATE documents SET flagged = 1, flag_reason = $1 WHERE id = $2 AND flagged = 0', ['命中敏感词', docId]);
           }
         }
       } catch (e) {
         console.warn('敏感词检查跳过：', e && e.message);
       }
-    })().catch(e => console.warn('敏感词检查异常：', e && e.message));
+      // 版本快照：与上一版可见字符数差异 > 50 才写
+      try {
+        if (prevRow) {
+          const prevText = stripHtml(prevRow.content || '');
+          const currText = stripHtml(content || '');
+          const charsDiff = Math.abs(currText.length - prevText.length);
+          if (charsDiff > 50) {
+            await db.execute(
+              'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+              [docId, userId, title, content, charsDiff, (vRow && vRow.version) || 1, now]
+            );
+          }
+        }
+      } catch (e) {
+        console.warn('版本快照写入跳过：', e && e.message);
+      }
+    })().catch(e => console.warn('保存后处理异常：', e && e.message));
   });
-  res.json({ updated: info.changes });
+  res.json({ updated: info.changes, version: vRow ? vRow.version : undefined, updated_at: vRow ? vRow.updated_at : now });
+}));
+
+/* 文档版本历史列表（轻量元数据：不返回 content，前端按需请求单条详情） */
+app.get('/api/documents/:id/versions', wrap(async (req, res) => {
+  const rows = await db.query(
+    'SELECT id, title, chars_diff, version, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 200',
+    [req.params.id, req.user.id]
+  );
+  res.json(rows);
+}));
+
+/* 文档版本详情：返回完整内容用于 AI 分析或回看 */
+app.get('/api/documents/:id/versions/:versionId', wrap(async (req, res) => {
+  const row = await db.one(
+    'SELECT id, title, content, chars_diff, version, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
+    [req.params.id, req.user.id, req.params.versionId]
+  );
+  if (!row) return res.status(404).json({ error: 'not found' });
+  res.json(row);
+}));
+
+/* 轻量级版本查询：B 端轮询用，避免每次拉取整个 content */
+app.get('/api/documents/:id/version', wrap(async (req, res) => {
+  const row = await db.one('SELECT version, updated_at, title FROM documents WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  res.json({ version: row.version, updated_at: row.updated_at, title: row.title });
 }));
 
 app.post('/api/documents/:id/move', wrap(async (req, res) => {
@@ -754,6 +808,7 @@ app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
   try {
     const rawHtml = String(req.body && req.body.html || '');
     const preset = String(req.body && req.body.preset || 'share');
+    const docId = req.body && req.body.docId ? Number(req.body.docId) : null;
     if (!rawHtml.trim()) return res.status(400).json({ error: 'empty html' });
     const protectedInput = protectAiAssets(rawHtml);
     if (protectedInput.html.length > Number(process.env.AI_LAYOUT_MAX_INPUT || 120000)) {
@@ -763,6 +818,26 @@ app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
     const restoredHtml = sanitizeAiHtmlFragment(restoreAiAssets(aiHtml, protectedInput.assets));
     const beforeText = normalizeVisibleText(stripHtml(rawHtml));
     const afterText = normalizeVisibleText(stripHtml(restoredHtml));
+    // 异步写一条排版动作日志
+    if (docId) {
+      setImmediate(() => {
+        (async () => {
+          try {
+            await db.execute(
+              'INSERT INTO editor_actions (doc_id, user_id, action_type, before_text, after_text, instruction, meta, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+              [docId, req.user.id, 'layout',
+                beforeText.slice(0, 2000),
+                afterText.slice(0, 2000),
+                preset,
+                JSON.stringify({ source: 'ai-layout' }),
+                Date.now()]
+            );
+          } catch (e) {
+            console.warn('排版动作日志写入跳过：', e && e.message);
+          }
+        })().catch(e => console.warn('排版动作日志异常：', e && e.message));
+      });
+    }
     res.json({ html: restoredHtml, textUnchanged: beforeText === afterText, beforeChars: beforeText.length, afterChars: afterText.length });
   } catch (err) {
     res.status(500).json({ error: err.message || String(err) });
@@ -774,12 +849,173 @@ app.post('/api/ai/rewrite-selection', aiLimiter, wrap(async (req, res) => {
     const selectedText = String(req.body && req.body.selectedText || '').slice(0, Number(process.env.AI_SELECTION_MAX_CHARS || 10000));
     const instruction = String(req.body && req.body.instruction || '').slice(0, 500);
     const contextText = String(req.body && req.body.contextText || '').slice(0, Number(process.env.AI_CONTEXT_MAX_CHARS || 24000));
+    const docId = req.body && req.body.docId ? Number(req.body.docId) : null;
     if (!selectedText.trim()) return res.status(400).json({ error: 'empty selection' });
     const replacement = await ai.rewriteSelection(selectedText, instruction, contextText);
+    // 同步写一条编辑动作日志（供 AI 对话感知"刚才做了什么"），出错时打日志便于诊断
+    if (docId) {
+      try {
+        await db.execute(
+          'INSERT INTO editor_actions (doc_id, user_id, action_type, before_text, after_text, instruction, meta, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+          [docId, req.user.id, 'rewrite',
+            selectedText.slice(0, 2000),
+            String(replacement || '').slice(0, 2000),
+            instruction,
+            JSON.stringify({ source: 'float-menu' }),
+            Date.now()]
+        );
+        console.log('[editor_actions] rewrite 写入成功 docId=' + docId + ' user=' + req.user.id + ' before=' + selectedText.length + '字 after=' + String(replacement || '').length + '字');
+      } catch (e) {
+        console.warn('[editor_actions] rewrite 写入失败：', e && e.message);
+      }
+    } else {
+      console.log('[editor_actions] 跳过写入：req.body.docId 为空，前端可能没传 docId');
+    }
     res.json({ replacement });
   } catch (err) {
     res.status(500).json({ error: err.message || String(err) });
   }
+}));
+
+/* 文档动作日志列表（最近 N 条） */
+app.get('/api/documents/:id/actions', wrap(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 50);
+  const rows = await db.query(
+    'SELECT id, action_type, before_text, after_text, instruction, created_at FROM editor_actions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT $3',
+    [req.params.id, req.user.id, limit]
+  );
+  res.json(rows);
+}));
+
+/* AI 多轮对话（带文档上下文；用户消息含关键词时分别注入版本演变摘要 / 最近编辑动作） */
+const VERSION_KEYWORDS = ['版本', '改动', '修改', '风格', '习惯', '总结', '变化', '演变', '历史'];
+const ACTION_KEYWORDS = ['刚才', '做了', '改写', '改了', '动作', '操作', '刚刚', '上次', '上次改'];
+const AI_CHAT_MAX_TURNS = Number(process.env.AI_CHAT_MAX_TURNS || 20);
+
+app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
+  try {
+    const docId = req.body && req.body.docId;
+    const userMessage = String((req.body && req.body.message) || '').slice(0, 8000);
+    const history = Array.isArray(req.body && req.body.history) ? req.body.history.slice(-AI_CHAT_MAX_TURNS) : [];
+    if (!userMessage.trim()) return res.status(400).json({ error: 'empty message' });
+
+    // 校验文档归属（避免越权把别人文档塞进上下文）
+    let doc = null;
+    if (docId) {
+      doc = await db.one('SELECT id, title, content FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [docId, req.user.id]);
+      if (!doc) return res.status(404).json({ error: 'document not found' });
+    }
+
+    // 构造系统提示：当前文档标题 + 全文（仅纯文本）
+    const docText = doc ? stripHtml(doc.content || '').slice(0, Number(process.env.AI_CONTEXT_MAX_CHARS || 24000)) : '';
+    const systemParts = [
+      'You are 知著 PenMark 的 AI 写作助手，专注于中文图文内容创作。',
+      '回答简洁、可执行；如果用户问的是写作建议，请直接给出可复制到编辑器的文字片段。',
+      '如果用户问的不是关于当前文档，礼貌地引导回写作话题。'
+    ];
+    if (doc) {
+      systemParts.push('当前文档标题：' + (doc.title || '无标题'));
+      systemParts.push('当前文档正文（参考用，不要在回答里大段重复）：\n' + docText);
+    }
+
+    // 关键词触发：把版本演变摘要附在上下文里
+    const shouldInjectVersions = VERSION_KEYWORDS.some(k => userMessage.includes(k)) && doc;
+    if (shouldInjectVersions) {
+      try {
+        const versions = await db.query(
+          'SELECT id, title, chars_diff, version, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at ASC LIMIT 100',
+          [docId, req.user.id]
+        );
+        if (versions.length > 0) {
+          const summary = versions.map((v, i) => {
+            const time = new Date(v.created_at).toLocaleString('zh-CN', { hour12: false });
+            return `第${i + 1}次（v${v.version}, ${time}, 差异${v.chars_diff}字）「${(v.title || '').slice(0, 30)}」`;
+          }).join('\n');
+          systemParts.push('以下是该文档的历史版本演变记录（用户可能想分析写作风格、改动习惯）：\n' + summary);
+        }
+      } catch (e) {
+        console.warn('版本摘要注入跳过：', e && e.message);
+      }
+    }
+
+    // 关键词触发：把最近编辑动作日志注入上下文（"刚才做了什么"）
+    const shouldInjectActions = ACTION_KEYWORDS.some(k => userMessage.includes(k)) && doc;
+    if (shouldInjectActions) {
+      try {
+        const actions = await db.query(
+          'SELECT action_type, before_text, after_text, instruction, created_at FROM editor_actions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 10',
+          [docId, req.user.id]
+        );
+        console.log('[ai/chat] 命中动作关键词，docId=' + docId + ' 找到 ' + actions.length + ' 条动作记录');
+        if (actions.length > 0) {
+          const ACTION_LABELS = { rewrite: 'AI 改写', layout: 'AI 排版', insert_image: '插入图片' };
+          const list = actions.map(a => {
+            const time = new Date(a.created_at).toLocaleString('zh-CN', { hour12: false });
+            const label = ACTION_LABELS[a.action_type] || a.action_type;
+            const before = (a.before_text || '').slice(0, 80).replace(/\s+/g, ' ');
+            const after = (a.after_text || '').slice(0, 80).replace(/\s+/g, ' ');
+            const instr = a.instruction ? `（指令：${a.instruction.slice(0, 40)}）` : '';
+            return `[${time}] ${label}${instr}\n  原：${before}…\n  新：${after}…`;
+          }).join('\n\n');
+          systemParts.push('以下是用户最近对该文档做过的 AI 辅助动作（按时间倒序，最近的在前）：\n' + list);
+        }
+      } catch (e) {
+        console.warn('[ai/chat] 动作日志注入跳过：', e && e.message);
+      }
+    } else {
+      console.log('[ai/chat] 未命中动作关键词（消息："' + userMessage.slice(0, 40) + '..."）');
+    }
+
+    // 拼接消息序列：system + 历史 + 当前用户消息
+    const messages = [{ role: 'system', content: systemParts.join('\n\n') }];
+    for (const h of history) {
+      const role = h.role === 'assistant' ? 'assistant' : 'user';
+      const content = String(h.content || '').slice(0, 8000);
+      if (content) messages.push({ role, content });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    const reply = await ai.chat(messages, {
+      temperature: 0.5,
+      maxTokens: Number(process.env.AI_CHAT_MAX_TOKENS || 2048),
+      timeoutMs: 70000
+    });
+
+    // 持久化对话（按文档保留：关闭面板/刷新后再打开仍能看到）
+    if (doc) {
+      try {
+        await db.execute(
+          'INSERT INTO ai_chat_history (doc_id, user_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)',
+          [docId, req.user.id, 'user', userMessage, Date.now()]
+        );
+        await db.execute(
+          'INSERT INTO ai_chat_history (doc_id, user_id, role, content, created_at) VALUES ($1, $2, $3, $4, $5)',
+          [docId, req.user.id, 'assistant', reply, Date.now() + 1]
+        );
+      } catch (e) {
+        console.warn('AI 对话历史持久化跳过：', e && e.message);
+      }
+    }
+
+    res.json({ reply, docTitle: doc ? doc.title : null, versionsInjected: shouldInjectVersions, actionsInjected: shouldInjectActions });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+}));
+
+/* 拉取文档的对话历史（按文档保留） */
+app.get('/api/documents/:id/chat-history', wrap(async (req, res) => {
+  const rows = await db.query(
+    'SELECT id, role, content, created_at FROM ai_chat_history WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at ASC LIMIT 200',
+    [req.params.id, req.user.id]
+  );
+  res.json(rows.map(r => ({ id: r.id, role: r.role, content: r.content, created_at: r.created_at })));
+}));
+
+/* 清空文档的对话历史 */
+app.delete('/api/documents/:id/chat-history', wrap(async (req, res) => {
+  await db.execute('DELETE FROM ai_chat_history WHERE doc_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+  res.json({ ok: true });
 }));
 
 app.get('/api/search', wrap(async (req, res) => {
@@ -1021,6 +1257,48 @@ app.put('/api/documents/:id/share/theme', shareAllowed, wrap(async (req, res) =>
   res.json({ ok: true });
 }));
 
+/* 文档作者视角的访客统计：用于编辑器内显示"X 人访问 · Y 人在线" */
+app.get('/api/documents/:id/share-stats', wrap(async (req, res) => {
+  const docId = Number(req.params.id);
+  const share = await db.one(
+    'SELECT token, permission, expire_at, theme FROM shares WHERE doc_id = $1 AND owner_id = $2',
+    [docId, req.user.id]
+  );
+  if (!share) return res.json({ shared: false });
+  if (share.expire_at && share.expire_at < Date.now()) {
+    return res.json({ shared: true, expired: true, token: share.token, total: 0, online_30min: 0, visitors: [] });
+  }
+  const recent = await db.query(
+    'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 20',
+    [share.token]
+  );
+  const totalRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
+    [share.token]
+  );
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  const onlineRow = await db.one(
+    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
+    [share.token, cutoff]
+  );
+  res.json({
+    shared: true,
+    expired: false,
+    token: share.token,
+    permission: share.permission,
+    theme: share.theme,
+    total: Number(totalRow && totalRow.cnt || 0),
+    online_30min: Number(onlineRow && onlineRow.cnt || 0),
+    visitors: (recent || []).map(v => ({
+      nickname: v.nickname,
+      user_id: v.user_id,
+      is_registered: !!v.user_id,
+      last_visit_at: v.last_visit_at,
+      visit_count: v.visit_count
+    }))
+  });
+}));
+
 /* ---------- 公开访问 ---------- */
 app.get('/api/public/share/:token/info', wrap(async (req, res) => {
   const share = await db.one('SELECT permission, password_hash IS NOT NULL AS has_password, expire_at, theme FROM shares WHERE token = $1', [req.params.token]);
@@ -1072,7 +1350,7 @@ app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
       return res.status(401).json({ error: 'need_password', has_password: true });
     }
   }
-  const doc = await db.one('SELECT id, title, content, updated_at, created_at FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
+  const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
   res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit' });
 }));
@@ -1091,41 +1369,92 @@ app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
   const now = Date.now();
   const title = String(req.body.title || '无标题').slice(0, 500);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
-  const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3 WHERE id = $4 AND deleted_at IS NULL',
+  const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND deleted_at IS NULL',
     [title, content, now, share.doc_id]);
   if (info.changes === 0) return res.status(404).json({ error: '文档不存在' });
-  res.json({ updated: info.changes });
+  const vRow = await db.one('SELECT version, updated_at FROM documents WHERE id = $1', [share.doc_id]);
+  res.json({ updated: info.changes, version: vRow ? vRow.version : undefined, updated_at: vRow ? vRow.updated_at : now });
+}));
+
+/* 轻量级版本查询（公开分享用） */
+app.get('/api/public/share/:token/version', wrap(async (req, res) => {
+  const share = await db.one('SELECT doc_id, token, expire_at, permission, password_hash FROM shares WHERE token = $1', [req.params.token]);
+  if (!share) return res.status(404).json({ error: '链接无效' });
+  if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
+  if (share.password_hash) {
+    const ss = auth.verifyShareSession(auth.readShareCookie(req));
+    if (!ss || !ss.authed || ss.token !== share.token) {
+      return res.status(401).json({ error: 'need_password' });
+    }
+  }
+  const row = await db.one('SELECT version, updated_at, title FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
+  if (!row) return res.status(404).json({ error: '文档不存在' });
+  res.json({ version: row.version, updated_at: row.updated_at, title: row.title });
 }));
 
 // 访客上报：前端生成 fingerprint（Canvas+UA hash），后端 UPSERT 记录最近访问
 app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) => {
+  console.log('[share/visit] 收到请求 token=' + req.params.token.slice(0, 8) + ' body=' + JSON.stringify(req.body || {}).slice(0, 100));
   const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
-  if (!share) return res.status(404).json({ error: '链接无效' });
+  if (!share) { console.warn('[share/visit] token 不存在'); return res.status(404).json({ error: '链接无效' }); }
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
 
   const fingerprint = String(req.body.fingerprint || '').slice(0, 64);
-  if (!/^[a-f0-9]{8,64}$/i.test(fingerprint)) return res.status(400).json({ error: 'fingerprint 不合法' });
+  if (!/^[a-f0-9]{8,64}$/i.test(fingerprint)) {
+    console.warn('[share/visit] fingerprint 不合法：' + fingerprint.slice(0, 20));
+    return res.status(400).json({ error: 'fingerprint 不合法' });
+  }
   const nickname = String(req.body.nickname || '游客').slice(0, 20).replace(/[<>]/g, '');
   const now = Date.now();
+
+  // 识别登录用户：分享页也可能被登录用户访问（owner 自己、被邀请的协作者等）
+  // 如果访客已登录，把 user_id 和真实 nickname 写入，前端就能用亮色显示
+  let visitorUserId = null;
+  let visitorNickname = nickname;
+  try {
+    const token = auth.readCookie(req, auth.COOKIE_NAME);
+    if (token) {
+      const sessUser = await auth.verifySession(token);
+      if (sessUser) {
+        visitorUserId = sessUser.id;
+        // 优先用 nickname，其次 username，最后才用 phone
+        visitorNickname = (sessUser.nickname && sessUser.nickname.trim()) ||
+                          (sessUser.username && sessUser.username.trim()) ||
+                          nickname;
+      }
+    }
+  } catch (e) { /* 未登录访客，正常路径 */ }
 
   // UPSERT：同 (token, fingerprint) 则累加 visit_count、刷新 last_visit_at
   try {
     const existing = await db.one(
-      'SELECT id FROM share_visitors WHERE share_token = $1 AND fingerprint = $2',
+      'SELECT id, user_id FROM share_visitors WHERE share_token = $1 AND fingerprint = $2',
       [share.token, fingerprint]
     );
     if (existing) {
-      await db.execute(
-        'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2 WHERE id = $3',
-        [now, nickname, existing.id]
-      );
+      // 如果之前是游客（user_id NULL），现在登录了，把 user_id 补上 + 改用真名
+      const updateUserClause = (visitorUserId && !existing.user_id)
+        ? ', user_id = $4, nickname = $2 '
+        : (visitorUserId && existing.user_id === visitorUserId ? ', nickname = $2 ' : '');
+      if (visitorUserId && !existing.user_id) {
+        await db.execute(
+          'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2, user_id = $4 WHERE id = $3',
+          [now, visitorNickname, existing.id, visitorUserId]
+        );
+      } else {
+        await db.execute(
+          'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2 WHERE id = $3',
+          [now, visitorNickname, existing.id]
+        );
+      }
     } else {
       await db.execute(
-        'INSERT INTO share_visitors (share_token, fingerprint, nickname, first_visit_at, last_visit_at, visit_count) VALUES ($1, $2, $3, $4, $4, 1)',
-        [share.token, fingerprint, nickname, now]
+        'INSERT INTO share_visitors (share_token, fingerprint, nickname, user_id, first_visit_at, last_visit_at, visit_count) VALUES ($1, $2, $3, $4, $5, $5, 1)',
+        [share.token, fingerprint, visitorNickname, visitorUserId, now]
       );
     }
   } catch (e) {
+    console.warn('[share/visit] UPSERT 失败，尝试退化为更新：', e && e.message);
     // 并发插入冲突时退化为更新
     await db.execute(
       'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1 WHERE share_token = $2 AND fingerprint = $3',
@@ -1133,9 +1462,11 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
     ).catch(() => null);
   }
 
+  console.log('[share/visit] token=' + share.token.slice(0, 8) + ' fp=' + fingerprint.slice(0, 8) + ' user_id=' + (visitorUserId || 'null') + ' nickname=' + visitorNickname);
+
   // 同时返回最新访客列表，避免前端再发一次请求
   const recent = await db.query(
-    'SELECT nickname, last_visit_at, visit_count, CASE WHEN fingerprint = $2 THEN 1 ELSE 0 END AS is_me FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
+    'SELECT nickname, user_id, last_visit_at, visit_count, CASE WHEN fingerprint = $2 THEN 1 ELSE 0 END AS is_me FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
     [share.token, fingerprint]
   );
   const totalRow = await db.one(
@@ -1150,6 +1481,8 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
   res.json({
     visitors: recent.map(v => ({
       nickname: v.nickname,
+      user_id: v.user_id,
+      is_registered: !!v.user_id,
       last_visit_at: v.last_visit_at,
       visit_count: v.visit_count,
       is_me: !!v.is_me
@@ -1166,7 +1499,7 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
 
   const recent = await db.query(
-    'SELECT nickname, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
+    'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
     [share.token]
   );
   const totalRow = await db.one(
@@ -1179,7 +1512,13 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
     [share.token, cutoff]
   );
   res.json({
-    visitors: recent,
+    visitors: (recent || []).map(v => ({
+      nickname: v.nickname,
+      user_id: v.user_id,
+      is_registered: !!v.user_id,
+      last_visit_at: v.last_visit_at,
+      visit_count: v.visit_count
+    })),
     total: Number(totalRow && totalRow.cnt || 0),
     online_30min: Number(onlineRow && onlineRow.cnt || 0)
   });
@@ -1231,7 +1570,7 @@ async function startServer(opts) {
     const server = app.listen(port, host, () => {
       const actualPort = server.address().port;
       const display = host === '127.0.0.1' ? '127.0.0.1' : 'localhost';
-      console.log(`知著 PenMark 运行于 http://${display}:${actualPort}`);
+      console.log(`知著 PenMark 运行于 http://${display}:${actualPort}（同时监听 IPv4/IPv6）`);
       resolve({ server, port: actualPort, host });
     });
     server.on('error', reject);

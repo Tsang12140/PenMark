@@ -173,17 +173,19 @@ function renderDoc(data) {
         '<div class="share-paper-info">' + badge +
           '<span class="share-date">更新于 ' + relativeTime(doc.updated_at) + '</span>' +
           editBtn +
-          '<span class="share-brand" aria-label="知著 PenMark">' +
-            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
-            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
-          '</span>' +
         '</div>' +
       '</div>' +
       '<div class="share-paper-body">';
 
   // 默认渲染为只读视图；canEdit 时也先查看，点击编辑按钮才解锁
   html += '<div class="share-reader" id="shareReader">' + (doc.content || '<p><br></p>') + '</div>';
-  html += '<div class="share-footer">— 文档结束 —</div>';
+  html += '<div class="share-footer">';
+  html += '<span class="share-footer-line">— 文档结束 —</span>';
+  html += '<a class="share-footer-brand" href="/" aria-label="知著 PenMark" title="知著 PenMark">' +
+            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
+            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
+          '</a>';
+  html += '</div>';
   html += '</div>'; // .share-paper-body
 
   if (canEdit) {
@@ -429,7 +431,8 @@ async function setupVisitors(token) {
       body: JSON.stringify({ fingerprint: fp, nickname })
     });
     if (res.ok) data = await res.json();
-  } catch(e) { /* 静默失败，不影响阅读 */ }
+    else console.warn('[visit] 上报失败 HTTP ' + res.status);
+  } catch(e) { console.warn('[visit] 上报异常：', e && e.message); }
 
   if (data) renderVisitorCapsule(data);
 
@@ -448,7 +451,8 @@ function renderVisitorCapsule(data) {
     capsule = document.createElement('div');
     capsule.className = 'share-visitors';
     capsule.id = 'shareVisitors';
-    document.body.appendChild(capsule);
+    const slot = $('shareVisitorsSlot') || document.body;
+    slot.appendChild(capsule);
 
     // 点击胶囊展开/收起列表
     capsule.addEventListener('click', (e) => {
@@ -493,11 +497,14 @@ function renderVisitorList(listEl, data) {
   let html = '<div class="sv-list-head">最近访客</div>';
   visitors.slice(0, 20).forEach((v) => {
     const isMe = !!v.is_me;
+    const isRegistered = !!v.is_registered;
+    // 游客灰色、注册用户亮色（曾经登录过又回来，名字变亮）
+    const nameClass = 'sv-name' + (isRegistered ? ' registered' : ' guest');
     html +=
-      '<div class="sv-item' + (isMe ? ' me' : '') + '">' +
-        '<span class="sv-avatar">' + escapeHtml((v.nickname || '?').slice(-1).toUpperCase()) + '</span>' +
+      '<div class="sv-item' + (isMe ? ' me' : '') + (!isRegistered && !isMe ? ' guest' : '') + '">' +
+        '<span class="sv-avatar' + (isRegistered ? ' registered' : '') + '">' + escapeHtml((v.nickname || '?').slice(-1).toUpperCase()) + '</span>' +
         '<span class="sv-info">' +
-          '<span class="sv-name">' + escapeHtml(v.nickname || '游客') + (isMe ? '（你）' : '') + '</span>' +
+          '<span class="' + nameClass + '">' + escapeHtml(v.nickname || '游客') + (isMe ? '（你）' : '') + '</span>' +
           '<span class="sv-meta">' + relativeTime(v.last_visit_at) + (v.visit_count > 1 ? ' · 访问 ' + v.visit_count + ' 次' : '') + '</span>' +
         '</span>' +
       '</div>';

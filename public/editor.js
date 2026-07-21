@@ -13,6 +13,7 @@ export class Editor {
     this.editor = opts.editor;
     this.onUpdate = opts.onUpdate || function(){};
     this.onToast = opts.onToast || function(){};
+    this.onPrompt = opts.onPrompt || null;
     this.onImageSelect = opts.onImageSelect || function(){};
     this.dropOverlay = opts.dropOverlay;
     this.selectedImage = null;
@@ -120,7 +121,7 @@ export class Editor {
       this.tableUndoStack.pop();
       this.tableRedoStack.push(tableEntry);
       this._restoreEditorSnapshot(tableEntry.before);
-      this.onToast('Table change undone');
+      this.onToast('已撤销表格改动');
       return true;
     }
     const before = this.editor.innerHTML;
@@ -149,7 +150,7 @@ export class Editor {
       this.tableRedoStack.pop();
       this.tableUndoStack.push(tableEntry);
       this._restoreEditorSnapshot(tableEntry.after);
-      this.onToast('Table change redone');
+      this.onToast('已重做表格改动');
       return true;
     }
     const before = this.editor.innerHTML;
@@ -182,14 +183,21 @@ export class Editor {
     this._insertHTMLAtRange(range, '<pre><code><br></code></pre><p><br></p>');
     this._afterChange();
   }
-  insertLink() {
+  async insertLink() {
     this.editor.focus();
     const sel = window.getSelection();
     if (!sel.rangeCount || sel.isCollapsed) { this.onToast('先选中文字，再插入链接'); return; }
     const selected = sel.toString().trim();
     const guess = this._normalizeUrl(selected) || 'https://';
-    const url = window.prompt('链接地址：', guess);
+    let url;
+    if (this.onPrompt) {
+      url = await this.onPrompt({ title: '插入链接', desc: '链接地址：', value: guess, placeholder: 'https://', confirmText: '插入' });
+    } else {
+      url = window.prompt('链接地址：', guess);
+    }
     if (!url || !url.trim() || url.trim() === 'https://') return;
+    // 重新选中可能被点击吞掉的选区
+    this.editor.focus();
     document.execCommand('createLink', false, this._normalizeUrl(url) || url.trim());
     this._afterChange();
   }
@@ -215,10 +223,10 @@ export class Editor {
   insertTOC() {
     const existing = this.editor.querySelector('.toc');
     const html = this._buildTOCHTML();
-    if (!html) { this.onToast('No headings for a table of contents'); return; }
+    if (!html) { this.onToast('没有可生成目录的标题'); return; }
     if (existing) {
       existing.outerHTML = html;
-      this.onToast('TOC refreshed');
+      this.onToast('目录已刷新');
       this._afterChange();
       return;
     }
@@ -229,7 +237,7 @@ export class Editor {
 
   refreshTOC() {
     const html = this._buildTOCHTML();
-    if (!html) { this.onToast('No headings for a table of contents'); return false; }
+    if (!html) { this.onToast('没有可生成目录的标题'); return false; }
     const tocs = this.editor.querySelectorAll('.toc');
     if (!tocs.length) { this.insertTOC(); return true; }
     tocs.forEach(toc => { toc.outerHTML = html; });
@@ -420,7 +428,7 @@ export class Editor {
   tableCommand(action) {
     const cell = this._currentTableCell();
     const table = cell ? cell.closest('table') : null;
-    if (!table) { this.onToast('Put the cursor inside a table first'); return false; }
+    if (!table) { this.onToast('请先把光标放进表格'); return false; }
     this._normalizeTable(table);
     const row = cell.parentNode;
     const colIndex = this._cellColumnIndex(cell);
@@ -1922,19 +1930,37 @@ export class Editor {
       // Enter 键续号：中文编号「N、」与待办事项
       if (e.key === 'Enter') {
         const text = (block.textContent || '').trim();
-        // 1) 中文编号续号：形如「1、内容」「12、内容」
+        // 1) 中文编号续号：形如「1、内容」「12、内容」「1、」
+        // 规则：
+        //   - 光标在「N、」之后（段落中间或末尾）→ 在当前段后插入新段落「N+1、」
+        //   - 光标在「N、」之前或中间（即光标在编号前缀范围内）→ 在当前段前插入空段落，
+        //     光标停在新空段，让用户能在编号上方插入「标题/前言」等内容
+        //   - 退出续号：用户用 Backspace 删除「N、」前缀即可
+        // 不再用「空 N、 + Enter → 退出」的规则，因为容易与「输入内容后回车续号」混淆。
         const cnMatch = text.match(/^(\d+)、([\s\S]*)$/);
         if (cnMatch) {
+          const prefixLen = (cnMatch[1] + '、').length; // 「N、」的字符长度
+          const caretOffset = this._caretOffsetInBlock(block);
+          // 光标在「N、」之前（包括「1」与「、」之间）：在前面插空段，不续号
+          if (caretOffset >= 0 && caretOffset < prefixLen) {
+            e.preventDefault();
+            const emptyP = document.createElement('p');
+            emptyP.innerHTML = '<br>';
+            if (block.parentNode) {
+              block.parentNode.insertBefore(emptyP, block);
+              this._placeCaretAtStart(emptyP);
+            }
+            this._afterChange();
+            return;
+          }
+          // 光标在「N、」之后（段落内容部分）：续号
           const nextNum = parseInt(cnMatch[1], 10) + 1;
-          const rest = cnMatch[2];
-          // 空行回车退出续号
-          if (!rest) return;
           e.preventDefault();
           const newP = document.createElement('p');
           newP.innerHTML = nextNum + '、';
           if (block.parentNode) {
             block.parentNode.insertBefore(newP, block.nextSibling);
-            // 光标放在「N、」之后，让用户直接接着输入内容
+            // 光标放在「N+1、」之后，让用户直接接着输入内容
             this._placeCaretAtEnd(newP);
           }
           this._afterChange();
@@ -2029,6 +2055,19 @@ export class Editor {
     sel.addRange(range);
   }
 
+  // 获取光标在 block 内的字符偏移量（用于判断光标在「N、」之前/之后）
+  // 返回 -1 表示光标不在 block 内
+  _caretOffsetInBlock(block) {
+    const sel = document.getSelection();
+    if (!sel || !sel.rangeCount) return -1;
+    const range = sel.getRangeAt(0);
+    if (!block.contains(range.endContainer)) return -1;
+    const preRange = range.cloneRange();
+    preRange.selectNodeContents(block);
+    preRange.setEnd(range.endContainer, range.endOffset);
+    return preRange.toString().length;
+  }
+
   // 待办勾选交互：点击 .todo-check 切换 .checked + .todo-item.done
   _bindTodoInteraction() {
     this.editor.addEventListener('click', (e) => {
@@ -2046,6 +2085,19 @@ export class Editor {
     const sel = document.getSelection();
     if (!sel.rangeCount) return null;
     let node = sel.anchorNode;
+    // 兜底：光标在 #editor 直接子节点上（loose 文本/内联节点），没有 <p> 包裹时，
+    // 把它就地包进 <p>，让后续逻辑能找到一个 block。selection 会跟随 textNode 移动。
+    if (node && node.parentNode === this.editor) {
+      const isLooseText = node.nodeType === 3 ||
+        (node.nodeType === 1 && !/^(P|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE|LI|DIV|TABLE|HR|IMG)$/.test(node.tagName));
+      if (isLooseText) {
+        const p = document.createElement('p');
+        this.editor.insertBefore(p, node);
+        p.appendChild(node);
+        return p;
+      }
+      if (node.nodeType === 1) return node;
+    }
     while (node && node !== this.editor) {
       if (node.nodeType === 1) {
         const tag = node.tagName;
