@@ -3697,6 +3697,78 @@ body.share-page{
   flex-wrap:wrap;
   gap:8px;
 }
+/* 自定义预设区（按账号绑定） */
+.ai-preset-section{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding-top:6px;
+  border-top:1px dashed var(--line);
+}
+.ai-preset-section-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  color:var(--ink-soft);
+  font-size:12px;
+}
+.ai-preset-add{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:24px;
+  height:24px;
+  border:1px solid var(--line);
+  background:var(--bg-panel);
+  color:var(--ink-soft);
+  border-radius:6px;
+  cursor:pointer;
+}
+.ai-preset-add:hover{background:var(--highlight);color:var(--ink);}
+.ai-preset-add svg{width:14px;height:14px;}
+.ai-preset-custom-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.ai-preset-custom{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  border:1px solid var(--line);
+  background:var(--bg-panel);
+  color:var(--ink);
+  border-radius:6px;
+  padding:4px 6px 4px 10px;
+  cursor:pointer;
+  font-family:var(--sans);
+  font-size:13px;
+}
+.ai-preset-custom:hover{background:var(--highlight);}
+.ai-preset-custom.active{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+.ai-preset-label{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ai-preset-icon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  border-radius:4px;
+  color:inherit;
+  opacity:.6;
+  cursor:pointer;
+}
+.ai-preset-icon:hover{opacity:1;background:rgba(0,0,0,.08);}
+.ai-preset-custom.active .ai-preset-icon:hover{background:rgba(255,255,255,.25);}
+.ai-preset-icon svg{width:13px;height:13px;}
+.ai-preset-empty{
+  color:var(--ink-faint);
+  font-size:12px;
+}
 .ai-preset,
 .ai-action{
   border:1px solid var(--line);

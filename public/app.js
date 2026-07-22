@@ -357,7 +357,18 @@ function handleAction(action) {
     case 'aiChat': toggleAiPanel(); break;
     case 'aiRewrite': openAiRewriteModal(); break;
     case 'reading': toggleReadingMode(); break;
+    case 'selectAll': selectAllEditorContent(); break;
   }
+}
+
+// 全选编辑器全文（手机工具栏用；不依赖 execCommand，移动端更稳）
+function selectAllEditorContent() {
+  editorEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(editorEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function refreshToolbar() {
@@ -383,6 +394,8 @@ document.addEventListener('selectionchange', () => {
       savedAiRange = range.cloneRange();
     }
   }
+  // AI 对话面板打开时，实时刷新选区上下文（显示"已选 N 字"）
+  if (aiPanel && !aiPanel.hidden) refreshAiPanelContext();
 });
 
 /* ---------- 飞书式浮动菜单：选中显示完整菜单，点击显示精简菜单（标题层级） ---------- */
@@ -2297,7 +2310,8 @@ const AI_PRESETS = {
   share: '\u5206\u4eab\u524d\u6392\u7248',
   light: '\u8f7b\u5ea6\u6574\u7406',
   formal: '\u6b63\u5f0f\u6587\u6863',
-  clean: '\u6e05\u7406\u6742\u6837\u5f0f'
+  clean: '\u6e05\u7406\u6742\u6837\u5f0f',
+  wash: '\u6d17\u6392\u7248'
 };
 
 const AI_REWRITE_PRESETS = [
@@ -2382,6 +2396,27 @@ function closeAiPanel() {
 
 function refreshAiPanelContext() {
   if (!aiPanelContext) return;
+  // 优先感知编辑器选区：先看实时选区；焦点移到 AI 输入框后实时选区会丢失，
+  // 回退到 savedAiRange（selectionchange 持续保存的最后一次编辑器选区），
+  // 这样"全选后打开 AI 面板"仍能看到选区上下文。
+  let selText = '';
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+    const range = sel.getRangeAt(0);
+    if (editorEl.contains(range.commonAncestorContainer)) {
+      selText = sel.toString();
+    }
+  }
+  if (!selText && savedAiRange && !savedAiRange.collapsed) {
+    selText = savedAiRange.toString();
+  }
+  if (selText) {
+    const n = selText.length;
+    const preview = selText.replace(/\s+/g, ' ').trim().slice(0, 50);
+    aiPanelContext.textContent = '已选 ' + n + ' 字：' + preview + (n > 50 ? '…' : '');
+    return;
+  }
+  // 无选区时回退到文档名
   if (currentDoc && currentDoc.id) {
     const t = (currentDoc.title || '无标题').trim();
     aiPanelContext.textContent = '当前文档：' + (t.length > 22 ? t.slice(0, 22) + '…' : t);
@@ -2642,7 +2677,15 @@ function markEditorChanged() {
   scheduleAutoSave();
 }
 
-function openAiLayoutModal() {
+/* ---------- AI 排版：自定义预设（按账号绑定） ---------- */
+let aiCustomPresets = []; // 当前用户的自定义预设
+let aiLayoutCurrentPreset = 'share';
+let aiLayoutCurrentCustomPrompt = '';
+const AI_ICON_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+const AI_ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+const AI_ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+
+async function openAiLayoutModal() {
   if (!currentDoc) { toast('\u8bf7\u5148\u6253\u5f00\u4e00\u7bc7\u6587\u6863'); return; }
   const presetButtons = Object.keys(AI_PRESETS).map(key =>
     '<button class="ai-preset' + (key === 'share' ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key] + '</button>'
@@ -2652,6 +2695,10 @@ function openAiLayoutModal() {
       '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
       '<div class="ai-preset-row">' + presetButtons + '</div>' +
+      '<div class="ai-preset-section">' +
+        '<div class="ai-preset-section-head">我的预设<button class="ai-preset-add" id="aiPresetAdd" title="新建预设">' + AI_ICON_PLUS + '</button></div>' +
+        '<div class="ai-preset-custom-row" id="aiPresetCustomRow"><span class="ai-preset-empty">加载中…</span></div>' +
+      '</div>' +
       '<div class="ai-warning" id="aiLayoutWarning" hidden></div>' +
       '<div class="ai-preview empty" id="aiLayoutPreview">\u70b9\u51fb\u751f\u6210\u540e\u5728\u8fd9\u91cc\u9884\u89c8</div>' +
       '<div class="ai-actions">' +
@@ -2659,19 +2706,115 @@ function openAiLayoutModal() {
         '<button class="ai-action primary" id="aiLayoutApply" disabled>\u5e94\u7528\u5230\u6587\u6863</button>' +
       '</div>' +
     '</div>');
-  let currentPreset = 'share';
-  aiModalBody.querySelectorAll('.ai-preset').forEach(btn => {
+  aiLayoutCurrentPreset = 'share';
+  aiLayoutCurrentCustomPrompt = '';
+  // 内置预设点击：切换选中态
+  aiModalBody.querySelectorAll('.ai-preset[data-preset]').forEach(btn => {
     btn.addEventListener('click', () => {
-      currentPreset = btn.getAttribute('data-preset');
-      aiModalBody.querySelectorAll('.ai-preset').forEach(b => b.classList.toggle('active', b === btn));
+      aiLayoutCurrentPreset = btn.getAttribute('data-preset');
+      aiLayoutCurrentCustomPrompt = '';
+      aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === btn));
     });
   });
-  $('aiLayoutRun').addEventListener('click', () => runAiLayout(currentPreset));
+  $('aiLayoutRun').addEventListener('click', () => runAiLayout(aiLayoutCurrentPreset, aiLayoutCurrentCustomPrompt));
   refreshAiStatus('aiLayoutRun');
   $('aiLayoutApply').addEventListener('click', applyAiLayoutResult);
+  $('aiPresetAdd').addEventListener('click', createCustomPreset);
+  // 拉取当前用户的自定义预设（失败静默，仍可用内置预设）
+  await refreshAiCustomPresets();
 }
 
-async function runAiLayout(preset) {
+// 拉取并渲染自定义预设到排版模态框
+async function refreshAiCustomPresets() {
+  const row = $('aiPresetCustomRow');
+  if (!row) return;
+  try {
+    aiCustomPresets = await api('/api/ai/presets', 'GET');
+  } catch (e) {
+    aiCustomPresets = [];
+  }
+  if (!Array.isArray(aiCustomPresets) || !aiCustomPresets.length) {
+    row.innerHTML = '<span class="ai-preset-empty">还没有自定义预设，点右上角 + 新建</span>';
+    return;
+  }
+  row.innerHTML = aiCustomPresets.map((p, i) =>
+    '<span class="ai-preset-custom" data-preset="custom" data-custom-index="' + i + '" title="' + escapeHtml((p.prompt || '').slice(0, 80)) + '">' +
+      '<span class="ai-preset-label">' + escapeHtml(p.label) + '</span>' +
+      '<span class="ai-preset-icon" data-act="edit" title="编辑">' + AI_ICON_PENCIL + '</span>' +
+      '<span class="ai-preset-icon" data-act="delete" title="删除">' + AI_ICON_TRASH + '</span>' +
+    '</span>'
+  ).join('');
+  row.querySelectorAll('.ai-preset-custom').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const icon = e.target.closest('.ai-preset-icon');
+      const idx = Number(el.getAttribute('data-custom-index'));
+      if (icon) {
+        e.stopPropagation();
+        const act = icon.getAttribute('data-act');
+        if (act === 'edit') editCustomPreset(idx);
+        else if (act === 'delete') deleteCustomPreset(idx);
+        return;
+      }
+      aiLayoutCurrentPreset = 'custom';
+      aiLayoutCurrentCustomPrompt = (aiCustomPresets[idx] && aiCustomPresets[idx].prompt) || '';
+      aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === el));
+    });
+  });
+}
+
+async function createCustomPreset() {
+  const label = await showPrompt({ title: '新建预设', desc: '请输入预设名称（显示在按钮上）', placeholder: '如：精简排版', confirmText: '下一步' });
+  if (!label || !label.trim()) return;
+  const prompt = await showPrompt({ title: '新建预设', desc: '请输入提示词，描述你希望 AI 如何排版', placeholder: '如：去除所有底色和格式，段落两端对齐…', confirmText: '创建' });
+  if (prompt === null) return;
+  try {
+    await api('/api/ai/presets', 'POST', { label: label.trim(), prompt: prompt.trim() });
+    toast('预设已创建');
+    await refreshAiCustomPresets();
+  } catch (e) {
+    toast('创建失败：' + (e.message || e));
+  }
+}
+
+async function editCustomPreset(idx) {
+  const p = aiCustomPresets[idx];
+  if (!p) return;
+  const label = await showPrompt({ title: '编辑预设', desc: '预设名称', value: p.label, confirmText: '下一步' });
+  if (label === null) return;
+  if (!label || !label.trim()) { toast('名称不能为空'); return; }
+  const prompt = await showPrompt({ title: '编辑预设', desc: '提示词', value: p.prompt, confirmText: '保存' });
+  if (prompt === null) return;
+  try {
+    await api('/api/ai/presets/' + p.id, 'PUT', { label: label.trim(), prompt: prompt.trim() });
+    toast('预设已更新');
+    await refreshAiCustomPresets();
+  } catch (e) {
+    toast('更新失败：' + (e.message || e));
+  }
+}
+
+async function deleteCustomPreset(idx) {
+  const p = aiCustomPresets[idx];
+  if (!p) return;
+  const ok = await showConfirm({ title: '删除预设', desc: '确定删除「' + p.label + '」？此操作不可撤销。', danger: true, confirmText: '删除' });
+  if (!ok) return;
+  try {
+    await api('/api/ai/presets/' + p.id, 'DELETE');
+    toast('已删除');
+    // 若删除的正是当前选中的自定义预设，回退到 share
+    if (aiLayoutCurrentPreset === 'custom') {
+      aiLayoutCurrentPreset = 'share';
+      aiLayoutCurrentCustomPrompt = '';
+      const shareBtn = aiModalBody.querySelector('.ai-preset[data-preset="share"]');
+      if (shareBtn) aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === shareBtn));
+    }
+    await refreshAiCustomPresets();
+  } catch (e) {
+    toast('删除失败：' + (e.message || e));
+  }
+}
+
+async function runAiLayout(preset, customPrompt) {
   const runBtn = $('aiLayoutRun');
   const applyBtn = $('aiLayoutApply');
   const preview = $('aiLayoutPreview');
@@ -2682,7 +2825,7 @@ async function runAiLayout(preset) {
   preview.classList.add('empty');
   preview.textContent = '正在排版，稍等一下…';
   try {
-    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset, docId: currentDoc && currentDoc.id });
+    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset, customPrompt: customPrompt || '', docId: currentDoc && currentDoc.id });
     pendingAiLayoutHtml = res.html || '';
     preview.classList.remove('empty');
     preview.innerHTML = pendingAiLayoutHtml || '';
@@ -3033,6 +3176,7 @@ const shortcutGroups = [
     ['Ctrl/⌘ + Shift + P', '格式刷']
   ]],
   ['段落', [
+    ['Ctrl/⌘ + A', '选中当前段落（再按一次选全文）'],
     ['Ctrl/⌘ + Alt + 0', '正文'],
     ['Ctrl/⌘ + Alt + 1-6', '标题 1-6'],
     ['Ctrl/⌘ + Alt + Q', '引用块'],
@@ -3084,6 +3228,7 @@ function isNativeField(target) {
 }
 
 /* ---------- 全局快捷键 ---------- */
+let lastCtrlATime = 0; // 飞书式 Ctrl+A 两段选：记录上次按 Ctrl+A 的时间
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape') { hideShortcutHelp(); if (aiModal && !aiModal.hidden) closeAiModal(); }
@@ -3091,6 +3236,24 @@ document.addEventListener('keydown', (e) => {
   if (isNativeField(e.target) && e.target !== docTitleEl && e.target !== searchInput) return;
   const k = e.key.toLowerCase();
   if (k === '/') { e.preventDefault(); showShortcutHelp(); }
+  else if (k === 'a' && !e.altKey && !e.shiftKey) {
+    // 飞书式 Ctrl+A：编辑器内按一次选当前段落，500ms 内再按选全文；非编辑器聚焦时不拦截
+    if (document.activeElement === editorEl) {
+      const now = Date.now();
+      if (now - lastCtrlATime < 500) {
+        lastCtrlATime = 0; // 第二次：放行浏览器原生全选
+      } else {
+        lastCtrlATime = now;
+        const block = editor._currentBlock();
+        if (block) {
+          e.preventDefault();
+          editor.selectBlock(block);
+          toast('连续按两次 Ctrl+A 选择全文');
+        }
+        // 无当前块时不拦截，放行浏览器原生全选
+      }
+    }
+  }
   else if (k === 'a' && e.altKey) { e.preventDefault(); openAiLayoutModal(); }
   else if (k === 'i' && e.altKey) { e.preventDefault(); openAiRewriteModal(); }
   else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }

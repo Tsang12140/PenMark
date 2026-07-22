@@ -260,4 +260,17 @@ CREATE INDEX IF NOT EXISTS idx_editor_actions_doc ON editor_actions(doc_id, crea
 CREATE INDEX IF NOT EXISTS idx_editor_actions_user ON editor_actions(user_id);
 `);
 
+// AI 自定义预设（按用户绑定：桌面端绑桌面用户，网页端绑登录账号）
+db.exec(`
+CREATE TABLE IF NOT EXISTS ai_presets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  label TEXT NOT NULL,
+  prompt TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_presets_user ON ai_presets(user_id, sort_order);
+`);
+
 module.exports = db;

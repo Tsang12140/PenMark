@@ -831,17 +831,67 @@ app.get('/api/ai/status', (req, res) => {
   res.json({ configured: ai.configured(), model: process.env.AI_MODEL || 'deepseek-chat' });
 });
 
+/* ---------- AI 自定义预设（按用户绑定） ---------- */
+app.get('/api/ai/presets', wrap(async (req, res) => {
+  const rows = await db.query(
+    'SELECT id, label, prompt, sort_order, created_at FROM ai_presets WHERE user_id = $1 ORDER BY sort_order ASC, created_at ASC',
+    [req.user.id]
+  );
+  res.json(rows);
+}));
+
+app.post('/api/ai/presets', wrap(async (req, res) => {
+  const label = String(req.body && req.body.label || '').trim().slice(0, 30);
+  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 1000);
+  if (!label) return res.status(400).json({ error: '预设名称不能为空' });
+  const cnt = await db.query('SELECT COUNT(*) AS n FROM ai_presets WHERE user_id = $1', [req.user.id]);
+  if (Number(cnt[0].n) >= 20) return res.status(400).json({ error: '最多 20 个自定义预设' });
+  const maxRow = await db.one('SELECT MAX(sort_order) AS m FROM ai_presets WHERE user_id = $1', [req.user.id]);
+  const sortOrder = (maxRow && maxRow.m != null ? Number(maxRow.m) : -1) + 1;
+  const info = await db.execute(
+    'INSERT INTO ai_presets (user_id, label, prompt, sort_order, created_at) VALUES ($1, $2, $3, $4, $5)',
+    [req.user.id, label, prompt, sortOrder, Date.now()]
+  );
+  res.json({ id: info.insertId, label, prompt, sort_order: sortOrder });
+}));
+
+app.put('/api/ai/presets/:id', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '无效 ID' });
+  const label = String(req.body && req.body.label || '').trim().slice(0, 30);
+  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 1000);
+  if (!label) return res.status(400).json({ error: '预设名称不能为空' });
+  const info = await db.execute(
+    'UPDATE ai_presets SET label = $1, prompt = $2 WHERE id = $3 AND user_id = $4',
+    [label, prompt, id, req.user.id]
+  );
+  if (info.changes === 0) return res.status(404).json({ error: '未找到该预设' });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/ai/presets/:id', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '无效 ID' });
+  const info = await db.execute(
+    'DELETE FROM ai_presets WHERE id = $1 AND user_id = $2',
+    [id, req.user.id]
+  );
+  if (info.changes === 0) return res.status(404).json({ error: '未找到该预设' });
+  res.json({ ok: true });
+}));
+
 app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
   try {
     const rawHtml = String(req.body && req.body.html || '');
     const preset = String(req.body && req.body.preset || 'share');
+    const customPrompt = String(req.body && req.body.customPrompt || '').slice(0, 1000);
     const docId = req.body && req.body.docId ? Number(req.body.docId) : null;
     if (!rawHtml.trim()) return res.status(400).json({ error: 'empty html' });
     const protectedInput = protectAiAssets(rawHtml);
     if (protectedInput.html.length > Number(process.env.AI_LAYOUT_MAX_INPUT || 120000)) {
       return res.status(413).json({ error: 'document is too large for one AI layout request' });
     }
-    const aiHtml = await ai.layoutHtml(protectedInput.html, preset);
+    const aiHtml = await ai.layoutHtml(protectedInput.html, preset, customPrompt);
     const restoredHtml = sanitizeAiHtmlFragment(restoreAiAssets(aiHtml, protectedInput.assets));
     const beforeText = normalizeVisibleText(stripHtml(rawHtml));
     const afterText = normalizeVisibleText(stripHtml(restoredHtml));
@@ -938,7 +988,8 @@ app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
     const systemParts = [
       'You are 知著 PenMark 的 AI 写作助手，专注于中文图文内容创作。',
       '回答简洁、可执行；如果用户问的是写作建议，请直接给出可复制到编辑器的文字片段。',
-      '如果用户问的不是关于当前文档，礼貌地引导回写作话题。'
+      '如果用户问的不是关于当前文档，礼貌地引导回写作话题。',
+      ai.PENMARK_KNOWLEDGE
     ];
     if (doc) {
       systemParts.push('当前文档标题：' + (doc.title || '无标题'));
