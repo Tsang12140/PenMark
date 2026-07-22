@@ -508,9 +508,36 @@ app.get('/api/og', ogLimiter, wrap(async (req, res) => {
   }
 }));
 
+/* ---------- 用户头像（base64，前端 Canvas 压缩到 256×256 PNG） ---------- */
+// 头像字段最大 100KB（base64 后约 133KB），避免 users 表过大
+const AVATAR_MAX_BYTES = 100 * 1024;
+app.post('/api/user/avatar', wrap(async (req, res) => {
+  const avatar = String(req.body && req.body.avatar || '').trim();
+  if (!avatar) return res.status(400).json({ error: '请上传头像' });
+  // 仅接受 data:image/png;base64, 前缀，由前端 Canvas.toBlob 生成
+  const m = avatar.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!m) return res.status(400).json({ error: '头像格式不正确' });
+  const buf = Buffer.from(m[1], 'base64');
+  if (buf.length > AVATAR_MAX_BYTES) {
+    return res.status(400).json({ error: '头像过大，请压缩到 100KB 以内' });
+  }
+  await db.execute('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, req.user.id]);
+  // 桌面用户缓存失效，下次 /api/auth/me 返回最新头像
+  if (process.env.PENMARK_DESKTOP === '1') auth.invalidateDesktopUserCache();
+  res.json({ ok: true, avatar });
+}));
+
+app.delete('/api/user/avatar', wrap(async (req, res) => {
+  await db.execute('UPDATE users SET avatar = $1 WHERE id = $2', ['', req.user.id]);
+  if (process.env.PENMARK_DESKTOP === '1') auth.invalidateDesktopUserCache();
+  res.json({ ok: true });
+}));
+
 /* ---------- 文档 CRUD（按 user_id 隔离） ---------- */
 // 文档内容大小上限（默认 5MB），与 Nginx client_max_body_size 协同
 const DOC_MAX_BYTES = Number(process.env.PENMARK_DOC_MAX_BYTES) || 5 * 1024 * 1024;
+// Keep API-created titles within the same limit as the browser editor.
+const DOC_TITLE_MAX_LENGTH = 100;
 
 async function verifyFolderOwnership(folderId, userId) {
   if (folderId === null || folderId === undefined) return null;
@@ -552,7 +579,7 @@ app.post('/api/documents', wrap(async (req, res) => {
         if (err.code === 'FOLDER_NOT_FOUND') return null; // 容错：找不到则不挂文件夹
         throw err;
       });
-  const title = String(req.body.title || '无标题').slice(0, 500);
+  const title = String(req.body.title || '无标题').slice(0, DOC_TITLE_MAX_LENGTH);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const info = await db.execute(
     'INSERT INTO documents (title, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -563,7 +590,7 @@ app.post('/api/documents', wrap(async (req, res) => {
 
 app.put('/api/documents/:id', wrap(async (req, res) => {
   const now = Date.now();
-  const title = String(req.body.title || '').slice(0, 500);
+  const title = String(req.body.title || '').slice(0, DOC_TITLE_MAX_LENGTH);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const docId = req.params.id;
   const userId = req.user.id;
@@ -1301,10 +1328,10 @@ app.get('/api/documents/:id/share-stats', wrap(async (req, res) => {
 
 /* ---------- 公开访问 ---------- */
 app.get('/api/public/share/:token/info', wrap(async (req, res) => {
-  const share = await db.one('SELECT permission, password_hash IS NOT NULL AS has_password, expire_at, theme FROM shares WHERE token = $1', [req.params.token]);
+  const share = await db.one('SELECT s.permission, s.password_hash IS NOT NULL AS has_password, s.expire_at, s.theme, u.nickname AS owner_nickname FROM shares s LEFT JOIN users u ON u.id = s.owner_id WHERE s.token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
-  res.json({ permission: share.permission, has_password: !!share.has_password, can_edit: share.permission === 'edit', theme: share.theme || 'light' });
+  res.json({ permission: share.permission, has_password: !!share.has_password, can_edit: share.permission === 'edit', theme: share.theme || 'light', owner_nickname: share.owner_nickname || '' });
 }));
 
 const shareRateLimit = new Map();
@@ -1341,18 +1368,18 @@ app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
 }));
 
 app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
-  const share = await db.one('SELECT * FROM shares WHERE token = $1', [req.params.token]);
+  const share = await db.one('SELECT s.*, u.nickname AS owner_nickname FROM shares s LEFT JOIN users u ON u.id = s.owner_id WHERE s.token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
   if (share.password_hash) {
-    const ss = auth.verifyShareSession(auth.readShareCookie(req));
+    const ss = auth.verifyShareSession(auth.readShareCookies(req));
     if (!ss || !ss.authed || ss.token !== share.token) {
       return res.status(401).json({ error: 'need_password', has_password: true });
     }
   }
   const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
-  res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit' });
+  res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit', owner_nickname: share.owner_nickname || '' });
 }));
 
 app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
@@ -1367,7 +1394,7 @@ app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
     }
   }
   const now = Date.now();
-  const title = String(req.body.title || '无标题').slice(0, 500);
+  const title = String(req.body.title || '无标题').slice(0, DOC_TITLE_MAX_LENGTH);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND deleted_at IS NULL',
     [title, content, now, share.doc_id]);
@@ -1533,11 +1560,19 @@ app.get('/s/:token', wrap(async (req, res) => {
 
 /* ---------- 统一错误处理 ---------- */
 app.use((err, req, res, next) => {
-  console.error('未处理错误:', err.message);
+  const requestId = 'err_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  console.error('Unhandled request error:', {
+    requestId,
+    method: req.method,
+    path: req.originalUrl || req.url,
+    code: err && err.code,
+    message: err && err.message,
+    stack: process.env.NODE_ENV === 'production' ? undefined : err && err.stack
+  });
   if (process.env.NODE_ENV !== 'production') {
-    res.status(500).json({ error: err.message || '服务器内部错误' });
+    res.status(500).json({ error: err.message || '服务器内部错误', requestId });
   } else {
-    res.status(500).json({ error: '服务器内部错误' });
+    res.status(500).json({ error: '服务器内部错误', requestId });
   }
 });
 

@@ -86,6 +86,7 @@ try {
   if (!userCols.some(c => c.name === 'is_banned')) db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0");
   if (!userCols.some(c => c.name === 'can_share')) db.exec("ALTER TABLE users ADD COLUMN can_share INTEGER NOT NULL DEFAULT 0");
   if (!userCols.some(c => c.name === 'admin_note')) db.exec("ALTER TABLE users ADD COLUMN admin_note TEXT DEFAULT ''");
+  if (!userCols.some(c => c.name === 'avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''");
   // 回填：普通用户用 phone 作为 username/nickname（管理员回填由 auth.js seedAdmin 负责）
   db.prepare("UPDATE users SET username = phone WHERE is_admin = 0 AND (username IS NULL OR username = '')").run();
   db.prepare("UPDATE users SET nickname = phone WHERE nickname IS NULL OR nickname = ''").run();

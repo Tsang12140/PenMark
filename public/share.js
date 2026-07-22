@@ -161,6 +161,12 @@ function renderDoc(data) {
     ? '<span class="share-badge edit">可编辑</span>'
     : '<span class="share-badge view">仅查看</span>';
 
+  // 作者昵称：优先从 /doc 接口取，兜底从 /info 接口取（旧链接兼容）
+  const ownerNickname = (data.owner_nickname || (shareInfo && shareInfo.owner_nickname) || '').trim();
+  const authorHtml = ownerNickname
+    ? '<span class="share-author">' + escapeHtml(ownerNickname) + '</span>'
+    : '';
+
   // 编辑按钮（仅可编辑权限时出现）；默认查看，点击后切换为编辑
   const editBtn = canEdit
     ? '<button type="button" class="share-edit-btn" id="shareEditBtn" title="点击进入编辑">编辑</button>'
@@ -171,6 +177,7 @@ function renderDoc(data) {
       '<div class="share-paper-head">' +
         '<h1 class="share-paper-title">' + escapeHtml(doc.title || '无标题') + '</h1>' +
         '<div class="share-paper-info">' + badge +
+          authorHtml +
           '<span class="share-date">更新于 ' + relativeTime(doc.updated_at) + '</span>' +
           editBtn +
         '</div>' +
@@ -223,8 +230,9 @@ function setupShareEditToggle(token) {
     notice.textContent = '轻编辑模式：适合少量改字和补充，复杂排版、表格和图片请回到主编辑器处理。';
     editor.parentNode.insertBefore(notice, editor);
 
+    // saveBar 不立即显示，等用户第一次 input 时再显示，避免"已就绪"长期悬浮遮挡内容
     const saveBar = $('shareSaveBar');
-    if (saveBar) saveBar.hidden = false;
+    if (saveBar) saveBar.hidden = true;
 
     btn.remove();
     setupEditor(token);
@@ -246,7 +254,27 @@ function setupEditor(token) {
   const editorEl = $('shareEditor');
   const stateEl = $('shareSaveState');
   const dotEl = $('saveDot');
+  const saveBar = $('shareSaveBar');
   let saveTimer = null;
+  let fadeTimer = null;
+
+  // 显示保存状态条（编辑中、保存中、已保存）
+  function showSaveBar() {
+    if (!saveBar) return;
+    saveBar.hidden = false;
+    saveBar.classList.remove('fade-out');
+    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
+  }
+  // 保存成功后 2s 自动淡出，避免长期遮挡内容
+  function scheduleFadeOut() {
+    if (!saveBar) return;
+    if (fadeTimer) clearTimeout(fadeTimer);
+    fadeTimer = setTimeout(() => {
+      saveBar.classList.add('fade-out');
+      // 淡出动画结束后彻底隐藏，避免占用焦点和点击区域
+      setTimeout(() => { if (saveBar.classList.contains('fade-out')) saveBar.hidden = true; }, 350);
+    }, 2000);
+  }
 
   // 待办事项勾选委托：点击 .todo-check 切换 .checked + .todo-item.done
   editorEl.addEventListener('click', (e) => {
@@ -259,6 +287,7 @@ function setupEditor(token) {
   });
 
   editorEl.addEventListener('input', () => {
+    showSaveBar();
     stateEl.textContent = '编辑中…';
     if (dotEl) dotEl.classList.add('editing');
     if (saveTimer) clearTimeout(saveTimer);
@@ -275,6 +304,7 @@ function setupEditor(token) {
         if (res.ok) {
           stateEl.textContent = '已保存 ' + timeStr();
           if (dotEl) dotEl.classList.remove('editing');
+          scheduleFadeOut();
         } else if (res.status === 403) {
           stateEl.textContent = '无编辑权限';
         } else {
@@ -326,13 +356,35 @@ function setupTOC() {
   tocEl.innerHTML = html;
   tocEl.hidden = false;
 
-  // 滚动高亮当前章节
+  // Activate the clicked item immediately. An in-view heading may not trigger
+  // a fresh observer entry, which previously left the old TOC item active.
   const links = tocEl.querySelectorAll('a');
+  const setActiveLink = (id) => {
+    links.forEach(link => link.classList.toggle('active', link.getAttribute('data-target') === id));
+  };
+  let keepClickedLinkActiveUntil = 0;
+  links.forEach(link => {
+    link.addEventListener('click', (event) => {
+      const id = link.getAttribute('data-target');
+      const heading = id && document.getElementById(id);
+      if (!heading) return;
+      event.preventDefault();
+      setActiveLink(id);
+      // Do not let an old heading observed during the smooth scroll overwrite
+      // the item the reader just selected.
+      keepClickedLinkActiveUntil = Date.now() + 700;
+      history.replaceState(null, '', '#' + encodeURIComponent(id));
+      const top = Math.max(0, window.scrollY + heading.getBoundingClientRect().top - 88);
+      const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+      window.scrollTo({ top, behavior });
+    });
+  });
+
+  // Keep the current chapter highlighted while readers scroll.
   const observer = new IntersectionObserver((entries) => {
+    if (Date.now() < keepClickedLinkActiveUntil) return;
     entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        links.forEach(l => l.classList.toggle('active', l.getAttribute('data-target') === entry.target.id));
-      }
+      if (entry.isIntersecting) setActiveLink(entry.target.id);
     });
   }, { rootMargin: '-80px 0px -70% 0px' });
   headings.forEach(h => observer.observe(h));

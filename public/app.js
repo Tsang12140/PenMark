@@ -5,6 +5,8 @@ const $ = id => document.getElementById(id);
 const editorEl = $('editor');
 const docListEl = $('docList');
 const docTitleEl = $('docTitle');
+const docTitleOverflow = $('docTitleOverflow');
+const TITLE_MAX = 100; // 标题最大字数（与 input maxlength、粘贴截断一致，防止超长内容撑爆标题栏）
 const searchInput = $('searchInput');
 const charCountEl = $('charCount');
 const imgCountEl = $('imgCount');
@@ -127,7 +129,7 @@ function showVersionBanner(v) {
       await saveCurrent({ reorder: false });
       const doc = await api('/api/documents/' + currentDoc.id);
       currentDoc = doc;
-      docTitleEl.value = doc.title === '无标题' ? '' : doc.title;
+      setDocTitle(doc.title === '无标题' ? '' : doc.title);
       editor.setHTML(doc.content || '');
       saveStateEl.textContent = '已加载最新';
       toast('已加载最新版本');
@@ -174,6 +176,13 @@ window.__pmCheckNow = checkDocVersion;
 
 /* ---------- 标签页标题：跟随当前文档名 ---------- */
 const PENMARK_SUFFIX = ' - 知著 PenMark';
+
+// 统一设置标题输入框的值，并同步失焦省略号显示层
+function setDocTitle(text){
+  const v = (text == null ? '' : String(text)).slice(0, TITLE_MAX);
+  docTitleEl.value = v;
+  if (docTitleOverflow) docTitleOverflow.textContent = v;
+}
 
 function updateDocumentTitle(title) {
   const t = (title || '').trim() || '无标题';
@@ -1067,7 +1076,7 @@ function scheduleAutoSave() {
 async function saveCurrent(opts) {
   if (!currentDoc) return;
   opts = opts || {};
-  const title = docTitleEl.value.trim() || '无标题';
+  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
   const content = editor.getHTML();
   try {
     const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
@@ -1162,7 +1171,8 @@ async function api(url, method, body, opts = {}) {
     // 常见英文错误翻译成中文（避免移动端 toast 看不懂）
     const raw = (errBody && errBody.error) || ('HTTP ' + r.status);
     const cn = translateApiError(raw);
-    throw new Error(cn);
+    const requestId = errBody && typeof errBody.requestId === 'string' ? errBody.requestId : '';
+    throw new Error(requestId ? cn + '（错误编号：' + requestId + '）' : cn);
   }
   return r.json();
 }
@@ -1460,7 +1470,7 @@ async function newDocInFolder(folderId) {
     persistExpanded();
     await loadSidebar();
     currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId, version: 1 };
-    docTitleEl.value = '';
+    setDocTitle('');
     editor.clear();
     saveStateEl.textContent = '新文档';
     docTitleEl.focus();
@@ -1622,7 +1632,7 @@ async function openDoc(id) {
     if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveCurrent({ reorder: false }); }
     const doc = await api('/api/documents/' + id);
     currentDoc = doc;
-    docTitleEl.value = doc.title === '无标题' ? '' : doc.title;
+    setDocTitle(doc.title === '无标题' ? '' : doc.title);
     editor.setHTML(doc.content || '');
     Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
       el.classList.toggle('active', el.getAttribute('data-id') == id);
@@ -1655,7 +1665,7 @@ async function newDoc() {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '' });
     await loadSidebar();
     currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), version: 1 };
-    docTitleEl.value = '';
+    setDocTitle('');
     editor.clear();
     Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
       el.classList.toggle('active', el.getAttribute('data-id') == res.id);
@@ -1695,8 +1705,125 @@ async function confirmDelete(doc) {
 
 /* ---------- 标题 ---------- */
 docTitleEl.addEventListener('input', () => {
+  // 防御：IME 组字、拖拽入栏、历史数据回填可能突破 maxlength，实时截断
+  if (docTitleEl.value.length > TITLE_MAX) {
+    docTitleEl.value = docTitleEl.value.slice(0, TITLE_MAX);
+    docTitleEl.setSelectionRange(TITLE_MAX, TITLE_MAX);
+  }
+  if (docTitleOverflow) docTitleOverflow.textContent = docTitleEl.value;
   updateDocumentTitle(docTitleEl.value);
   scheduleAutoSave();
+});
+
+function textPositionAt(root, offset) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    const next = consumed + node.nodeValue.length;
+    if (offset <= next) return { node, offset: Math.max(0, offset - consumed) };
+    consumed = next;
+  }
+  return null;
+}
+
+function removeLeadingText(root, count) {
+  if (count <= 0) return;
+  const end = textPositionAt(root, count);
+  if (!end) return;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.setEnd(end.node, end.offset);
+  range.deleteContents();
+}
+
+function paragraphsFromPlainText(lines) {
+  const firstContent = lines.findIndex(line => line.trim());
+  if (firstContent === -1) return '';
+  return lines.slice(firstContent).map(line => line.trim()
+    ? '<p>' + escapeHtml(line.trim()) + '</p>'
+    : '<p><br></p>'
+  ).join('');
+}
+
+// 标题粘贴：飞书式逻辑 —— 第一段留标题，剩余段落插入正文开头
+// 避免整篇文章被压成一行进入标题输入框
+docTitleEl.addEventListener('paste', (e) => {
+  const cd = e.clipboardData || window.clipboardData;
+  if (!cd) return;
+  const html = cd.getData('text/html');
+  const text = cd.getData('text/plain') || '';
+
+  // 简单单行短文本：让浏览器默认处理（保留光标位置、Ctrl+Z 等）
+  const isSingleLineText = !html && text && !text.includes('\n') && text.length <= 100;
+  if (isSingleLineText) return;
+
+  e.preventDefault();
+
+  let firstText = '';
+  let restHtml = '';
+
+  if (html && editor._shouldPasteAsHTML(html)) {
+    // 复用编辑器的 HTML 清洗逻辑（保留公众号/微信图文样式）
+    const cleanedHtml = editor._cleanPastedHTML(html);
+    const doc = new DOMParser().parseFromString(cleanedHtml, 'text/html');
+    const body = doc.body;
+
+    // 找第一个块级元素作为第一段
+    const blockSel = 'p, h1, h2, h3, h4, h5, h6, div, li, blockquote, pre, table, section, article';
+    const firstBlock = Array.from(body.querySelectorAll(blockSel)).find(block => block.textContent.trim() && !block.querySelector(blockSel));
+
+    if (firstBlock && firstBlock.textContent.trim()) {
+      const sourceText = firstBlock.textContent || '';
+      const leadingWhitespace = (sourceText.match(/^\s*/) || [''])[0].length;
+      const titleSource = sourceText.slice(leadingWhitespace);
+      firstText = titleSource.slice(0, TITLE_MAX).replace(/\s+/g, ' ').trim();
+
+      // Keep the overflow from the first paragraph, preserving inline rich-text markup.
+      removeLeadingText(firstBlock, leadingWhitespace + Math.min(TITLE_MAX, titleSource.length));
+      if (!firstBlock.textContent.trim() && !firstBlock.querySelector('img, table, hr, video, audio')) {
+        firstBlock.remove();
+      }
+      restHtml = body.innerHTML;
+    } else {
+      // 没有块级元素，整段都是 inline：按纯文本处理
+      const inlineText = (text || body.textContent || '').trim();
+      firstText = inlineText.slice(0, TITLE_MAX);
+      restHtml = paragraphsFromPlainText([inlineText.slice(TITLE_MAX)]);
+    }
+  } else if (text) {
+    // 纯文本：按换行拆分
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    const firstLineIndex = lines.findIndex(line => line.trim());
+    if (firstLineIndex !== -1) {
+      const firstLine = lines[firstLineIndex].trim();
+      firstText = firstLine.slice(0, TITLE_MAX);
+      const remainingLines = [firstLine.slice(TITLE_MAX)].concat(lines.slice(firstLineIndex + 1));
+      restHtml = paragraphsFromPlainText(remainingLines);
+    }
+  }
+
+  if (!firstText) return;
+
+  // 设置标题
+  setDocTitle(firstText);
+  updateDocumentTitle(firstText);
+  scheduleAutoSave();
+
+  // 剩余内容插入到编辑器开头
+  if (restHtml && restHtml.trim()) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = restHtml;
+    const frag = document.createDocumentFragment();
+    while (tempDiv.firstChild) frag.appendChild(tempDiv.firstChild);
+    if (editorEl.firstChild) {
+      editorEl.insertBefore(frag, editorEl.firstChild);
+    } else {
+      editorEl.appendChild(frag);
+    }
+    editor._afterChange();
+    if (editor._afterPasteCleanup) setTimeout(() => editor._afterPasteCleanup(), 60);
+  }
 });
 
 /* ---------- 搜索 ---------- */
@@ -1763,7 +1890,18 @@ $('themeToggle').addEventListener('click', toggleTheme);
 /* ---------- 移动端主页/编辑器双层架构 ---------- */
 const sidebarEl = $('sidebar');
 const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
-function isMobile() { return MOBILE_MQ.matches; }
+// 桌面端识别：Electron 桌面应用，或 userAgent 不是移动设备的桌面浏览器
+// 关键：桌面浏览器窗口缩小到 760px 以下不切移动版，避免"被锁成超宽移动板"
+// 只有真正的手机/平板（iPhone/Android/iPad）才走移动版
+// viewport meta 的改写在 index.html / login.html 的 head 内联脚本中提前执行
+const IS_DESKTOP_APP = !!(window.desktop && window.desktop.isDesktop);
+const MOBILE_UA = /Android|iPhone|iPod|Windows Phone|Mobile|BB10|PlayBook/i.test(navigator.userAgent)
+  && !/iPad/i.test(navigator.userAgent); // iPad 屏幕大，走桌面布局更合理
+function isMobile() {
+  if (IS_DESKTOP_APP) return false;
+  if (!MOBILE_UA) return false;
+  return MOBILE_MQ.matches;
+}
 
 // 进入编辑器视图（移动端）
 function enterMobileEditor() {
@@ -2988,6 +3126,7 @@ async function init() {
     const meBody = await meRes.json();
     currentUser = meBody.user;
     updateUserBadge();
+    bindAvatarUpload();
     updateShareButton();
     updateMobileChrome();
     // 鉴权通过，显示正文（移除 pre-auth 隐藏类）
@@ -3107,7 +3246,7 @@ if (brandLockup) {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     try { await saveCurrent({ reorder: false }); } catch (e) { /* 保存失败仍允许返回 */ }
     currentDoc = null;
-    docTitleEl.value = '';
+    setDocTitle('');
     editor.clear();
     if (saveStateEl) saveStateEl.textContent = '';
     hideVersionBanner();
@@ -3122,11 +3261,94 @@ function updateUserBadge() {
   if (!badge || !currentUser) return;
   badge.querySelector('.user-name').textContent = currentUser.nickname || currentUser.username;
   badge.style.display = '';
+  // 头像：优先用 avatar base64，否则用首字母 + 纯色背景
+  const avatarEl = badge.querySelector('.user-avatar');
+  if (avatarEl) {
+    if (currentUser.avatar) {
+      avatarEl.innerHTML = '<img src="' + currentUser.avatar + '" alt="">';
+      avatarEl.style.background = '';
+    } else {
+      const initial = (currentUser.nickname || currentUser.username || '?').slice(0, 1).toUpperCase();
+      avatarEl.innerHTML = escapeHtml(initial);
+      avatarEl.style.background = pickAvatarColor(currentUser.username || currentUser.nickname || '');
+    }
+  }
   // 移动端"我的"标签也展示昵称
   const meTab = document.getElementById('mbnMe');
   if (meTab) {
     const label = meTab.querySelector('span');
     if (label) label.textContent = (currentUser.nickname || currentUser.username || '').slice(0, 6) || '我的';
+  }
+}
+
+// 根据用户名 hash 取一个柔和的纯色头像背景
+const AVATAR_COLORS = ['#6f897a', '#8a6f89', '#89766f', '#6f7d89', '#89836f', '#73897f'];
+function pickAvatarColor(seed) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+// 上传头像：前端 Canvas 压缩到 256×256 PNG，POST 给后端
+async function uploadUserAvatar(file) {
+  if (!file) return;
+  if (!/^image\//.test(file.type)) { toast('请选择图片文件'); return; }
+  if (file.size > 8 * 1024 * 1024) { toast('图片过大，请选择 8MB 以内的图片'); return; }
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('读取文件失败'));
+      reader.readAsDataURL(file);
+    });
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('图片加载失败'));
+      im.src = dataUrl;
+    });
+    // 居中裁剪到正方形，再缩放到 256×256
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const srcSize = Math.min(img.width, img.height);
+    const sx = (img.width - srcSize) / 2;
+    const sy = (img.height - srcSize) / 2;
+    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, size, size);
+    const png = canvas.toDataURL('image/png');
+    const resp = await fetch('/api/user/avatar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ avatar: png })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || '上传失败');
+    }
+    const data = await resp.json();
+    currentUser.avatar = data.avatar;
+    updateUserBadge();
+    toast('头像已更新');
+  } catch (e) {
+    toast(e.message || '上传失败');
+  }
+}
+
+function bindAvatarUpload() {
+  const badge = $('userBadge');
+  if (!badge) return;
+  const avatarEl = badge.querySelector('.user-avatar');
+  if (avatarEl && !avatarEl.dataset.bound) {
+    avatarEl.dataset.bound = '1';
+    avatarEl.title = '点击更换头像';
+    avatarEl.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = () => uploadUserAvatar(input.files && input.files[0]);
+      input.click();
+    });
   }
 }
 
@@ -3284,6 +3506,8 @@ function populateMobileSheet(mode) {
 
 // "我的"菜单：用户信息卡 + 主题切换 + 退出登录
 function populateMeSheet(body) {
+  // 清空旧内容（上传头像后会重新调用本函数）
+  while (body && body.firstChild) body.removeChild(body.firstChild);
   const name = (currentUser && (currentUser.nickname || currentUser.username)) || '未登录';
   const uname = (currentUser && currentUser.username) || '';
   const initial = (name || '?').slice(0, 1).toUpperCase();
@@ -3291,12 +3515,32 @@ function populateMeSheet(body) {
 
   const card = document.createElement('div');
   card.className = 'ms-me-card';
+  const avatarHtml = (currentUser && currentUser.avatar)
+    ? '<img src="' + currentUser.avatar + '" alt="">'
+    : escapeHtml(initial);
+  const avatarBg = (currentUser && currentUser.avatar) ? '' : (' style="background:' + pickAvatarColor(uname || name) + '"');
   card.innerHTML =
-    '<div class="ms-me-avatar">' + escapeHtml(initial) + '</div>' +
+    '<div class="ms-me-avatar" title="点击更换头像"' + avatarBg + '>' + avatarHtml + '</div>' +
     '<div class="ms-me-info">' +
       '<div class="ms-me-name">' + escapeHtml(name) + (isAdmin ? ' <span class="ms-me-badge">管理员</span>' : '') + '</div>' +
       (uname ? '<div class="ms-me-username">@' + escapeHtml(uname) + '</div>' : '') +
     '</div>';
+  // 移动端头像也支持点击上传
+  const mobileAvatar = card.querySelector('.ms-me-avatar');
+  if (mobileAvatar) {
+    mobileAvatar.style.cursor = 'pointer';
+    mobileAvatar.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async () => {
+        await uploadUserAvatar(input.files && input.files[0]);
+        // 上传完成后重新填充面板，刷新头像
+        populateMeSheet(body);
+      };
+      input.click();
+    });
+  }
   body.appendChild(card);
 
   const section = document.createElement('div');

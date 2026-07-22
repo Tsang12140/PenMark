@@ -73,7 +73,7 @@ async function verifySession(token) {
   if (session.expires_at < now) return null;
   // 查询用户，检查封禁
   const user = await db.one(
-    'SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = $1',
+    'SELECT id, username, nickname, is_admin, is_banned, can_share, avatar FROM users WHERE id = $1',
     [session.user_id]
   );
   if (!user) return null;
@@ -114,12 +114,13 @@ function publicUser(u) {
     nickname: u.nickname,
     isAdmin: !!u.is_admin,
     is_banned: !!u.is_banned,
-    can_share: !!u.can_share
+    can_share: !!u.can_share,
+    avatar: u.avatar || ''
   };
 }
 
 async function getUserById(id) {
-  const u = await db.one('SELECT id, username, nickname, is_admin, is_banned, can_share FROM users WHERE id = $1', [id]);
+  const u = await db.one('SELECT id, username, nickname, is_admin, is_banned, can_share, avatar FROM users WHERE id = $1', [id]);
   if (!u) return null;
   return publicUser(u);
 }
@@ -190,7 +191,7 @@ async function register(username, nickname, password, inviteCode, req) {
 let _desktopUser = null;
 async function ensureDesktopUser() {
   if (_desktopUser) return _desktopUser;
-  let u = await db.one('SELECT id, username, nickname, is_admin FROM users WHERE LOWER(username) = LOWER($1)', ['desktop']);
+  let u = await db.one('SELECT id, username, nickname, is_admin, avatar FROM users WHERE LOWER(username) = LOWER($1)', ['desktop']);
   if (!u) {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt);
@@ -198,10 +199,10 @@ async function ensureDesktopUser() {
       'INSERT INTO users (phone, username, nickname, password_hash, password_salt, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, 1, $6)',
       ['desktop', 'desktop', '本地用户', hash, salt, Date.now()]
     );
-    u = { id: info.insertId, username: 'desktop', nickname: '本地用户', is_admin: 1 };
+    u = { id: info.insertId, username: 'desktop', nickname: '本地用户', is_admin: 1, avatar: '' };
     console.log('已创建桌面本地用户');
   }
-  _desktopUser = { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin };
+  _desktopUser = { id: u.id, username: u.username, nickname: u.nickname, isAdmin: !!u.is_admin, avatar: u.avatar || '' };
   return _desktopUser;
 }
 
@@ -211,6 +212,11 @@ function isDesktopRequestAuthorized(req) {
   const actual = readCookie(req, DESKTOP_COOKIE_NAME) || '';
   if (!expected || actual.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+}
+
+// 头像/昵称等修改后，让桌面用户缓存失效，下次调用重新查库
+function invalidateDesktopUserCache() {
+  _desktopUser = null;
 }
 
 /* ---------- 生产配置校验：拒绝使用默认密钥启动 ---------- */
@@ -417,7 +423,7 @@ module.exports = {
   authMiddleware, setCookie, clearCookie,
   COOKIE_NAME, SESSION_EXPIRE_DAYS, DESKTOP_COOKIE_NAME,
   validateUsername, validateNickname, validatePassword,
-  ensureDesktopUser, isDesktopRequestAuthorized,
+  ensureDesktopUser, isDesktopRequestAuthorized, invalidateDesktopUserCache,
   ready, seedAdmin,
   adminOnly, hashPassword, verifyPassword, publicUser,
   // 分享相关

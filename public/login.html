@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 桌面端（鼠标设备 pointer:fine）不会被锁成移动版：CSS 里 @media (max-width:760px) 都加了
+     and (pointer:coarse) 限定，只有真正的触摸设备（手机/平板）才触发移动版样式。
+     桌面浏览器不管窗口多窄，都保持桌面布局，按窗口实际宽度排版，不会出现"超宽缩小"问题。 -->
 
 <!-- Favicon -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">

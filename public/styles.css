@@ -1,4 +1,4 @@
-/* ============ 设计变量：亮色（纸张质感） ============ */
+﻿/* ============ 设计变量：亮色（纸张质感） ============ */
 :root{
   --bg:#f4f2ed;
   --bg-panel:#fbfaf7;
@@ -65,18 +65,22 @@ body{
 }
 
 /* ============ 整体布局 ============ */
-.app{display:flex;height:100vh;}
+.app{display:flex;height:100vh;min-width:0;}
 /* 鉴权前隐藏正文，避免未登录闪现编辑器骨架 */
 body.pre-auth .app{visibility:hidden;}
 
 /* ============ 侧边栏 ============ */
 .sidebar{
   flex:0 0 260px;
+  width:260px;
+  min-width:260px;
+  max-width:260px;
   background:var(--bg-sidebar);
   border-right:1px solid var(--line);
   display:flex;
   flex-direction:column;
   min-height:0;
+  overflow:hidden;
 }
 .sidebar-head{
   display:flex;
@@ -88,11 +92,11 @@ body.pre-auth .app{visibility:hidden;}
 .brand-lockup{
   display:flex;
   align-items:center;
-  width:142px;
+  width:85px;
   height:42px;
   min-width:0;
 }
-.brand-logo{display:block;width:142px;height:auto;max-width:100%;}
+.brand-logo{display:block;width:85px;height:auto;max-width:100%;}
 .brand-logo-dark{display:none;}
 [data-theme="dark"] .brand-logo-light{display:none;}
 [data-theme="dark"] .brand-logo-dark{display:block;}
@@ -168,6 +172,8 @@ body.pre-auth .app{visibility:hidden;}
 
 .doc-list{
   flex:1 1 auto;
+  width:100%;
+  min-width:0;
   overflow-y:auto;
   padding:4px 8px 12px;
 }
@@ -257,6 +263,8 @@ body.pre-auth .app{visibility:hidden;}
 .folder-menu:hover{background:var(--bg-active);color:var(--ink);}
 .folder-docs{
   display:none;
+  min-width:0;
+  max-width:100%;
   margin:2px 0 0 17px;
   padding:2px 0 4px 8px;
   border-left:1px solid var(--line);
@@ -406,6 +414,9 @@ body.pre-auth .app{visibility:hidden;}
 }
 
 .doc-item{
+  min-width:0;
+  max-width:100%;
+  overflow:hidden;
   padding:9px 10px;
   border-radius:6px;
   cursor:grab;
@@ -418,6 +429,9 @@ body.pre-auth .app{visibility:hidden;}
 .doc-item:hover{background:var(--bg-hover);}
 .doc-item.active{background:var(--bg-active);}
 .doc-item .doc-title{
+  display:block;
+  min-width:0;
+  max-width:100%;
   font-size:13px;
   color:var(--ink);
   white-space:nowrap;
@@ -578,6 +592,37 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .editor ul,.editor ol{margin:.6em 0;padding-left:1.8em;}
 .editor li{margin:.25em 0;}
 .editor hr{border:none;border-top:1px solid var(--line);margin:1.6em 0;}
+
+/* ============ 有序列表 CSS Counter 编号 ============
+   背景：浏览器原生 <ol> 编号在 contentEditable 中间插入/删除 li 时会乱
+   （出现两个 3、不递增等 bug），无法可靠修复。
+   方案：隐藏原生编号，用 CSS counter 自己渲染。
+   优势：编号完全基于 DOM 位置，插入/删除自动正确；嵌套自动多级编号。
+   适用：编辑器、分享阅读区、分享编辑区、导出 HTML（.doc）
+*/
+:where(.editor, .share-reader, .share-editor, .doc) ol{
+  list-style:none;
+  counter-reset:pm-ol;
+  padding-left:2em;
+}
+:where(.editor, .share-reader, .share-editor, .doc) ol > li{
+  position:relative;
+  counter-increment:pm-ol;
+}
+:where(.editor, .share-reader, .share-editor, .doc) ol > li::before{
+  content:counters(pm-ol, ".") ".";
+  position:absolute;
+  right:100%;
+  margin-right:.4em;
+  white-space:nowrap;
+  color:var(--ink-soft);
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum";
+  font-family:var(--sans);
+  font-size:.95em;
+}
+/* 用户用 Markdown 快捷输入「N、」中文编号时，不会生成 ol，仍是 <p> 段落，
+   不受这条规则影响；保留原有中文编号续号逻辑（editor.js 中）。*/
 
 /* 待办事项（行内格式） */
 .todo-item{
@@ -894,7 +939,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .version-banner .vb-refresh:hover{background:var(--accent-hover,var(--accent));filter:brightness(1.06);}
 .version-banner .vb-later{background:transparent;color:var(--ink-soft);}
 .version-banner .vb-later:hover{background:var(--bg-hover);color:var(--ink);}
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   .version-banner{top:auto;bottom:84px;left:12px;right:12px;max-width:none;}
 }
 
@@ -928,10 +973,20 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   gap:10px;
   padding:48px 70px 8px;
   width:100%;
+  min-width:0;        /* 允许在 flex 父容器中收缩 */
+  max-width:100%;     /* 绝不被超长标题撑开 */
+}
+/* 标题输入字段：包裹 input + 失焦省略号显示层 */
+.doc-title-field{
+  position:relative;
+  flex:1 1 auto;
+  min-width:0;
+  max-width:100%;
+  display:flex;
+  align-items:center;
 }
 .doc-title-bar input{
-  flex:1;
-  min-width:0;
+  width:100%;
   background:transparent;
   border:none;
   outline:none;
@@ -945,26 +1000,57 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 }
 .doc-title-bar input::placeholder{color:var(--ink-faint);font-weight:400;}
 .doc-title-bar input{user-select:text;-webkit-user-select:text;}
+/* 失焦省略号层：input 不支持 text-overflow:ellipsis，用叠加 span 实现 */
+.doc-title-overflow{
+  position:absolute;
+  inset:0;
+  display:none;
+  align-items:center;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-family:var(--sans);
+  font-size:34px;
+  font-weight:700;
+  line-height:1.25;
+  color:var(--ink);
+  padding:0;
+  letter-spacing:0;
+  pointer-events:none; /* 点击穿透到 input，使其聚焦 */
+}
+.doc-title-field input:not(:focus) + .doc-title-overflow{ display:flex; }
+/* input 为空（显示 placeholder）时不显示省略号层，让 placeholder 可见 */
+.doc-title-field input:not(:focus):placeholder-shown + .doc-title-overflow{ display:none; }
+/* 失焦且有值时隐藏 input 文字，避免与省略号层重叠 */
+.doc-title-field input:not(:focus):not(:placeholder-shown){ color:transparent; }
 
 /* 侧边栏底部用户信息 */
 .sidebar-foot{
   flex:0 0 auto;
-  display:flex;align-items:center;gap:8px;
-  padding:10px 14px;
+  display:flex;align-items:center;gap:10px;
+  padding:12px 14px;
   border-top:1px solid var(--line);
   background:var(--bg-sidebar);
-  font-size:12px;color:var(--ink-soft);
+  font-size:13.5px;color:var(--ink-soft);
 }
 .sidebar-foot .user-avatar{
-  width:22px;height:22px;border-radius:50%;
+  width:36px;height:36px;border-radius:50%;
   background:var(--accent);color:#fff;
   display:flex;align-items:center;justify-content:center;
-  font-size:10px;flex:0 0 auto;
+  font-size:15px;font-weight:600;flex:0 0 auto;
+  overflow:hidden;cursor:pointer;
+  transition:box-shadow .15s,transform .1s;
+  box-shadow:0 0 0 1px var(--line-soft);
+}
+.sidebar-foot .user-avatar:hover{box-shadow:0 0 0 2px var(--accent-soft);}
+.sidebar-foot .user-avatar img{
+  width:100%;height:100%;object-fit:cover;display:block;
 }
 .sidebar-foot .user-name{
   flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:13.5px;font-weight:500;color:var(--ink);
 }
-.sidebar-foot .icon-btn{width:26px;height:26px;font-size:13px;}
+.sidebar-foot .icon-btn{width:30px;height:30px;font-size:14px;}
 
 /* ============ 登录页 ============ */
 .login-body{
@@ -981,7 +1067,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   box-shadow:0 24px 70px rgba(32,41,46,.09);
   padding:40px 38px 34px;
 }
-.login-logo-img{display:block;width:220px;height:auto;max-width:100%;margin:0 auto;}
+.login-logo-img{display:block;width:132px;height:auto;max-width:100%;margin:0 auto;}
 .login-brand{display:flex;align-items:center;justify-content:center;min-height:64px;margin-bottom:28px;text-align:center;}
 .login-brand .brand-logo-dark{display:none;}
 [data-theme="dark"] .login-brand .brand-logo-light{display:none;}
@@ -1428,7 +1514,7 @@ body.reading-mode .block-handle{display:none;}
 }
 .block-drag-indicator[hidden]{display:none;}
 
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   /* 移动端编辑器 padding 较窄，让 handle 紧贴左侧 */
   .block-handle{width:18px;}
 }
@@ -1532,7 +1618,7 @@ body.reading-mode .block-handle{display:none;}
 :where(.editor, .share-editor, .share-reader) .link-card.no-thumb{padding:14px 16px;}
 
 /* 响应式：窄屏收起侧边栏 */
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   /* ============ 主页/编辑器双层架构 ============
      .app 默认显示主页（sidebar 全屏），编辑器隐藏
      body.mobile-editor-active 切换到编辑器视图
@@ -1546,6 +1632,8 @@ body.reading-mode .block-handle{display:none;}
     position:static;
     transform:none;
     width:100%;
+    min-width:0;
+    max-width:none;
     height:100%;
     flex:none;
     display:flex;
@@ -1566,7 +1654,7 @@ body.reading-mode .block-handle{display:none;}
 
   /* 主页头部：放大触摸区 */
   .sidebar-head{padding:12px 14px 10px;}
-  .brand-lockup{width:128px;height:38px;}
+  .brand-lockup{width:76px;height:38px;}
   .icon-btn{width:44px;height:44px;border-radius:12px;font-size:18px;}
 
   /* 主页搜索框 */
@@ -1651,7 +1739,9 @@ body.reading-mode .block-handle{display:none;}
     border-bottom:1px solid var(--line-soft);
     align-items:center;
   }
-  .doc-title-bar input{font-size:20px;font-weight:600;flex:1 1 auto;}
+  .doc-title-field{flex:1 1 auto;min-width:0;}
+  .doc-title-bar input{font-size:20px;font-weight:600;}
+  .doc-title-overflow{font-size:20px;font-weight:600;}
   .mobile-menu-btn{
     display:inline-flex;
     width:44px;height:44px;
@@ -1901,8 +1991,8 @@ body.reading-mode .block-handle{display:none;}
 .ms-me-card{
   display:flex;
   align-items:center;
-  gap:12px;
-  padding:14px 12px;
+  gap:14px;
+  padding:16px 14px;
   background:var(--bg-editor);
   border:1px solid var(--line-soft);
   border-radius:12px;
@@ -1910,7 +2000,7 @@ body.reading-mode .block-handle{display:none;}
 }
 .ms-me-avatar{
   flex:0 0 auto;
-  width:48px;height:48px;
+  width:56px;height:56px;
   border-radius:50%;
   background:var(--accent);
   color:#fff;
@@ -1918,13 +2008,16 @@ body.reading-mode .block-handle{display:none;}
   align-items:center;
   justify-content:center;
   font-family:var(--sans);
-  font-size:20px;
+  font-size:22px;
   font-weight:600;
   letter-spacing:.02em;
+  overflow:hidden;
+  box-shadow:0 0 0 1px var(--line-soft);
 }
+.ms-me-avatar img{width:100%;height:100%;object-fit:cover;display:block;}
 .ms-me-info{flex:1 1 auto;min-width:0;}
 .ms-me-name{
-  font-size:15px;
+  font-size:16px;
   font-weight:600;
   color:var(--ink);
   display:flex;
@@ -2359,7 +2452,7 @@ body.reading-mode .block-handle{display:none;}
 .ai-panel-send svg{width:16px;height:16px;}
 
 /* 移动端：AI 面板退化为底部抽屉 */
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   .ai-panel{
     top:auto;
     left:0;right:0;bottom:0;
@@ -2456,9 +2549,9 @@ body.reading-mode .block-handle{display:none;}
   transition:background .12s;
 }
 .trash-item:hover{background:var(--bg-hover);}
-.trash-item-title{font-size:13px;color:var(--ink);font-weight:500;}
-.trash-item-meta{font-size:11px;color:var(--ink-faint);margin-top:2px;}
-.trash-item-actions{display:flex;gap:6px;}
+.trash-item-title{font-size:13px;color:var(--ink);font-weight:500;flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.trash-item-meta{font-size:11px;color:var(--ink-faint);margin-top:2px;flex:0 0 auto;white-space:nowrap;}
+.trash-item-actions{display:flex;gap:6px;flex:0 0 auto;}
 .trash-restore,.trash-delete{
   border:1px solid var(--line);background:var(--bg-editor);
   border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;
@@ -2524,15 +2617,16 @@ body.reading-mode .block-handle{display:none;}
 .share-theme-btn:hover{background:var(--bg-hover);}
 .share-theme-btn.active{border-color:var(--accent);color:var(--accent);background:var(--highlight);}
 
-/* 分享页顶部工具栏：左 logo + 右工具组 */
+/* 分享页顶部工具栏：左 logo + 右工具组（不冻结，随页面滚动消失） */
 .share-topbar{
-  position:fixed;top:0;left:0;right:0;
-  z-index:100;
+  position:relative; /* 不再 fixed：滑动时不冻结 */
+  z-index:10;
   display:flex;align-items:center;justify-content:space-between;
   padding:12px 16px;
-  pointer-events:none; /* 子元素单独启用，避免遮挡文章点击 */
+  pointer-events:auto;
+  background:var(--bg);
+  border-bottom:1px solid var(--line-soft);
 }
-.share-topbar > *{pointer-events:auto;}
 .share-brand-mark{
   display:inline-flex;align-items:center;
   width:auto;height:26px;
@@ -2543,6 +2637,11 @@ body.reading-mode .block-handle{display:none;}
 .share-brand-mark:hover{opacity:.7;}
 .share-brand-logo{display:block;height:auto;width:auto;max-width:none;}
 .share-brand-mark .share-brand-logo{height:26px;}
+/* 双版本 logo 按主题自动切换：组合选择器优先级 (0,2,0)，覆盖 .share-brand-logo 的 display:block。
+   修复 bug：原本 footer 的 light+dark 两个 img 同时显示，dark 版本白底看不清。*/
+.share-brand-logo.brand-logo-dark{display:none;}
+[data-theme="dark"] .share-brand-logo.brand-logo-light{display:none;}
+[data-theme="dark"] .share-brand-logo.brand-logo-dark{display:block;}
 .share-tools{
   display:flex;align-items:center;gap:8px;
 }
@@ -3026,7 +3125,7 @@ body.reading-mode .editor hr{
 }
 .reading-exit[hidden]{display:none;}
 
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   .editor .img-grid,
   .editor .img-grid[data-count="3"],
   body.reading-mode .editor .img-grid,
@@ -3171,6 +3270,10 @@ body.share-page{
   letter-spacing:2px;
   line-height:1.4;
   margin:0 0 12px;
+  /* 智能换行：避免单字独占一行；同时兼容老浏览器 */
+  text-wrap:balance;
+  word-break:keep-all;
+  overflow-wrap:anywhere;
 }
 .share-paper-info{
   display:flex;
@@ -3212,6 +3315,14 @@ body.share-page{
   color:#fff;
 }
 .share-date{font-size:11.5px;}
+/* 作者昵称：字重 500（不轻不重），用 serif 字体与标题呼应，颜色比日期略深一档 */
+.share-author{
+  font-family:var(--serif);
+  font-size:13px;
+  font-weight:500;
+  color:var(--ink-soft);
+  letter-spacing:.3px;
+}
 
 /* 只读分享页里的待办勾选：不显示手型，hover 不变色 */
 .share-reader .todo-check{cursor:default;}
@@ -3225,7 +3336,17 @@ body.share-page{
   color:var(--ink);
   min-height:40vh;
   outline:none;
+  /* 默认两端对齐，中文也走字符间距补齐，避免右侧锯齿 */
+  text-align:justify;
+  text-justify:inter-ideograph;
+  /* 标题、引用、代码等块级元素覆盖回左对齐 */
 }
+.share-reader h1,.share-reader h2,.share-reader h3,
+.share-reader pre,.share-reader table,.share-reader .img-container,
+.share-reader .img-grid,.share-reader .link-card,
+.share-editor h1,.share-editor h2,.share-editor h3,
+.share-editor pre,.share-editor table,.share-editor .img-container,
+.share-editor .img-grid,.share-editor .link-card{text-align:left;}
 .share-editor:focus{outline:none;}
 .share-reader h1,.share-editor h1{
   font-size:1.9em;
@@ -3353,7 +3474,11 @@ body.share-page{
   align-items:center;
   gap:7px;
   z-index:50;
+  transition:opacity .3s;
 }
+/* 修复 bug：display:flex 会覆盖 [hidden] 的 display:none，导致 saveBar 一直显示 */
+.share-save-bar[hidden]{display:none!important;}
+.share-save-bar.fade-out{opacity:0;pointer-events:none;}
 .share-save-dot{
   width:8px;height:8px;
   border-radius:50%;
@@ -3532,7 +3657,7 @@ body.share-page{
 @media (max-width:1100px){
   .share-toc{display:none;}
 }
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   .share-container{padding:64px 14px 100px;}
   .share-paper{padding:28px 18px 32px;border-radius:8px;}
   .share-paper-head{padding-bottom:16px;margin-bottom:20px;}
@@ -4061,7 +4186,7 @@ body.dashboard-active .editor-wrap{display:none;}
 }
 
 /* 移动端仪表盘：紧凑布局 */
-@media (max-width:760px){
+@media (max-width:760px) and (pointer:coarse){
   .dashboard{padding:24px 16px calc(100px + env(safe-area-inset-bottom));}
   .dashboard-head{
     flex-direction:column;

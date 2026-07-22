@@ -229,7 +229,10 @@ async function main() {
     // 更新文档
     const updateDoc = await request(port, 'PUT', '/api/documents/' + docIdA, { title: 'A的文档(已更新)', content: '<p>新内容</p>' }, cookieA);
     check('更新文档成功', updateDoc.status === 200 && updateDoc.json && updateDoc.json.updated === 1);
-
+    const longTitle = 'x'.repeat(101);
+    const cappedTitleUpdate = await request(port, 'PUT', '/api/documents/' + docIdA, { title: longTitle, content: '<p>new content</p>' }, cookieA);
+    const cappedTitleRead = await request(port, 'GET', '/api/documents/' + docIdA, null, cookieA);
+    check('Document title API caps at 100 characters', cappedTitleUpdate.status === 200 && cappedTitleRead.json && cappedTitleRead.json.title === longTitle.slice(0, 100));
     // 软删除
     const softDel = await request(port, 'DELETE', '/api/documents/' + docIdA, null, cookieA);
     check('软删除文档成功', softDel.status === 200);
