@@ -3713,7 +3713,7 @@ body.share-page{
 .ai-modal{
   width:min(760px,94vw);
 }
-.ai-panel{
+.ai-modal-panel{
   display:flex;
   flex-direction:column;
   gap:14px;

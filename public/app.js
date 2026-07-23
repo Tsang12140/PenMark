@@ -2854,7 +2854,7 @@ async function openAiLayoutModal() {
     '<button class="ai-preset' + (key === 'share' ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key] + '</button>'
   ).join('');
   openAiModal('AI 排版',
-    '<div class="ai-panel" id="aiLayoutPanel">' +
+    '<div class="ai-modal-panel" id="aiLayoutPanel">' +
       '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
       '<div class="ai-preset-row">' + presetButtons + '</div>' +
@@ -3020,7 +3020,7 @@ function openAiRewriteModal() {
     '<button class="ai-preset" data-rewrite-preset="' + i + '">' + p.label + '</button>'
   ).join('');
   openAiModal('AI \u6539\u9009\u533a',
-    '<div class="ai-panel" id="aiRewritePanel">' +
+    '<div class="ai-modal-panel" id="aiRewritePanel">' +
       '<div class="ai-note">AI \u4f1a\u8bfb\u53d6\u5168\u6587\u4f5c\u4e3a\u80cc\u666f\uff0c\u4f46\u53ea\u66ff\u6362\u4f60\u9009\u4e2d\u7684\u8fd9\u6bb5\u3002</div>' +
       '<div class="ai-preset-row">' + presetHtml + '</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
