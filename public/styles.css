@@ -495,7 +495,7 @@ body.pre-auth .app{visibility:hidden;}
   flex:0 0 auto;
   display:flex;
   align-items:center;
-  flex-wrap:wrap;
+  flex-wrap:nowrap;
   gap:2px;
   padding:8px 14px;
   background:var(--bg-panel);
@@ -1212,7 +1212,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 
 /* ============ 导出下拉菜单 ============ */
 .tb-dropdown{position:relative;display:inline-flex;}
-.tb-dropdown .caret{font-size:10px;opacity:.6;margin-left:2px;}
+.tb-dropdown .caret{width:12px;height:12px;opacity:.6;margin-left:2px;flex:0 0 auto;}
 .dropdown-menu{
   position:absolute;top:100%;right:0;margin-top:4px;
   background:var(--bg-editor);
@@ -1232,6 +1232,37 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 }
 .dropdown-item:hover{background:var(--highlight);}
 [data-theme="dark"] .dropdown-item:hover{background:var(--bg-active);}
+
+/* ============ 工具栏溢出"更多"下拉 ============ */
+#overflowDropdown[hidden]{display:none!important;}
+#overflowToggle{padding:0 8px;}
+#overflowToggle svg{width:17px;height:17px;}
+#overflowMenu{
+  min-width:160px;
+  max-height:calc(100vh - 80px);
+  overflow-y:auto;
+}
+/* 菜单内的 .tb-btn：从图标方块改成"图标+文字"行项，与 .dropdown-item 视觉一致 */
+#overflowMenu .tb-btn{
+  min-width:0;
+  width:100%;
+  height:auto;
+  padding:8px 12px;
+  justify-content:flex-start;
+  gap:10px;
+  border:1px solid transparent;
+  border-radius:6px;
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:13px;
+  transition:background .1s;
+}
+#overflowMenu .tb-btn svg{width:16px;height:16px;flex:0 0 auto;}
+#overflowMenu .tb-btn::after{content:attr(data-label);white-space:nowrap;font-size:13px;}
+#overflowMenu .tb-btn:hover{background:var(--highlight);color:var(--ink);}
+#overflowMenu .tb-btn.active{background:var(--bg-active);color:var(--ink);border-color:var(--line);}
+[data-theme="dark"] #overflowMenu .tb-btn:hover{background:var(--bg-active);}
+[data-theme="feishu"] #overflowMenu .tb-btn:hover{background:var(--bg-active);}
 
 /* 移动端顶部菜单按钮（侧边栏抽屉切换） */
 .mobile-menu-btn{

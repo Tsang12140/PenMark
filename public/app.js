@@ -317,6 +317,169 @@ exportMenu.addEventListener('click', (e) => {
 });
 document.addEventListener('click', () => { exportMenu.hidden = true; });
 
+/* ---------- 工具栏溢出折叠（飞书式"⋯ 更多"菜单） ----------
+   宽度不够时按 data-overflow-priority 升序把低频 .tb-btn 移入 #overflowMenu；
+   宽度恢复按优先级降序原位回插（Comment 占位记原位）。
+   事件委托在 #toolbar 上，菜单内按钮仍在子树内，data-cmd/data-action 天然分发，handleAction 零改动。
+*/
+(function initToolbarOverflow() {
+  const toolbar = $('toolbar');
+  const overflowDropdown = $('overflowDropdown');
+  const overflowToggle = $('overflowToggle');
+  const overflowMenu = $('overflowMenu');
+  if (!toolbar || !overflowDropdown || !overflowToggle || !overflowMenu) return;
+
+  const placeholders = new Map();         // button -> Comment 占位节点
+  let scheduled = false;
+
+  function isVisible(el) {
+    if (!el) return false;
+    if (el.hidden) return false;
+    if (el.style.display === 'none') return false;
+    return el.offsetParent !== null;      // display:none / 父级 display:none 都返回 null
+  }
+  function toolbarVisible() {
+    // reading-mode / dashboard-active / 移动端媒体查询都会让 .toolbar display:none
+    return toolbar.offsetParent !== null && toolbar.clientWidth > 0;
+  }
+  function isOverflowing() { return toolbar.scrollWidth > toolbar.clientWidth + 1; }
+
+  // 候选：当前在原位（未折叠）、可见、有 data-overflow-priority 的按钮，按优先级升序（小先折叠）
+  function foldableCandidates() {
+    return Array.from(toolbar.querySelectorAll('.tb-btn[data-overflow-priority]:not(.in-overflow)'))
+      .filter(isVisible)
+      .sort((a, b) => (+a.dataset.overflowPriority) - (+b.dataset.overflowPriority));
+  }
+  // 已折叠按钮，按优先级降序（大先回挪）
+  function foldedCandidates() {
+    return Array.from(overflowMenu.querySelectorAll('.tb-btn[data-overflow-priority]'))
+      .sort((a, b) => (+b.dataset.overflowPriority) - (+a.dataset.overflowPriority));
+  }
+
+  function fold(btn) {
+    const key = btn.id || btn.getAttribute('data-action') || btn.getAttribute('data-cmd') || '';
+    const ph = document.createComment('overflow:' + key);
+    btn.parentNode.insertBefore(ph, btn);
+    overflowMenu.appendChild(btn);
+    btn.classList.add('in-overflow');
+    placeholders.set(btn, ph);
+  }
+  function unfold(btn) {
+    const ph = placeholders.get(btn);
+    if (ph && ph.parentNode) { ph.parentNode.insertBefore(btn, ph); ph.remove(); }
+    else { toolbar.insertBefore(btn, overflowDropdown); } // 兜底
+    btn.classList.remove('in-overflow');
+    placeholders.delete(btn);
+  }
+
+  function relayout() {
+    if (!toolbarVisible()) return;
+    overflowMenu.hidden = true; // 折叠期间关闭菜单，避免按钮在可见菜单中"瞬移"
+
+    // Phase 1：折叠直到不溢出
+    let guard = 50;
+    while (guard-- > 0 && isOverflowing()) {
+      const next = foldableCandidates()[0];
+      if (!next) break;
+      fold(next);
+    }
+
+    // Phase 2：按优先级高→低尝试回挪。直接 unfold 实测是否溢出，溢出则撤回停止。
+    // 不能用 scrollWidth 预判"有富裕"——内容不溢出时 scrollWidth 退化为 clientWidth，会误判无空间。
+    guard = 50;
+    while (guard-- > 0 && overflowMenu.querySelector('.tb-btn[data-overflow-priority]')) {
+      const next = foldedCandidates()[0];
+      if (!next) break;
+      unfold(next);
+      if (isOverflowing()) { fold(next); break; } // 回挪后又溢出 → 撤回停止
+    }
+
+    // Phase 3：同步 #overflowDropdown 显隐
+    const hasFolded = overflowMenu.querySelector('.tb-btn[data-overflow-priority]');
+    overflowDropdown.hidden = !hasFolded;
+    if (!hasFolded) overflowToggle.setAttribute('aria-expanded', 'false');
+  }
+
+  function scheduleRelayout() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => { scheduled = false; relayout(); });
+  }
+
+  /* ---- 下拉 toggle（复用导出下拉模式） ---- */
+  overflowToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const em = $('exportMenu'); if (em) em.hidden = true; // 互斥：关掉导出菜单
+    const willOpen = overflowMenu.hidden;
+    overflowMenu.hidden = !willOpen;
+    overflowToggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+
+  // 菜单内点击任意 .tb-btn 后关闭（事件委托：工具栏统一 handler 仍会先分发 data-cmd/data-action）
+  overflowMenu.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tb-btn');
+    if (!btn) return;
+    overflowMenu.hidden = true;
+    overflowToggle.setAttribute('aria-expanded', 'false');
+  });
+
+  // 点击外部关闭
+  document.addEventListener('click', () => {
+    if (!overflowMenu.hidden) {
+      overflowMenu.hidden = true;
+      overflowToggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  // 互斥：点击 #exportToggle 时关闭 overflowMenu
+  const exportToggle = $('exportToggle');
+  if (exportToggle) {
+    exportToggle.addEventListener('click', () => {
+      if (!overflowMenu.hidden) {
+        overflowMenu.hidden = true;
+        overflowToggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  // Escape 关闭
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overflowMenu.hidden) {
+      overflowMenu.hidden = true;
+      overflowToggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  /* ---- 监听 ---- */
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => scheduleRelayout());
+    ro.observe(toolbar);
+    const sidebar = document.querySelector('.sidebar'); // 侧边栏宽度变化也影响工具栏
+    if (sidebar) ro.observe(sidebar);
+  } else {
+    window.addEventListener('resize', scheduleRelayout);
+  }
+
+  // body.class 变化（reading-mode / dashboard-active 切换）
+  const bodyMo = new MutationObserver(() => scheduleRelayout());
+  bodyMo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+  // #toolbar 子树 hidden/style 变化（shareBtn.style.display、shareStatsBtn.hidden）
+  // 忽略 overflowMenu/overflowDropdown 自身变化：它们由 relayout/toggle 控制，
+  // 若监听会形成"用户点开菜单 → hidden 变 false → 触发 relayout → 强制 hidden=true 关掉"的死循环
+  const attrMo = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.target === overflowMenu || m.target === overflowDropdown) continue;
+      scheduleRelayout();
+      return;
+    }
+  });
+  attrMo.observe(toolbar, { attributes: true, subtree: true, attributeFilter: ['hidden', 'style'] });
+
+  // 初次计算（同步，首帧 paint 前完成折叠，避免溢出闪现）
+  relayout();
+})();
+
 blockStyleSel.addEventListener('change', () => {
   editor.exec('formatBlock', '<' + blockStyleSel.value + '>');
 });
