@@ -232,25 +232,43 @@ function renderDoc(data) {
 
   container.innerHTML = html;
 
+  markManualListItems($('shareReader'));
+
   if (canEdit) setupShareEditToggle(token);
   setupProgress();
   setupTOC();
 }
 
 // 可编辑分享页：默认查看，点编辑按钮才解锁编辑
+// Editor-generated "1、" items are stored as <p>, not <ol><li>.
+// This class exists only in the shared reader, to preserve natural item spacing.
+function markManualListItems(root) {
+  if (!root) return;
+  root.querySelectorAll('p').forEach((paragraph) => {
+    const text = paragraph.textContent || '';
+    if (/^\s*\d+\s*\u3001/.test(text)) {
+      paragraph.classList.add('share-manual-list-item');
+    }
+  });
+}
+
 function setupShareEditToggle(token) {
   const btn = $('shareEditBtn');
   if (!btn) return;
   btn.addEventListener('click', () => {
     const reader = $('shareReader');
     if (!reader) return;
-    const content = reader.innerHTML;
+    // This class is only for reader typography and must not be saved to the document.
+    const contentRoot = reader.cloneNode(true);
+    contentRoot.querySelectorAll('.share-manual-list-item').forEach((paragraph) => {
+      paragraph.classList.remove('share-manual-list-item');
+    });
     const editor = document.createElement('div');
     editor.className = 'share-editor';
     editor.id = 'shareEditor';
     editor.setAttribute('contenteditable', 'true');
     editor.setAttribute('spellcheck', 'true');
-    editor.innerHTML = content;
+    editor.innerHTML = contentRoot.innerHTML;
     reader.parentNode.replaceChild(editor, reader);
 
     // 显示轻编辑提示与保存状态条

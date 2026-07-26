@@ -3627,13 +3627,14 @@ body.share-page{
   /* 默认两端对齐，中文也走字符间距补齐，避免右侧锯齿 */
   text-align:justify;
   text-justify:inter-ideograph;
+  text-align-last:auto;
   /* 标题、引用、代码等块级元素覆盖回左对齐 */
 }
 .share-reader h1,.share-reader h2,.share-reader h3,
-.share-reader pre,.share-reader table,.share-reader .img-container,
+.share-reader blockquote,.share-reader pre,.share-reader table,.share-reader .img-container,
 .share-reader .img-grid,.share-reader .link-card,
 .share-editor h1,.share-editor h2,.share-editor h3,
-.share-editor pre,.share-editor table,.share-editor .img-container,
+.share-editor blockquote,.share-editor pre,.share-editor table,.share-editor .img-container,
 .share-editor .img-grid,.share-editor .link-card{text-align:left;}
 .share-editor:focus{outline:none;}
 .share-reader h1,.share-editor h1{
@@ -3644,7 +3645,11 @@ body.share-page{
 }
 .share-reader h2,.share-editor h2{font-size:1.5em;margin:1.1em 0 .5em;}
 .share-reader h3,.share-editor h3{font-size:1.2em;margin:1em 0 .4em;}
-.share-reader p,.share-editor p{margin:.7em 0;}
+.share-reader p,.share-editor p{
+  margin:.7em 0;
+  /* Progressive enhancement: avoids extremely short final lines. */
+  text-wrap:pretty;
+}
 .share-reader blockquote,.share-editor blockquote{
   margin:1em 0;
   padding:.6em 1.2em;
@@ -3658,7 +3663,15 @@ body.share-page{
   margin:.7em 0;
   padding-left:1.8em;
 }
-.share-reader li,.share-editor li{margin:.3em 0;}
+/* Lists and editor-generated manual-number paragraphs keep natural spacing. */
+.share-reader li,.share-reader .share-manual-list-item,.share-reader .todo-item,
+.share-editor li,.share-editor .share-manual-list-item,.share-editor .todo-item{
+  margin:.3em 0;
+  text-align:start;
+  text-align-last:auto;
+  text-justify:auto;
+  text-wrap:pretty;
+}
 .share-reader hr,.share-editor hr{
   border:none;
   border-top:1px solid var(--line);
