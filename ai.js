@@ -40,8 +40,13 @@ function getEndpoint() {
   return base + '/chat/completions';
 }
 
-function requestJson(url, payload, timeoutMs) {
+function requestJson(url, payload, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
+    // 已取消：立即拒绝，避免无谓的 HTTP 请求
+    if (signal && signal.aborted) {
+      reject(new Error('AbortError'));
+      return;
+    }
     const target = new URL(url);
     const transport = target.protocol === 'http:' ? http : https;
     const body = JSON.stringify(payload);
@@ -62,14 +67,19 @@ function requestJson(url, payload, timeoutMs) {
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
         let data = null;
-        try { data = text ? JSON.parse(text) : null; } catch (e) {}
+        let parseErr = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { parseErr = e; }
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const detail = data && data.error && (data.error.message || data.error.code || data.error.type);
           reject(new Error('AI HTTP ' + res.statusCode + (detail ? ': ' + detail : '')));
           return;
         }
         if (!data) {
-          reject(new Error('AI returned an empty response'));
+          // 保留原始 parse 错误信息，便于诊断 AI 返回非 JSON 的根因
+          const hint = parseErr
+            ? ('JSON 解析失败: ' + (parseErr.message || '').slice(0, 80))
+            : ('空响应，原文前 100 字: ' + text.slice(0, 100));
+          reject(new Error('AI 返回无效 JSON: ' + hint));
           return;
         }
         resolve(data);
@@ -77,6 +87,14 @@ function requestJson(url, payload, timeoutMs) {
     });
     req.on('timeout', () => req.destroy(new Error('AI request timeout')));
     req.on('error', reject);
+    // 客户端取消：销毁底层 socket，并标注为 AbortError 以便上层区分
+    if (signal) {
+      const onAbort = () => {
+        try { req.destroy(new Error('Request aborted')); } catch (_) {}
+        reject(new Error('AbortError'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
     req.write(body);
     req.end();
   });
@@ -91,18 +109,18 @@ async function chat(messages, options) {
     messages,
     temperature: options && options.temperature !== undefined ? options.temperature : 0.2,
     max_tokens: options && options.maxTokens ? options.maxTokens : 4096
-  }, options && options.timeoutMs);
+  }, options && options.timeoutMs, options && options.signal);
   const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   if (!content) throw new Error('AI response has no message content');
   return String(content).trim();
 }
 
 const layoutPresetInstructions = {
-  light: 'Light cleanup: normalize paragraphs, headings, lists, spacing, and quote/code/table structure only when strongly implied by the original text.',
-  share: 'Publish polish: make the article pleasant to share. Build clear title hierarchy, short readable paragraphs, consistent lists, tasteful emphasis, and spacing. Do not change wording.',
-  formal: 'Formal document layout: use conservative headings, numbered sections, paragraphs, blockquotes, and tables only when the source clearly implies them.',
-  clean: 'Clean plain layout: remove messy inline wrappers and redundant styles, keep semantic HTML and simple paragraphs/headings/lists.',
-  wash: 'Wash layout (deep format cleanup). Strip ALL inline styles from every element (background, font-family, color, font-size, text-decoration, margins, etc.) so only clean semantic HTML remains. Build a clear outline: use <h2> for major section headings and <h3> for subheadings; NEVER use <h1>. Identify the key phrases the author likely wants to emphasize and wrap each in <strong> (use sparingly, only for genuinely important points). Wrap every paragraph in <p> with style="text-align:justify". Normalize lists into <ul>/<ol> where the text implies them. Do not delete, summarize, rewrite, or reorder any words.'
+  light: '轻度整理：仅在原文强烈暗示时，规范化段落、标题、列表、间距，以及引用/代码/表格结构，不做多余改动。',
+  share: '分享前排版：让文章更适合分享传播。建立清晰的标题层级、简短易读的段落、统一的列表、适度的强调与间距。不改动任何文字。',
+  formal: '正式文档排版：使用保守的标题、编号章节、段落、引用块与表格，仅在原文明确暗示时使用。',
+  clean: '清理杂样式：去除混乱的内联包裹与冗余样式，保留语义化 HTML 和简洁的段落/标题/列表。',
+  wash: '洗排版（深度格式清理）：剥离每个元素的所有内联样式（背景、字体、颜色、字号、下划线、边距等），只保留干净的语义化 HTML。建立清晰大纲：用 <h2> 作为大标题，<h3> 作为小标题，绝不使用 <h1>。识别作者可能想强调的关键短语，用 <strong> 包裹（谨慎使用，仅用于真正重要的点）。每个段落用 <p style="text-align:justify"> 包裹。将文本暗示的列表规范化为 <ul>/<ol>。不删除、不总结、不改写、不重排任何文字。'
 };
 
 function stripCodeFence(text) {
@@ -112,7 +130,7 @@ function stripCodeFence(text) {
     .trim();
 }
 
-async function layoutHtml(html, preset, customPrompt) {
+async function layoutHtml(html, preset, customPrompt, options) {
   let mode;
   if (preset === 'custom') {
     // 用户自定义预设：完全以用户输入的提示词为准
@@ -134,10 +152,10 @@ async function layoutHtml(html, preset, customPrompt) {
   return stripCodeFence(await chat([
     { role: 'system', content: system },
     { role: 'user', content: user }
-  ], { temperature: 0.1, maxTokens: Number(process.env.AI_LAYOUT_MAX_TOKENS || 12000), timeoutMs: 90000 }));
+  ], { temperature: 0.1, maxTokens: Number(process.env.AI_LAYOUT_MAX_TOKENS || 12000), timeoutMs: 90000, signal: options && options.signal }));
 }
 
-async function rewriteSelection(selectedText, instruction, contextText) {
+async function rewriteSelection(selectedText, instruction, contextText, options) {
   const system = [
     'You are a careful Chinese writing assistant embedded in an editor.',
     'Only produce the replacement for the selected text.',
@@ -154,7 +172,7 @@ async function rewriteSelection(selectedText, instruction, contextText) {
   return stripCodeFence(await chat([
     { role: 'system', content: system },
     { role: 'user', content: user }
-  ], { temperature: 0.35, maxTokens: Number(process.env.AI_REWRITE_MAX_TOKENS || 3000), timeoutMs: 70000 }));
+  ], { temperature: 0.35, maxTokens: Number(process.env.AI_REWRITE_MAX_TOKENS || 3000), timeoutMs: 70000, signal: options && options.signal }));
 }
 
 module.exports = { configured, chat, layoutHtml, rewriteSelection, PENMARK_KNOWLEDGE };

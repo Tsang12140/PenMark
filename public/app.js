@@ -3,6 +3,7 @@ import { Editor } from './editor.js';
 
 const $ = id => document.getElementById(id);
 const editorEl = $('editor');
+const editorWrap = $('editorWrap');
 const docListEl = $('docList');
 const docTitleEl = $('docTitle');
 const docTitleOverflow = $('docTitleOverflow');
@@ -51,11 +52,14 @@ async function checkDocVersion() {
   if (!currentDoc) return;
   // 编辑活跃期不弹横幅，避免打断输入
   if (Date.now() - lastEditedAt < EDITING_QUIET_WINDOW) return;
+  const docId = currentDoc.id; // 快照，防止 await 期间文档切换导致跨文档误报
   try {
-    const r = await fetch('/api/documents/' + currentDoc.id + '/version', { credentials: 'same-origin' });
+    const r = await fetch('/api/documents/' + docId + '/version', { credentials: 'same-origin' });
     if (!r.ok) return;
     const v = await r.json();
     if (!v || typeof v.version !== 'number') return;
+    // await 期间文档可能已切换，丢弃过期响应
+    if (!currentDoc || currentDoc.id !== docId) return;
     if (v.version > (currentDoc.version || 1) && v.version > dismissedVersion) {
       showVersionBanner(v);
     }
@@ -64,7 +68,7 @@ async function checkDocVersion() {
 
 /* ---------- 分享访客统计轮询（飞书式：编辑器内显示被访问情况） ---------- */
 let shareStatsTimer = null;
-const SHARE_STATS_INTERVAL = 30000; // 30 秒一次
+const SHARE_STATS_INTERVAL = 15000; // 15 秒一次，更及时反映访客状态
 
 function startShareStatsPolling() {
   stopShareStatsPolling();
@@ -84,10 +88,13 @@ async function refreshShareStats() {
   if (!btn) return;
   // 仅管理员或被授权用户拉取统计
   if (!currentUser || (!currentUser.isAdmin && !currentUser.can_share)) { btn.hidden = true; return; }
+  const docId = currentDoc.id; // 快照，防止 await 期间文档切换导致数据错位
   try {
-    const r = await fetch('/api/documents/' + currentDoc.id + '/share-stats', { credentials: 'same-origin' });
+    const r = await fetch('/api/documents/' + docId + '/share-stats', { credentials: 'same-origin' });
     if (!r.ok) { btn.hidden = true; return; }
     const data = await r.json();
+    // await 期间文档可能已切换，丢弃过期响应避免新文档按钮被旧数据覆盖
+    if (!currentDoc || currentDoc.id !== docId) return;
     if (!data.shared || data.expired) { btn.hidden = true; return; }
     btn.hidden = false;
     const total = data.total || 0;
@@ -189,6 +196,7 @@ function updateDocumentTitle(title) {
   document.title = t + PENMARK_SUFFIX;
 }
 let switching = false; // 切换文档时屏蔽自动保存
+let pendingSwitchId = null; // 切换中又点了别的文档时，记录最新意图，前序完成后切过去
 
 /* ---------- Toast ---------- */
 function toast(msg) {
@@ -204,12 +212,20 @@ const dialogModal = $('dialogModal');
 const dialogTitle = $('dialogTitle');
 const dialogDesc = $('dialogDesc');
 const dialogInput = $('dialogInput');
+const dialogTextarea = $('dialogTextarea');
 const dialogConfirm = $('dialogConfirm');
 const dialogCancel = $('dialogCancel');
 const dialogClose = $('dialogClose');
 let _dialogResolver = null;
 
-function _openDialog({ title, desc, confirmText, cancelText, danger, input, value, placeholder }) {
+// textarea 自适应高度：内容增多时长高，上限 260px（与 CSS max-height 一致）
+function autoGrowTextarea(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 260) + 'px';
+}
+
+function _openDialog({ title, desc, confirmText, cancelText, danger, input, value, placeholder, multiline, maxlength }) {
   if (!dialogModal) return Promise.resolve(input ? null : false);
   dialogTitle.textContent = title || (input ? '请输入' : '请确认');
   dialogDesc.textContent = desc || '';
@@ -218,11 +234,22 @@ function _openDialog({ title, desc, confirmText, cancelText, danger, input, valu
   dialogConfirm.classList.toggle('btn-danger', !!danger);
   dialogConfirm.classList.toggle('btn-primary', !danger);
   if (input) {
-    dialogInput.hidden = false;
-    dialogInput.value = value || '';
-    dialogInput.placeholder = placeholder || '';
+    if (multiline && dialogTextarea) {
+      // 多行输入（提示词等长文本）：Enter 换行、Ctrl/Cmd+Enter 确认
+      dialogInput.hidden = true;
+      dialogTextarea.hidden = false;
+      dialogTextarea.value = value || '';
+      dialogTextarea.placeholder = placeholder || '';
+      if (maxlength) dialogTextarea.maxLength = maxlength;
+    } else {
+      if (dialogTextarea) dialogTextarea.hidden = true;
+      dialogInput.hidden = false;
+      dialogInput.value = value || '';
+      dialogInput.placeholder = placeholder || '';
+    }
   } else {
     dialogInput.hidden = true;
+    if (dialogTextarea) dialogTextarea.hidden = true;
   }
   dialogModal.hidden = false;
   return new Promise(resolve => {
@@ -230,8 +257,10 @@ function _openDialog({ title, desc, confirmText, cancelText, danger, input, valu
     // 输入框模式下，弹窗打开后自动聚焦并选中
     setTimeout(() => {
       if (input) {
-        dialogInput.focus();
-        dialogInput.select();
+        const el = (multiline && dialogTextarea) ? dialogTextarea : dialogInput;
+        el.focus();
+        el.select();
+        if (multiline && dialogTextarea) autoGrowTextarea(dialogTextarea);
       } else {
         dialogConfirm.focus();
       }
@@ -252,31 +281,45 @@ function showPrompt(options) {
 function _closeDialog(result) {
   if (!dialogModal) return;
   dialogModal.hidden = true;
+  // 重置 textarea 高度，避免下次打开残留内联高度
+  if (dialogTextarea) dialogTextarea.style.height = '';
   const r = _dialogResolver;
   _dialogResolver = null;
   if (r) r(result);
 }
+// 是否处于输入模式（单行或多行）
+const dialogIsInput = () => !dialogInput.hidden || (dialogTextarea && !dialogTextarea.hidden);
 
 if (dialogConfirm) dialogConfirm.addEventListener('click', () => {
   if (!dialogInput.hidden) {
     _closeDialog(dialogInput.value);
+  } else if (dialogTextarea && !dialogTextarea.hidden) {
+    _closeDialog(dialogTextarea.value);
   } else {
     _closeDialog(true);
   }
 });
-if (dialogCancel) dialogCancel.addEventListener('click', () => _closeDialog(dialogInput.hidden ? false : null));
-if (dialogClose) dialogClose.addEventListener('click', () => _closeDialog(dialogInput.hidden ? false : null));
+if (dialogCancel) dialogCancel.addEventListener('click', () => _closeDialog(dialogIsInput() ? null : false));
+if (dialogClose) dialogClose.addEventListener('click', () => _closeDialog(dialogIsInput() ? null : false));
 if (dialogModal) dialogModal.addEventListener('pointerdown', (e) => {
-  if (e.target === dialogModal) _closeDialog(dialogInput.hidden ? false : null);
+  if (e.target === dialogModal) _closeDialog(dialogIsInput() ? null : false);
 });
 if (dialogInput) dialogInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); _closeDialog(dialogInput.value); }
   if (e.key === 'Escape') { e.preventDefault(); _closeDialog(null); }
 });
+if (dialogTextarea) {
+  dialogTextarea.addEventListener('keydown', (e) => {
+    // 多行：Enter 换行，Ctrl/Cmd+Enter 确认，Escape 取消
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); _closeDialog(dialogTextarea.value); }
+    if (e.key === 'Escape') { e.preventDefault(); _closeDialog(null); }
+  });
+  dialogTextarea.addEventListener('input', () => autoGrowTextarea(dialogTextarea));
+}
 document.addEventListener('keydown', (e) => {
   if (!dialogModal || dialogModal.hidden) return;
-  if (e.key === 'Escape') _closeDialog(dialogInput.hidden ? false : null);
-  if (e.key === 'Enter' && dialogInput.hidden) { e.preventDefault(); _closeDialog(true); }
+  if (e.key === 'Escape') _closeDialog(dialogIsInput() ? null : false);
+  if (e.key === 'Enter' && !dialogIsInput()) { e.preventDefault(); _closeDialog(true); }
 });
 
 /* ---------- 编辑器 ---------- */
@@ -512,7 +555,9 @@ function handleAction(action) {
     case 'importHtml': importInput.click(); break;
     case 'exportHTML': exportHTML(); break;
     case 'exportMD': exportMarkdown(); break;
+    case 'exportTXT': exportTXT(); break;
     case 'exportDoc': exportWord(); break;
+    case 'exportPDF': exportPDF(); break;
     case 'exportImage': openExportImageModal(); break;
     case 'share': openShareModal(); break;
     
@@ -833,8 +878,8 @@ floatMenuImg.addEventListener('click', (e) => {
   switch (act) {
     case 'copy': editor.copyImage(c); break;
     case 'cut': editor.cutImage(c); floatMenuImg.hidden = true; break;
-    case 'reset': editor.resetImageSize(c); break;
-    case 'fit': editor.fitImageWidth(c); break;
+    case 'small': editor.smallImageSize(c); updateImageFloatMenu(c); break;
+    case 'original': editor.resetImageSize(c); updateImageFloatMenu(c); break;
     case 'align-left': editor.alignImage(c, 'left'); break;
     case 'align-center': editor.alignImage(c, 'center'); break;
     case 'delete': editor.deleteImage(c); floatMenuImg.hidden = true; break;
@@ -1014,7 +1059,7 @@ document.addEventListener('mouseup', () => {
           sel.removeAllRanges();
           sel.addRange(range);
         } catch (_) {}
-      } catch (err) { console.warn('move block failed', err); }
+      } catch (err) { toast('移动失败：' + (err.message || err)); }
     }
   } else {
     // 没拖动 → 视为点击，弹出块菜单
@@ -1235,10 +1280,19 @@ editorEl.addEventListener('dblclick', (e) => {
 });
 
 /* ---------- 统计 ---------- */
+// 热路径：每次按键的 input 事件会触发 updateStats。
+// editor.getStats() 内部读 innerText（强制 reflow）+ querySelectorAll('.img-container img')（全树扫描），
+// 不加 debounce 会让长文档输入肉眼可见地卡顿（违反铁律：普通输入不得被重排阻塞）。
+// 250ms debounce 与 updateOutline 对齐；停止输入后立即刷新一次。
+let _statsTimer = null;
 function updateStats() {
-  const s = editor.getStats();
-  charCountEl.textContent = s.chars;
-  imgCountEl.textContent = s.imgs;
+  if (_statsTimer) return;
+  _statsTimer = setTimeout(() => {
+    _statsTimer = null;
+    const s = editor.getStats();
+    charCountEl.textContent = s.chars;
+    imgCountEl.textContent = s.imgs;
+  }, 250);
 }
 
 /* ---------- 自动保存 ---------- */
@@ -1251,8 +1305,12 @@ function scheduleAutoSave() {
 
 async function saveCurrent(opts) {
   if (!currentDoc) return;
+  // 乐观新建期间（id 尚为 local-*）：暂存保存意图，等真实 ID 落地后再 flush
+  if (currentDoc._pending) { currentDoc._pendingSave = true; return; }
   opts = opts || {};
   const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
+  // 保存前剥离 AI 改写残留的呼吸高亮 mark，避免被序列化进数据库
+  stripAiFlashMarks(editorEl);
   const content = editor.getHTML();
   try {
     const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
@@ -1273,6 +1331,52 @@ async function saveCurrent(opts) {
   } catch (e) {
     saveStateEl.textContent = '保存失败';
     toast('保存失败：' + (e.message || e));
+  }
+}
+
+/* 后台保存指定文档（不依赖 currentDoc，用于切换/新建时不阻塞首屏）。
+   快照在调用前已捕获，因此即便 currentDoc 已切到别的文档，也能把旧文档存对。 */
+function saveDocInBackground(doc, title, html) {
+  if (!doc) return;
+  api('/api/documents/' + doc.id, 'PUT', { title, content: html }).then(res => {
+    doc.title = title;
+    doc.content = html;
+    doc.updated_at = (res && res.updated_at) || Date.now();
+    if (res && typeof res.version === 'number') doc.version = res.version;
+    if (currentDoc && currentDoc.id === doc.id) {
+      saveStateEl.textContent = '已保存 ' + timeStr();
+      updateDocumentTitle(title);
+      // 自己保存成功后，dismissedVersion 不再适用，重置
+      dismissedVersion = 0;
+      hideVersionBanner();
+    }
+    updateListItem(doc, { reorder: false });
+  }).catch(e => {
+    if (currentDoc && currentDoc.id === doc.id) saveStateEl.textContent = '保存失败';
+    toast('保存失败：' + (e.message || e));
+  });
+}
+
+/* 快照当前文档并后台保存，不阻塞后续新建/切换/复制操作 */
+function saveCurrentInBackground() {
+  if (!currentDoc) return;
+  // 乐观新建期间（id 尚为 local-*）：暂存保存意图，等真实 ID 落地后再 flush，
+  // 否则 PUT /api/documents/local-xxx 会 404 且丢失用户已输入的内容
+  if (currentDoc._pending) { currentDoc._pendingSave = true; return; }
+  stripAiFlashMarks(editorEl);
+  const doc = currentDoc;
+  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
+  const html = editor.getHTML();
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  saveDocInBackground(doc, title, html);
+}
+
+/* 把非关键重活（大纲/统计）延后到空闲帧执行，避免阻塞切换首屏 */
+function scheduleAfterSwitch(fn) {
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => fn(), { timeout: 300 });
+  } else {
+    setTimeout(fn, 0);
   }
 }
 
@@ -1376,9 +1480,14 @@ let renamingFolderId = null;
 let docClipboard = null;
 
 async function loadSidebar() {
-  const [fRes, dRes] = await Promise.all([api('/api/folders'), api('/api/documents')]);
-  folders = fRes;
-  renderSidebar(dRes);
+  try {
+    const [fRes, dRes] = await Promise.all([api('/api/folders'), api('/api/documents')]);
+    folders = fRes;
+    renderSidebar(dRes);
+  } catch (e) {
+    // 401 由 api() 内部处理；其他错误提示避免 unhandled rejection
+    if (e && e.message !== 'need login') toast('刷新列表失败');
+  }
 }
 
 function persistExpanded() {
@@ -1413,11 +1522,11 @@ function renderFolderItem(folder, docs) {
   const head = document.createElement('div');
   head.className = 'folder-head';
   head.innerHTML =
-    '<span class="folder-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,4 11,8 6,12"/></svg></span>' +
-    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .8.4l1 1.1a1 1 0 0 0 .8.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/></svg></span>' +
+    '<span class="folder-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>' +
+    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4a2 2 0 0 1 2-2h5l2 3h5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z"/></svg></span>' +
     '<span class="folder-name" title="' + escapeHtml(folder.name) + '">' + escapeHtml(folder.name) + '</span>' +
     '<span class="folder-count">' + (folder.doc_count || 0) + '</span>' +
-    '<button class="folder-menu" title="更多操作">⋯</button>';
+    '<button class="folder-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>';
   head.addEventListener('click', (e) => {
     if (e.target.closest('.folder-menu') || e.target.closest('.folder-name-input')) return;
     wrap.classList.toggle('expanded');
@@ -1456,11 +1565,11 @@ function renderUnfiledSection(docs) {
   const wrap = document.createElement('div');
   wrap.className = 'folder-item unfiled';
   wrap.innerHTML =
-    '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 16 16"></svg></span>' +
-    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a1 1 0 0 1 1-1h3.2a1 1 0 0 1 .8.4l1 1.1a1 1 0 0 0 .8.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"/></svg></span>' +
+    '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 24 24"></svg></span>' +
+    '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4a2 2 0 0 1 2-2h5l2 3h5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z"/></svg></span>' +
     '<span class="folder-name">未分类</span>' +
     '<span class="folder-count">' + docs.length + '</span>' +
-    '<button class="folder-menu" title="更多操作">⋯</button></div>';
+    '<button class="folder-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button></div>';
   const head = wrap.querySelector('.folder-head');
   head.querySelector('.folder-menu').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1486,8 +1595,8 @@ function buildDocItem(doc) {
     '<div class="doc-title">' + escapeHtml(doc.title || '无标题') + '</div>' +
     '<div class="doc-meta">' + relativeTime(doc.updated_at) + '</div>' +
     (doc.snippet ? '<div class="doc-snippet">' + escapeHtml(doc.snippet) + '</div>' : '') +
-    '<button class="doc-menu" title="更多操作">⋯</button>' +
-    '<button class="doc-del" title="删除">×</button>';
+    '<button class="doc-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>' +
+    '<button class="doc-del" title="删除" aria-label="删除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>';
   if (docClipboard && docClipboard.mode === 'cut' && String(docClipboard.docId) === String(doc.id)) {
     item.classList.add('cutting');
   }
@@ -1527,7 +1636,10 @@ function getDraggingDocId(e) {
 function bindDropTarget(targetEl, folderId, highlightEl) {
   const hl = highlightEl || targetEl;
   targetEl.addEventListener('dragover', (e) => {
-    const hasDoc = draggingDocId !== null || (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.indexOf('text/penmark-doc') >= 0);
+    // dataTransfer.types 在旧 Chrome(<71)/某些 Safari 是 DOMStringList，没有 indexOf；
+    // 用 Array.from 包装兼容所有浏览器，否则会抛 TypeError 导致 preventDefault 不执行、drop 永远不触发
+    const types = e.dataTransfer && e.dataTransfer.types ? Array.from(e.dataTransfer.types) : [];
+    const hasDoc = draggingDocId !== null || types.indexOf('text/penmark-doc') >= 0;
     if (!hasDoc) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -1563,11 +1675,19 @@ docContextMenu.className = 'folder-context-menu doc-context-menu';
 docContextMenu.hidden = true;
 document.body.appendChild(docContextMenu);
 
+// “移动到”子菜单：列出文件夹供选择，桌面/移动端通用（拖拽在触屏不可用）
+const moveMenu = document.createElement('div');
+moveMenu.className = 'folder-context-menu move-menu';
+moveMenu.hidden = true;
+document.body.appendChild(moveMenu);
+
 function closeContextMenus() {
   folderContextMenu.hidden = true;
   folderContextMenu.style.display = 'none';
   docContextMenu.hidden = true;
   docContextMenu.style.display = 'none';
+  moveMenu.hidden = true;
+  moveMenu.style.display = 'none';
 }
 
 document.addEventListener('pointerdown', (e) => {
@@ -1579,6 +1699,7 @@ document.addEventListener('keydown', (e) => {
 });
 folderContextMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
 docContextMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
+moveMenu.addEventListener('pointerdown', (e) => e.stopPropagation());
 
 function showFolderMenu(folder, anchor) {
   closeContextMenus();
@@ -1610,6 +1731,7 @@ function showFolderMenu(folder, anchor) {
 function showDocMenu(doc, anchor, point) {
   closeContextMenus();
   docContextMenu.innerHTML =
+    '<div class="fcm-item" data-act="move">移动到…</div>' +
     '<div class="fcm-item" data-act="duplicate">创建副本</div>' +
     '<div class="fcm-item" data-act="copy">复制</div>' +
     '<div class="fcm-item" data-act="cut">剪切</div>' +
@@ -1629,6 +1751,11 @@ function showDocMenu(doc, anchor, point) {
     e.stopPropagation();
     const act = e.target.getAttribute('data-act');
     if (!act) return;
+    if (act === 'move') {
+      // 不关闭 docContextMenu，让 moveMenu 贴着它展开
+      showMoveMenu(doc, docContextMenu);
+      return;
+    }
     closeContextMenus();
     if (act === 'duplicate') duplicateDoc(doc);
     else if (act === 'copy') copyDoc(doc);
@@ -1637,27 +1764,98 @@ function showDocMenu(doc, anchor, point) {
   };
 }
 
+// 移动到子菜单：列出所有文件夹 + 未分类，高亮当前所在位置
+function showMoveMenu(doc, anchor) {
+  folderContextMenu.hidden = true;
+  folderContextMenu.style.display = 'none';
+  const currentFolderId = doc.folder_id || null;
+  let html = '';
+  if (!folders.length) {
+    html = '<div class="fcm-item disabled">暂无文件夹，先新建一个</div>';
+  } else {
+    folders.forEach(f => {
+      const isCurrent = String(f.id) === String(currentFolderId);
+      html += '<div class="fcm-item' + (isCurrent ? ' current' : '') + '" data-folder-id="' + f.id + '">' +
+        escapeHtml(f.name) + (isCurrent ? '<span class="move-current-tag">当前</span>' : '') +
+      '</div>';
+    });
+  }
+  // 未分类选项（与上方文件夹用分隔线区分）
+  const isUnfiled = currentFolderId === null;
+  html += '<div class="fcm-item unfiled-item' + (isUnfiled ? ' current' : '') + '" data-folder-id="">' +
+    '未分类' + (isUnfiled ? '<span class="move-current-tag">当前</span>' : '') +
+  '</div>';
+  moveMenu.innerHTML = html;
+  moveMenu.style.display = 'block';
+  // 定位：贴着 anchor（docContextMenu）右侧展开；空间不足时贴左侧
+  const rect = anchor.getBoundingClientRect();
+  const menuW = 200; // 与 .folder-context-menu min-width 一致
+  let left = rect.right + 4;
+  if (left + menuW > window.innerWidth - 8) left = rect.left - menuW - 4;
+  moveMenu.style.left = Math.max(8, left) + 'px';
+  moveMenu.style.top = Math.min(rect.top, window.innerHeight - 200) + 'px';
+  moveMenu.hidden = false;
+  moveMenu.onclick = (e) => {
+    e.stopPropagation();
+    const item = e.target.closest('.fcm-item');
+    if (!item || item.classList.contains('disabled') || item.classList.contains('current')) return;
+    const raw = item.getAttribute('data-folder-id');
+    const fid = raw === '' ? null : Number(raw);
+    closeContextMenus();
+    moveDocToFolder(doc.id, fid);
+  };
+}
+
 async function newDocInFolder(folderId) {
-  if (currentDoc && saveTimer) { clearTimeout(saveTimer); await saveCurrent(); }
+  saveCurrentInBackground(); // 旧文档后台保存，不阻塞新建
   switching = true;
+  // 关闭 AI 弹窗：预览属于旧文档，避免应用到新文档
+  closeAiModal();
+  if (aiChatAbortController) { try { aiChatAbortController.abort(); } catch (_) {} aiChatAbortController = null; aiPanelThinking = false; setAiSendButtonMode('send'); }
+  // 乐观创建：先在本地立即可写，后台再落库（第一铁律：新建 < 100ms）
+  currentDoc = { id: 'local-' + Date.now(), title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId, version: 1, _pending: true };
+  expandedFolders.add(folderId);
+  persistExpanded();
+  setDocTitle('');
+  editor.clear();
+  saveStateEl.textContent = '新文档';
+  docTitleEl.focus();
+  updateDocumentTitle('无标题');
+  dismissedVersion = 0;
+  hideVersionBanner();
+  hideDashboard();
+  enterMobileEditor();
+  // 后台落库 + 刷新侧边栏
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '', folder_id: folderId });
-    expandedFolders.add(folderId);
-    persistExpanded();
-    await loadSidebar();
-    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId, version: 1 };
-    setDocTitle('');
-    editor.clear();
-    saveStateEl.textContent = '新文档';
-    docTitleEl.focus();
+    currentDoc.id = res.id;
+    currentDoc.updated_at = (res && res.updated_at) || Date.now();
+    if (res && typeof res.version === 'number') currentDoc.version = res.version;
+    delete currentDoc._pending;
     updateDocumentTitle('无标题');
-    toast('已新建文档');
-    dismissedVersion = 0;
-    hideVersionBanner();
+    // 落库期间若用户已输入，flush 一次保存
+    if (currentDoc._pendingSave) { delete currentDoc._pendingSave; saveCurrent(); }
+    loadSidebar().then(() => {
+      Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
+        el.classList.toggle('active', el.getAttribute('data-id') == res.id);
+      });
+    });
     startVersionPolling();
     startShareStatsPolling();
-  } catch (e) { toast('新建失败：' + (e.message || e)); }
-  finally { switching = false; }
+    toast('已新建文档');
+  } catch (e) {
+    toast('新建失败：' + (e.message || e));
+    saveStateEl.textContent = '新建失败';
+  }
+  finally {
+    switching = false;
+    // 与 openDoc/newDoc 的 finally 对齐：用户若在新建期间点了别的文档，切过去
+    if (pendingSwitchId != null) {
+      const next = pendingSwitchId;
+      pendingSwitchId = null;
+      if (currentDoc && currentDoc.id !== next) openDoc(next);
+    }
+  }
 }
 
 async function createFolder() {
@@ -1734,7 +1932,7 @@ async function startFolderRename(folderId, opts) {
 
 async function duplicateDoc(doc, folderId) {
   try {
-    if (currentDoc && saveTimer) { clearTimeout(saveTimer); await saveCurrent(); }
+    saveCurrentInBackground(); // 旧文档后台保存，不阻塞新建
     const detail = await api('/api/documents/' + doc.id);
     const title = (detail.title || doc.title || '无标题') + ' 副本';
     const targetFolderId = folderId !== undefined ? folderId : (detail.folder_id || doc.folder_id || null);
@@ -1798,65 +1996,108 @@ async function deleteFolder(folder) {
 }
 
 async function openDoc(id) {
+  // 切换中又点了别的文档：记下最新意图，前序完成后切到它，避免并发 openDoc 互踩
+  if (switching) { pendingSwitchId = id; return; }
   if (currentDoc && currentDoc.id === id) {
     // 已是当前文档：仅确保移动端切到编辑器视图
     enterMobileEditor();
     return;
   }
+  // 旧文档快照后后台保存，不阻塞切换（第一铁律：切换 < 200ms）
+  saveCurrentInBackground();
   switching = true;
+  // 切换文档时关闭 AI 排版/改写弹窗：弹窗里的预览属于旧文档，避免应用到新文档造成数据错位
+  closeAiModal();
+  // 若有进行中的 AI 对话请求，中止它避免响应回到新文档的对话面板
+  if (aiChatAbortController) { try { aiChatAbortController.abort(); } catch (_) {} aiChatAbortController = null; aiPanelThinking = false; setAiSendButtonMode('send'); }
+  const targetId = id;
+  let openSucceeded = false; // 标记本次打开是否成功，用于 finally 决定是否放行同文档重试
+  // 加载遮罩：避免旧内容在 fetch 期间继续可见造成闪烁
+  if (editorWrap) editorWrap.classList.add('editor-loading');
   try {
-    if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; await saveCurrent({ reorder: false }); }
     const doc = await api('/api/documents/' + id);
     currentDoc = doc;
     setDocTitle(doc.title === '无标题' ? '' : doc.title);
     editor.setHTML(doc.content || '');
+    // 兜底清理历史脏数据：旧版本可能把 AI 改写的 <mark class="ai-flash"> 存进了数据库
+    stripAiFlashMarks(editorEl);
     Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
       el.classList.toggle('active', el.getAttribute('data-id') == id);
     });
     saveStateEl.textContent = '已加载';
-    updateStats();
     refreshToolbar();
-    updateOutline(true);
     updateDocumentTitle(doc.title);
+    enterMobileEditor();
+    // 重活延后到空闲帧，不阻塞首屏；切走后不再为旧目标刷新
+    scheduleAfterSwitch(() => {
+      if (currentDoc && currentDoc.id === targetId) {
+        updateStats();
+        updateOutline(true);
+      }
+    });
     // 多端同步：开启版本号轮询
     dismissedVersion = 0;
     hideVersionBanner();
     startVersionPolling();
     startShareStatsPolling();
     hideDashboard();
-    enterMobileEditor();
     // 若 AI 面板已打开，切换文档时刷新对话历史与上下文提示
     if (aiPanel && !aiPanel.hidden) {
       refreshAiPanelContext();
       loadAiChatHistory(doc.id);
     }
+    openSucceeded = true;
   } catch (e) { toast('打开失败：' + (e.message || e)); }
-  finally { switching = false; }
+  finally {
+    if (editorWrap) editorWrap.classList.remove('editor-loading');
+    switching = false;
+    // 切换中若用户又点了别的文档，递归切到最新意图
+    if (pendingSwitchId != null) {
+      const next = pendingSwitchId;
+      pendingSwitchId = null;
+      // 仅在 targetId 成功打开时才跳过对同一文档的重复切换；
+      // 若 targetId 打开失败，用户在加载期间对 targetId 的再次点击应视为重试，应放行
+      if (!openSucceeded || next !== targetId) openDoc(next);
+    }
+  }
 }
 
 async function newDoc() {
-  if (currentDoc && saveTimer) { clearTimeout(saveTimer); await saveCurrent(); }
+  saveCurrentInBackground(); // 旧文档后台保存，不阻塞新建
   switching = true;
+  // 乐观创建：先在本地立即可写，后台再落库（第一铁律：新建 < 100ms）
+  currentDoc = { id: 'local-' + Date.now(), title: '无标题', content: '', updated_at: Date.now(), version: 1, _pending: true };
+  setDocTitle('');
+  editor.clear();
+  saveStateEl.textContent = '新文档';
+  docTitleEl.focus();
+  updateDocumentTitle('无标题');
+  dismissedVersion = 0;
+  hideVersionBanner();
+  hideDashboard();
+  enterMobileEditor();
+  // 后台落库 + 刷新侧边栏
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '' });
-    await loadSidebar();
-    currentDoc = { id: res.id, title: '无标题', content: '', updated_at: Date.now(), version: 1 };
-    setDocTitle('');
-    editor.clear();
-    Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
-      el.classList.toggle('active', el.getAttribute('data-id') == res.id);
-    });
-    saveStateEl.textContent = '新文档';
-    docTitleEl.focus();
+    currentDoc.id = res.id;
+    currentDoc.updated_at = (res && res.updated_at) || Date.now();
+    if (res && typeof res.version === 'number') currentDoc.version = res.version;
+    delete currentDoc._pending;
     updateDocumentTitle('无标题');
-    toast('已新建文档');
-    dismissedVersion = 0;
-    hideVersionBanner();
+    // 落库期间若用户已输入，flush 一次保存
+    if (currentDoc._pendingSave) { delete currentDoc._pendingSave; saveCurrent(); }
+    loadSidebar().then(() => {
+      Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
+        el.classList.toggle('active', el.getAttribute('data-id') == res.id);
+      });
+    });
     startVersionPolling();
     startShareStatsPolling();
-    hideDashboard();
-    enterMobileEditor();
-  } catch (e) { toast('新建失败：' + (e.message || e)); }
+    toast('已新建文档');
+  } catch (e) {
+    toast('新建失败：' + (e.message || e));
+    saveStateEl.textContent = '新建失败';
+  }
   finally { switching = false; }
 }
 
@@ -1868,10 +2109,11 @@ async function confirmDelete(doc) {
   try {
     await api('/api/documents/' + doc.id, 'DELETE');
     if (currentDoc && currentDoc.id === doc.id) {
-      const remaining = await api('/api/documents');
-      await loadSidebar();
-      if (remaining.length) await openDoc(remaining[0].id);
-      else { currentDoc = null; await newDoc(); }
+      // 复用 loadSidebar 拉到的列表，避免紧接着再发一次 /api/documents（原 P1-1 性能问题）
+      const remaining = await loadSidebar();
+      if (remaining && remaining.length) await openDoc(remaining[0].id);
+      else if (remaining && remaining.length === 0) { currentDoc = null; await newDoc(); }
+      // remaining === null：loadSidebar 失败，保持当前状态，不切换
     } else {
       await loadSidebar();
     }
@@ -2021,12 +2263,18 @@ async function doSearch() {
 function renderSearchResults(results) {
   docListEl.innerHTML = '';
   if (!results.length) {
-    docListEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--ink-faint);font-size:12px;">无匹配文档</div>';
+    const empty = document.createElement('div');
+    empty.className = 'search-empty';
+    empty.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+      '<div class="search-empty-title">未找到匹配文档</div>' +
+      '<div class="search-empty-hint">换个关键词试试</div>';
+    docListEl.appendChild(empty);
     return;
   }
   const wrap = document.createElement('div');
   wrap.className = 'folder-item expanded';
-  wrap.innerHTML = '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 16 16"></svg></span><span class="folder-icon"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.2"/><line x1="10.2" y1="10.2" x2="13.5" y2="13.5"/></svg></span><span class="folder-name">搜索结果</span><span class="folder-count">' + results.length + '</span></div>';
+  wrap.innerHTML = '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 24 24"></svg></span><span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span><span class="folder-name">搜索结果</span><span class="folder-count">' + results.length + '</span></div>';
   const list = document.createElement('div');
   list.className = 'folder-docs';
   results.forEach(doc => list.appendChild(buildDocItem(doc)));
@@ -2148,10 +2396,61 @@ function exportMarkdown() {
   downloadBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }), suggestedFilename('md'));
   toast('已导出 Markdown');
 }
-function exportWord() {
-  const html = editor.toWordHTML();
-  downloadBlob(new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' }), suggestedFilename('doc'));
-  toast('已导出 Word');
+// 纯文本导出：剥除所有标签，AI 最易读
+function exportTXT() {
+  const txt = editor.toPlainText();
+  downloadBlob(new Blob(['\ufeff', txt], { type: 'text/plain;charset=utf-8' }), suggestedFilename('txt'));
+  toast('已导出纯文本');
+}
+// PDF 导出：用浏览器打印对话框，用户选「另存为 PDF」
+// 仅打印当前编辑器内容（保留排版、图片），隐藏侧栏/工具栏/AI 面板
+function exportPDF() {
+  if (!currentDoc) { toast('请先打开一个文档'); return; }
+  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
+  document.title = title; // 打印对话框默认文件名取 document.title
+  document.body.classList.add('printing-pdf');
+  const cleanup = () => {
+    document.body.classList.remove('printing-pdf');
+    updateDocumentTitle(docTitleEl.value); // 恢复原标题
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup);
+  // 给用户一点时间看到提示
+  toast('在打印对话框中选择「另存为 PDF」');
+  setTimeout(() => window.print(), 200);
+  // 兜底：10 秒后自动清理（用户取消时 afterprint 仍会触发，这只是保险）
+  setTimeout(cleanup, 10000);
+}
+// 真 .docx 导出：服务端生成标准 OOXML，AI 文档解析器可读
+async function exportWord() {
+  if (!currentDoc) return;
+  if (exportWord._busy) { toast('正在导出，请稍候'); return; }
+  exportWord._busy = true;
+  const exportToggle = $('exportToggle');
+  if (exportToggle) exportToggle.classList.add('loading');
+  toast('正在导出 Word…');
+  // 发送当前编辑器 HTML（含未保存改动），服务端解析为 docx
+  const html = editor.getHTML();
+  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
+  try {
+    const resp = await fetch('/api/export/docx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html, title })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error || '导出失败');
+    }
+    const blob = await resp.blob();
+    downloadBlob(blob, suggestedFilename('docx'));
+    toast('已导出 Word（.docx）');
+  } catch (e) {
+    toast('导出失败：' + (e.message || e));
+  } finally {
+    exportWord._busy = false;
+    if (exportToggle) exportToggle.classList.remove('loading');
+  }
 }
 
 // 导出图片前清理 HTML：
@@ -2469,12 +2768,13 @@ async function refreshAiStatus(runButtonId) {
   }
 }
 
+// 内置排版预设：label 显示在按钮上，prompt 是发给 AI 的提示词（中文，与 ai.js layoutPresetInstructions 保持同步）
 const AI_PRESETS = {
-  share: '\u5206\u4eab\u524d\u6392\u7248',
-  light: '\u8f7b\u5ea6\u6574\u7406',
-  formal: '\u6b63\u5f0f\u6587\u6863',
-  clean: '\u6e05\u7406\u6742\u6837\u5f0f',
-  wash: '\u6d17\u6392\u7248'
+  share: { label: '分享前排版', prompt: '分享前排版：让文章更适合分享传播。建立清晰的标题层级、简短易读的段落、统一的列表、适度的强调与间距。不改动任何文字。' },
+  light: { label: '轻度整理', prompt: '轻度整理：仅在原文强烈暗示时，规范化段落、标题、列表、间距，以及引用/代码/表格结构，不做多余改动。' },
+  formal: { label: '正式文档', prompt: '正式文档排版：使用保守的标题、编号章节、段落、引用块与表格，仅在原文明确暗示时使用。' },
+  clean: { label: '清理杂样式', prompt: '清理杂样式：去除混乱的内联包裹与冗余样式，保留语义化 HTML 和简洁的段落/标题/列表。' },
+  wash: { label: '洗排版', prompt: '洗排版（深度格式清理）：剥离每个元素的所有内联样式（背景、字体、颜色、字号、下划线、边距等），只保留干净的语义化 HTML。建立清晰大纲：用 <h2> 作为大标题，<h3> 作为小标题，绝不使用 <h1>。识别作者可能想强调的关键短语，用 <strong> 包裹（谨慎使用，仅用于真正重要的点）。每个段落用 <p style="text-align:justify"> 包裹。将文本暗示的列表规范化为 <ul>/<ol>。不删除、不总结、不改写、不重排任何文字。' }
 };
 
 const AI_REWRITE_PRESETS = [
@@ -2516,6 +2816,7 @@ const aiChatBtn = $('aiChatBtn');
 let aiPanelHistory = []; // 当前文档对话历史（按文档保留）
 let aiPanelThinking = false;
 let aiPanelLoadedDocId = null;
+let aiChatAbortController = null; // AI 对话请求的 AbortController，发送按钮可中断
 
 function toggleAiPanel() {
   if (!aiPanel) return;
@@ -2591,6 +2892,8 @@ function refreshAiPanelContext() {
 async function loadAiChatHistory(docId) {
   try {
     const rows = await api('/api/documents/' + docId + '/chat-history', 'GET');
+    // await 期间文档可能已切换（快速 A→B→C），丢弃过期响应避免覆盖新文档历史
+    if (!currentDoc || currentDoc.id !== docId) return;
     aiPanelHistory = rows.map(r => ({ role: r.role, content: r.content, created_at: r.created_at }));
     aiPanelLoadedDocId = docId;
     renderAiPanelMessages();
@@ -2599,6 +2902,7 @@ async function loadAiChatHistory(docId) {
     if (aiPanelMessages) aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
   } catch (e) {
     // 表尚未建好或网络异常时静默：用户仍可发送（首条会触发后端建表）
+    if (!currentDoc || currentDoc.id !== docId) return;
     aiPanelHistory = [];
     aiPanelLoadedDocId = docId;
     renderAiPanelMessages();
@@ -2620,11 +2924,13 @@ function renderAiPanelMessages() {
   }
 }
 
-function buildAiMessageEl(role, content) {
+function buildAiMessageEl(role, content, opts) {
+  opts = opts || {};
   const wrap = document.createElement('div');
   wrap.className = 'ai-msg ' + (role === 'user' ? 'ai-msg-user' : 'ai-msg-ai');
+  if (opts.error) wrap.classList.add('ai-msg-error');
   wrap.textContent = content;
-  if (role === 'assistant') {
+  if (role === 'assistant' && !opts.error) {
     const actions = document.createElement('div');
     actions.className = 'ai-msg-actions';
     const insertBtn = document.createElement('button');
@@ -2644,14 +2950,15 @@ function buildAiMessageEl(role, content) {
   return wrap;
 }
 
-function appendAiMessage(role, content) {
+function appendAiMessage(role, content, opts) {
   aiPanelHistory.push({ role, content });
   if (aiPanelMessages) {
     // 移除空状态提示
     const hint = aiPanelMessages.querySelector('.ai-msg-hint');
     if (hint) hint.remove();
-    aiPanelMessages.appendChild(buildAiMessageEl(role, content));
+    aiPanelMessages.appendChild(buildAiMessageEl(role, content, opts));
     aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+    updateAiBackToBottom();
   }
 }
 
@@ -2716,23 +3023,29 @@ async function sendAiMessage() {
   autoGrowAiInput();
   // 显示 typing
   aiPanelThinking = true;
-  if (aiPanelSend) aiPanelSend.disabled = true;
+  setAiSendButtonMode('stop');
   if (aiPanelMessages) {
     const typingEl = buildTypingEl();
     aiPanelMessages.appendChild(typingEl);
     aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
   }
+  // 独立 AbortController：让发送按钮可中断当前请求
+  aiChatAbortController = new AbortController();
+  // 快照当前文档 ID：await 期间用户可能切换文档，响应要落回原文档的对话
+  const sentDocId = currentDoc.id;
   try {
     const data = await api('/api/ai/chat', 'POST', {
-      docId: currentDoc.id,
+      docId: sentDocId,
       message: text,
       history: historySnapshot
-    });
+    }, { signal: aiChatAbortController.signal });
     // 移除 typing
     if (aiPanelMessages) {
       const t = aiPanelMessages.querySelector('.ai-msg-typing-wrap');
       if (t) t.remove();
     }
+    // 文档已切换：响应不追加到新文档的对话（服务端已写入原文档的历史，下次切回仍可见）
+    if (!currentDoc || currentDoc.id !== sentDocId) return;
     appendAiMessage('assistant', data.reply || '');
     if (aiPanelMessages) aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
   } catch (e) {
@@ -2740,12 +3053,41 @@ async function sendAiMessage() {
       const t = aiPanelMessages.querySelector('.ai-msg-typing-wrap');
       if (t) t.remove();
     }
-    appendAiMessage('assistant', '（请求失败：' + (e.message || e) + '）');
-    toast('AI 请求失败');
+    // 用户主动取消：静默，不打扰
+    if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
+      appendAiMessage('assistant', '（已停止）', { error: true });
+    } else {
+      appendAiMessage('assistant', '请求失败：' + (e.message || e), { error: true });
+      toast('AI 请求失败');
+    }
   } finally {
     aiPanelThinking = false;
-    if (aiPanelSend) aiPanelSend.disabled = false;
+    aiChatAbortController = null;
+    setAiSendButtonMode('send');
     if (aiPanelInput) aiPanelInput.focus();
+  }
+}
+
+// 中止当前 AI 对话请求
+function stopAiChat() {
+  if (aiChatAbortController) {
+    try { aiChatAbortController.abort(); } catch (e) {}
+  }
+}
+
+// 发送按钮在「发送」/「停止」两种模式间切换
+function setAiSendButtonMode(mode) {
+  if (!aiPanelSend) return;
+  if (mode === 'stop') {
+    aiPanelSend.classList.add('is-stop');
+    aiPanelSend.title = '停止生成';
+    aiPanelSend.setAttribute('aria-label', '停止生成');
+    aiPanelSend.disabled = false;
+  } else {
+    aiPanelSend.classList.remove('is-stop');
+    aiPanelSend.title = '发送';
+    aiPanelSend.setAttribute('aria-label', '发送');
+    aiPanelSend.disabled = false;
   }
 }
 
@@ -2758,7 +3100,11 @@ function autoGrowAiInput() {
 if (aiPanelClose) aiPanelClose.addEventListener('click', closeAiPanel);
 // 面板常驻：点击外部不再关闭，用户可继续在文档里编辑、选区、选插入位置
 // overlay 已设为 pointer-events:none，不会拦截文档点击
-if (aiPanelSend) aiPanelSend.addEventListener('click', sendAiMessage);
+if (aiPanelSend) aiPanelSend.addEventListener('click', () => {
+  // 思考中：按钮变停止，点击中断当前请求；否则发送
+  if (aiPanelThinking) stopAiChat();
+  else sendAiMessage();
+});
 if (aiPanelInput) {
   aiPanelInput.addEventListener('input', autoGrowAiInput);
   aiPanelInput.addEventListener('keydown', (e) => {
@@ -2767,6 +3113,28 @@ if (aiPanelInput) {
       sendAiMessage();
     }
   });
+}
+// 「回到底部」按钮：向上翻历史时显示，新消息到达自动滚到底则隐藏
+const aiBackToBottomBtn = $('aiBackToBottom');
+if (aiPanelMessages) {
+  aiPanelMessages.addEventListener('scroll', updateAiBackToBottom, { passive: true });
+}
+if (aiBackToBottomBtn) {
+  aiBackToBottomBtn.addEventListener('click', aiBackToBottom);
+}
+function updateAiBackToBottom() {
+  if (!aiPanelMessages || !aiBackToBottomBtn) return;
+  const awayFromBottom = aiPanelMessages.scrollHeight - aiPanelMessages.scrollTop - aiPanelMessages.clientHeight > 120;
+  if (awayFromBottom && aiPanelMessages.scrollHeight > aiPanelMessages.clientHeight + 200) {
+    aiBackToBottomBtn.hidden = false;
+  } else {
+    aiBackToBottomBtn.hidden = true;
+  }
+}
+function aiBackToBottom() {
+  if (!aiPanelMessages) return;
+  aiPanelMessages.scrollTop = aiPanelMessages.scrollHeight;
+  if (aiBackToBottomBtn) aiBackToBottomBtn.hidden = true;
 }
 if (aiQuickTags) {
   aiQuickTags.addEventListener('click', (e) => {
@@ -2833,6 +3201,23 @@ function textToEditorHtml(text) {
   return escapeHtml(text).replace(/\r?\n/g, '<br>');
 }
 
+/* 剥离 AI 改写残留的 <mark class="ai-flash">：把 mark 解包为它的子节点，
+   保留文字内容、丢弃 mark 标签。AI 改写的高亮本应是一次性呼吸动画，
+   但 setTimeout 解包可能被自动保存/切换抢占，导致 mark 被持久化进数据库。
+   在保存前与打开文档时各清一次，确保不留痕。 */
+function stripAiFlashMarks(root) {
+  if (!root || !root.querySelectorAll) return;
+  const marks = root.querySelectorAll('mark.ai-flash');
+  if (!marks.length) return;
+  marks.forEach(m => {
+    const p = m.parentNode;
+    if (!p) return;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    if (p.normalize) p.normalize();
+  });
+}
+
 function markEditorChanged() {
   editorEl.dispatchEvent(new Event('input', { bubbles: true }));
   updateStats();
@@ -2848,65 +3233,58 @@ const AI_ICON_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const AI_ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
 const AI_ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
 
-async function openAiLayoutModal() {
-  if (!currentDoc) { toast('\u8bf7\u5148\u6253\u5f00\u4e00\u7bc7\u6587\u6863'); return; }
-  const presetButtons = Object.keys(AI_PRESETS).map(key =>
-    '<button class="ai-preset' + (key === 'share' ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key] + '</button>'
-  ).join('');
-  openAiModal('AI 排版',
-    '<div class="ai-modal-panel" id="aiLayoutPanel">' +
-      '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。</div>' +
-      '<div class="ai-warning" id="aiStatusNote"></div>' +
-      '<div class="ai-preset-row">' + presetButtons + '</div>' +
-      '<div class="ai-preset-section">' +
-        '<div class="ai-preset-section-head">我的预设<button class="ai-preset-add" id="aiPresetAdd" title="新建预设">' + AI_ICON_PLUS + '</button></div>' +
-        '<div class="ai-preset-custom-row" id="aiPresetCustomRow"><span class="ai-preset-empty">加载中…</span></div>' +
-      '</div>' +
-      '<div class="ai-warning" id="aiLayoutWarning" hidden></div>' +
-      '<div class="ai-preview empty" id="aiLayoutPreview">\u70b9\u51fb\u751f\u6210\u540e\u5728\u8fd9\u91cc\u9884\u89c8</div>' +
-      '<div class="ai-actions">' +
-        '<button class="ai-action" id="aiLayoutRun" disabled>\u751f\u6210\u9884\u89c8</button>' +
-        '<button class="ai-action primary" id="aiLayoutApply" disabled>\u5e94\u7528\u5230\u6587\u6863</button>' +
-      '</div>' +
-    '</div>');
-  aiLayoutCurrentPreset = 'share';
-  aiLayoutCurrentCustomPrompt = '';
-  // 内置预设点击：切换选中态
-  aiModalBody.querySelectorAll('.ai-preset[data-preset]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      aiLayoutCurrentPreset = btn.getAttribute('data-preset');
-      aiLayoutCurrentCustomPrompt = '';
-      aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === btn));
-    });
+/* ---------- 系统预设用户级隐藏（localStorage，个人偏好，不跨设备同步） ---------- */
+const HIDDEN_BUILTIN_KEY = 'aiHiddenBuiltin';
+function getHiddenBuiltin() {
+  try { return JSON.parse(localStorage.getItem(HIDDEN_BUILTIN_KEY) || '[]'); } catch (_) { return []; }
+}
+function setHiddenBuiltin(arr) {
+  try { localStorage.setItem(HIDDEN_BUILTIN_KEY, JSON.stringify(arr)); } catch (_) {}
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => {});
+  }
+  return new Promise(resolve => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+    resolve();
   });
-  $('aiLayoutRun').addEventListener('click', () => runAiLayout(aiLayoutCurrentPreset, aiLayoutCurrentCustomPrompt));
-  refreshAiStatus('aiLayoutRun');
-  $('aiLayoutApply').addEventListener('click', applyAiLayoutResult);
-  $('aiPresetAdd').addEventListener('click', createCustomPreset);
-  // 拉取当前用户的自定义预设（失败静默，仍可用内置预设）
-  await refreshAiCustomPresets();
 }
 
-// 拉取并渲染自定义预设到排版模态框
-async function refreshAiCustomPresets() {
-  const row = $('aiPresetCustomRow');
+// 渲染预设按钮行：系统预设（未隐藏）+ 自定义预设 + 新建预设按钮（虚线外框）
+function renderAiPresetRow() {
+  const row = $('aiPresetRow');
   if (!row) return;
-  try {
-    aiCustomPresets = await api('/api/ai/presets', 'GET');
-  } catch (e) {
-    aiCustomPresets = [];
-  }
-  if (!Array.isArray(aiCustomPresets) || !aiCustomPresets.length) {
-    row.innerHTML = '<span class="ai-preset-empty">还没有自定义预设，点右上角 + 新建</span>';
-    return;
-  }
-  row.innerHTML = aiCustomPresets.map((p, i) =>
-    '<span class="ai-preset-custom" data-preset="custom" data-custom-index="' + i + '" title="' + escapeHtml((p.prompt || '').slice(0, 80)) + '">' +
-      '<span class="ai-preset-label">' + escapeHtml(p.label) + '</span>' +
-      '<span class="ai-preset-icon" data-act="edit" title="编辑">' + AI_ICON_PENCIL + '</span>' +
-      '<span class="ai-preset-icon" data-act="delete" title="删除">' + AI_ICON_TRASH + '</span>' +
-    '</span>'
+  const hidden = getHiddenBuiltin();
+  let html = Object.keys(AI_PRESETS).filter(k => !hidden.includes(k)).map(key =>
+    '<button class="ai-preset' + (aiLayoutCurrentPreset === key && !aiLayoutCurrentCustomPrompt ? ' active' : '') + '" data-preset="' + key + '">' + AI_PRESETS[key].label + '</button>'
   ).join('');
+  if (Array.isArray(aiCustomPresets) && aiCustomPresets.length) {
+    html += aiCustomPresets.map((p, i) =>
+      '<span class="ai-preset-custom" data-preset="custom" data-custom-index="' + i + '" title="' + escapeHtml((p.prompt || '').slice(0, 80)) + '">' +
+        '<span class="ai-preset-label">' + escapeHtml(p.label) + '</span>' +
+        '<span class="ai-preset-icon" data-act="edit" title="编辑">' + AI_ICON_PENCIL + '</span>' +
+        '<span class="ai-preset-icon" data-act="delete" title="删除">' + AI_ICON_TRASH + '</span>' +
+      '</span>'
+    ).join('');
+  }
+  html += '<button class="ai-preset-add-btn" id="aiPresetNew" title="新建预设">' + AI_ICON_PLUS + '新建预设</button>';
+  row.innerHTML = html;
+  // 系统预设点击：选中 + 显示提示词预览
+  row.querySelectorAll('.ai-preset[data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-preset');
+      aiLayoutCurrentPreset = key;
+      aiLayoutCurrentCustomPrompt = '';
+      row.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === btn));
+      showAiPresetTip(AI_PRESETS[key].prompt, key);
+    });
+  });
+  // 自定义预设点击：选中 + 显示提示词预览；图标走编辑/删除
   row.querySelectorAll('.ai-preset-custom').forEach(el => {
     el.addEventListener('click', (e) => {
       const icon = e.target.closest('.ai-preset-icon');
@@ -2920,15 +3298,133 @@ async function refreshAiCustomPresets() {
       }
       aiLayoutCurrentPreset = 'custom';
       aiLayoutCurrentCustomPrompt = (aiCustomPresets[idx] && aiCustomPresets[idx].prompt) || '';
-      aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === el));
+      row.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === el));
+      showAiPresetTip((aiCustomPresets[idx] && aiCustomPresets[idx].prompt) || '', null);
     });
   });
+  const newBtn = $('aiPresetNew');
+  if (newBtn) newBtn.addEventListener('click', createCustomPreset);
+  renderAiHiddenRow();
+}
+
+// 显示提示词预览（2-3行半透明，再点展开完整，可复制不可改）
+function showAiPresetTip(prompt, key) {
+  const tip = $('aiPresetTip');
+  if (!tip) return;
+  tip.classList.remove('expanded');
+  const textEl = $('aiPresetTipText');
+  if (textEl) textEl.textContent = prompt || '';
+  const hint = $('aiPresetTipHint');
+  if (hint) hint.textContent = '点击展开完整提示词';
+  tip.hidden = false;
+  // 仅系统预设可隐藏
+  const hideBtn = $('aiPresetTipHide');
+  if (hideBtn) { hideBtn.hidden = !key; hideBtn.setAttribute('data-key', key || ''); }
+}
+function hideAiPresetTip() {
+  const tip = $('aiPresetTip');
+  if (tip) { tip.hidden = true; tip.classList.remove('expanded'); }
+}
+
+// 渲染已隐藏的系统预设恢复区
+function renderAiHiddenRow() {
+  const row = $('aiPresetHiddenRow');
+  if (!row) return;
+  const hidden = getHiddenBuiltin();
+  if (!hidden.length) { row.hidden = true; row.innerHTML = ''; return; }
+  row.hidden = false;
+  row.innerHTML = '<span class="ai-preset-hidden-label">已隐藏：</span>' + hidden.map(key =>
+    '<button class="ai-preset-restore" data-restore="' + key + '">' + (AI_PRESETS[key] && AI_PRESETS[key].label || key) + ' · 恢复</button>'
+  ).join('');
+  row.querySelectorAll('.ai-preset-restore').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-restore');
+      setHiddenBuiltin(getHiddenBuiltin().filter(k => k !== key));
+      toast('已恢复「' + (AI_PRESETS[key] && AI_PRESETS[key].label || key) + '」');
+      // 恢复后若当前选中的是 share 且 share 刚恢复，保持选中；否则不改动选中态
+      renderAiPresetRow();
+    });
+  });
+}
+
+async function openAiLayoutModal() {
+  if (!currentDoc) { toast('请先打开一篇文档'); return; }
+  openAiModal('AI 排版',
+    '<div class="ai-modal-panel" id="aiLayoutPanel">' +
+      '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。点任意预设可查看提示词。</div>' +
+      '<div class="ai-warning" id="aiStatusNote"></div>' +
+      '<div class="ai-preset-row" id="aiPresetRow"></div>' +
+      '<div class="ai-preset-tip" id="aiPresetTip" hidden>' +
+        '<div class="ai-preset-tip-text" id="aiPresetTipText"></div>' +
+        '<div class="ai-preset-tip-hint" id="aiPresetTipHint">点击展开完整提示词</div>' +
+        '<div class="ai-preset-tip-actions">' +
+          '<button class="ai-preset-tip-btn" id="aiPresetTipCopy">复制提示词</button>' +
+          '<button class="ai-preset-tip-btn danger" id="aiPresetTipHide" hidden>隐藏此预设</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ai-preset-hidden-row" id="aiPresetHiddenRow" hidden></div>' +
+      '<div class="ai-warning" id="aiLayoutWarning" hidden></div>' +
+      '<div class="ai-preview empty" id="aiLayoutPreview">点击生成后在这里预览</div>' +
+      '<div class="ai-actions">' +
+        '<button class="ai-action" id="aiLayoutRun" disabled>生成预览</button>' +
+        '<button class="ai-action primary" id="aiLayoutApply" disabled>应用到文档</button>' +
+      '</div>' +
+    '</div>');
+  aiLayoutCurrentPreset = 'share';
+  aiLayoutCurrentCustomPrompt = '';
+  renderAiPresetRow();
+  $('aiLayoutRun').addEventListener('click', () => runAiLayout(aiLayoutCurrentPreset, aiLayoutCurrentCustomPrompt));
+  refreshAiStatus('aiLayoutRun');
+  $('aiLayoutApply').addEventListener('click', applyAiLayoutResult);
+  // 提示词预览：点击展开/收起
+  const tip = $('aiPresetTip');
+  if (tip) tip.addEventListener('click', (e) => {
+    if (e.target.closest('.ai-preset-tip-btn')) return; // 点操作按钮不触发展开
+    tip.classList.toggle('expanded');
+    const hint = $('aiPresetTipHint');
+    if (hint) hint.textContent = tip.classList.contains('expanded') ? '点击收起' : '点击展开完整提示词';
+  });
+  const copyBtn = $('aiPresetTipCopy');
+  if (copyBtn) copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const textEl = $('aiPresetTipText');
+    copyText(textEl ? textEl.textContent : '').then(() => toast('提示词已复制'));
+  });
+  const hideBtn = $('aiPresetTipHide');
+  if (hideBtn) hideBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const key = hideBtn.getAttribute('data-key');
+    if (!key) return;
+    const hidden = getHiddenBuiltin();
+    if (!hidden.includes(key)) { hidden.push(key); setHiddenBuiltin(hidden); }
+    toast('已隐藏「' + (AI_PRESETS[key] && AI_PRESETS[key].label || key) + '」');
+    // 隐藏当前选中预设后回退到 share
+    if (aiLayoutCurrentPreset === key) {
+      aiLayoutCurrentPreset = 'share';
+      aiLayoutCurrentCustomPrompt = '';
+    }
+    renderAiPresetRow();
+    hideAiPresetTip();
+  });
+  // 拉取当前用户的自定义预设（失败静默，仍可用内置预设）
+  await refreshAiCustomPresets();
+}
+
+// 拉取自定义预设并重渲染按钮行（渲染统一交给 renderAiPresetRow）
+async function refreshAiCustomPresets() {
+  try {
+    aiCustomPresets = await api('/api/ai/presets', 'GET');
+  } catch (e) {
+    aiCustomPresets = [];
+  }
+  if (!Array.isArray(aiCustomPresets)) aiCustomPresets = [];
+  renderAiPresetRow();
 }
 
 async function createCustomPreset() {
   const label = await showPrompt({ title: '新建预设', desc: '请输入预设名称（显示在按钮上）', placeholder: '如：精简排版', confirmText: '下一步' });
   if (!label || !label.trim()) return;
-  const prompt = await showPrompt({ title: '新建预设', desc: '请输入提示词，描述你希望 AI 如何排版', placeholder: '如：去除所有底色和格式，段落两端对齐…', confirmText: '创建' });
+  const prompt = await showPrompt({ title: '新建预设', desc: '请输入提示词，描述你希望 AI 如何排版（最多 3000 字，Ctrl+Enter 提交）', placeholder: '如：去除所有底色和格式，段落两端对齐…', confirmText: '创建', multiline: true, maxlength: 3000 });
   if (prompt === null) return;
   try {
     await api('/api/ai/presets', 'POST', { label: label.trim(), prompt: prompt.trim() });
@@ -2945,7 +3441,7 @@ async function editCustomPreset(idx) {
   const label = await showPrompt({ title: '编辑预设', desc: '预设名称', value: p.label, confirmText: '下一步' });
   if (label === null) return;
   if (!label || !label.trim()) { toast('名称不能为空'); return; }
-  const prompt = await showPrompt({ title: '编辑预设', desc: '提示词', value: p.prompt, confirmText: '保存' });
+  const prompt = await showPrompt({ title: '编辑预设', desc: '提示词（最多 3000 字，Ctrl+Enter 提交）', value: p.prompt, confirmText: '保存', multiline: true, maxlength: 3000 });
   if (prompt === null) return;
   try {
     await api('/api/ai/presets/' + p.id, 'PUT', { label: label.trim(), prompt: prompt.trim() });
@@ -2964,12 +3460,11 @@ async function deleteCustomPreset(idx) {
   try {
     await api('/api/ai/presets/' + p.id, 'DELETE');
     toast('已删除');
-    // 若删除的正是当前选中的自定义预设，回退到 share
+    // 若删除的正是当前选中的自定义预设，回退到 share 并收起提示词
     if (aiLayoutCurrentPreset === 'custom') {
       aiLayoutCurrentPreset = 'share';
       aiLayoutCurrentCustomPrompt = '';
-      const shareBtn = aiModalBody.querySelector('.ai-preset[data-preset="share"]');
-      if (shareBtn) aiModalBody.querySelectorAll('.ai-preset, .ai-preset-custom').forEach(b => b.classList.toggle('active', b === shareBtn));
+      hideAiPresetTip();
     }
     await refreshAiCustomPresets();
   } catch (e) {
@@ -2977,18 +3472,27 @@ async function deleteCustomPreset(idx) {
   }
 }
 
+let _aiLayoutRunning = false; // AI 排版重入守卫，防止"停止"按钮触发新请求
 async function runAiLayout(preset, customPrompt) {
+  // 同 runAiRewrite：停止按钮和生成按钮共用 runBtn，重入守卫拦截双触发
+  if (_aiLayoutRunning) return;
+  _aiLayoutRunning = true;
   const runBtn = $('aiLayoutRun');
   const applyBtn = $('aiLayoutApply');
   const preview = $('aiLayoutPreview');
   const warning = $('aiLayoutWarning');
-  runBtn.disabled = true;
   applyBtn.disabled = true;
   warning.hidden = true;
   preview.classList.add('empty');
   preview.textContent = '正在排版，稍等一下…';
+  // 创建 AbortController 支持用户取消（AI 排版最长 90s）
+  const ac = new AbortController();
+  const origText = runBtn.textContent;
+  runBtn.textContent = '停止';
+  const onStop = () => ac.abort();
+  runBtn.addEventListener('click', onStop);
   try {
-    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset, customPrompt: customPrompt || '', docId: currentDoc && currentDoc.id });
+    const res = await api('/api/ai/layout', 'POST', { html: editor.getHTML(), preset, customPrompt: customPrompt || '', docId: currentDoc && currentDoc.id }, { signal: ac.signal });
     pendingAiLayoutHtml = res.html || '';
     preview.classList.remove('empty');
     preview.innerHTML = pendingAiLayoutHtml || '';
@@ -2999,9 +3503,15 @@ async function runAiLayout(preset, customPrompt) {
     }
   } catch (e) {
     preview.classList.add('empty');
-    preview.textContent = '\u751f\u6210\u5931\u8d25\uff1a' + (e.message || e);
+    if (e && e.name === 'AbortError') {
+      preview.textContent = '已取消';
+    } else {
+      preview.textContent = '生成失败：' + (e.message || e);
+    }
   } finally {
-    runBtn.disabled = false;
+    runBtn.removeEventListener('click', onStop);
+    runBtn.textContent = origText;
+    _aiLayoutRunning = false;
   }
 }
 
@@ -3053,30 +3563,47 @@ function openAiRewriteModal() {
   refreshAiStatus('aiRewriteRun').then(ok => { aiReady = ok; updateRunBtn(); });
 }
 
+let _aiRewriteRunning = false; // AI 改写重入守卫，防止"停止"按钮触发新请求
 async function runAiRewrite(selectedText) {
+  // "停止"按钮和"生成预览"共用同一 runBtn：处理中再点会同时触发 abort（旧请求）
+  // 和 runAiRewrite（新请求），导致用户点停止反而启动了新请求。重入守卫拦截此场景。
+  if (_aiRewriteRunning) return;
+  _aiRewriteRunning = true;
   const runBtn = $('aiRewriteRun');
   const applyBtn = $('aiRewriteApply');
   const preview = $('aiRewritePreview');
   const instruction = $('aiRewriteInstruction').value.trim();
-  runBtn.disabled = true;
   preview.classList.add('empty');
-  preview.textContent = '\u6b63\u5728\u5904\u7406\uff0c\u7a0d\u7b49\u4e00\u4e0b...';
+  preview.textContent = '正在处理，稍等一下...';
   // 重新生成预览时，应用按钮先回到弱色，生成成功后再变强调色
   applyBtn.classList.remove('primary');
+  // 创建 AbortController 支持用户取消（AI 改写最长 70s）
+  const ac = new AbortController();
+  const origText = runBtn.textContent;
+  runBtn.textContent = '停止';
+  const onStop = () => ac.abort();
+  runBtn.addEventListener('click', onStop);
   try {
-    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id });
+    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id }, { signal: ac.signal });
     pendingAiRewriteText = res.replacement || '';
     preview.classList.remove('empty');
     preview.innerHTML = textToEditorHtml(pendingAiRewriteText);
     if (pendingAiRewriteText) applyBtn.classList.add('primary');
   } catch (e) {
     preview.classList.add('empty');
-    preview.textContent = '\u751f\u6210\u5931\u8d25\uff1a' + (e.message || e);
+    if (e && e.name === 'AbortError') {
+      preview.textContent = '已取消';
+    } else {
+      preview.textContent = '生成失败：' + (e.message || e);
+    }
   } finally {
-    runBtn.disabled = false;
+    runBtn.removeEventListener('click', onStop);
+    runBtn.textContent = origText;
+    _aiRewriteRunning = false;
   }
 }
 
+let _aiApplyRunning = false; // AI 改写直发模式重入守卫
 async function applyAiRewriteResult(selectedText) {
   const applyBtn = $('aiRewriteApply');
   // 1) 已生成预览：直接应用预览内容
@@ -3090,32 +3617,43 @@ async function applyAiRewriteResult(selectedText) {
     return;
   }
   // 2) 没有预览：直接调用 API 生成并替换，附悬浮撤销气泡
-  const instruction = $('aiRewriteInstruction').value.trim();
-  if (!instruction) { toast('\u8bf7\u5148\u8f93\u5165\u6307\u4ee4\u6216\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d'); return; }
-  if (!restoreAiSelection()) return;
-  // 保存当前选区内容用于撤销
-  const undoRange = savedAiRange.cloneRange();
-  const undoFrag = undoRange.cloneContents();
-  const undoHolder = document.createElement('div');
-  undoHolder.appendChild(undoFrag);
-  const originalHtml = undoHolder.innerHTML;
-  // 禁用按钮 + 显示加载态
-  applyBtn.disabled = true;
-  const prevText = applyBtn.textContent;
-  applyBtn.textContent = '\u751f\u6210\u4e2d\u2026';
+  // 重入守卫：直发模式下 applyBtn 变为"停止"，点击会同时触发 abort（旧）和 applyAiRewriteResult（新）
+  if (_aiApplyRunning) return;
+  _aiApplyRunning = true;
   try {
-    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id });
-    if (!res || !res.replacement) { toast('AI \u672a\u8fd4\u56de\u5185\u5bb9'); return; }
-    document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
-    markEditorChanged();
-    hideFloatMenu();
-    closeAiModal();
-    showAiUndoBubble(originalHtml);
-  } catch (e) {
-    toast('AI \u5931\u8d25\uff1a' + (e.message || e));
+    const instruction = $('aiRewriteInstruction').value.trim();
+    if (!instruction) { toast('\u8bf7\u5148\u8f93\u5165\u6307\u4ee4\u6216\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d'); return; }
+    if (!restoreAiSelection()) return;
+    // 保存当前选区内容用于撤销
+    const undoRange = savedAiRange.cloneRange();
+    const undoFrag = undoRange.cloneContents();
+    const undoHolder = document.createElement('div');
+    undoHolder.appendChild(undoFrag);
+    const originalHtml = undoHolder.innerHTML;
+    // 禁用按钮 + 显示加载态；支持取消（直发模式也接 AbortController）
+    const prevText = applyBtn.textContent;
+    const ac = new AbortController();
+    applyBtn.textContent = '停止';
+    const onStop = () => ac.abort();
+    applyBtn.addEventListener('click', onStop);
+    try {
+      const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id }, { signal: ac.signal });
+      if (!res || !res.replacement) { toast('AI 未返回内容'); return; }
+      document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
+      markEditorChanged();
+      hideFloatMenu();
+      closeAiModal();
+      showAiUndoBubble(originalHtml);
+    } catch (e) {
+      if (e && e.name === 'AbortError') { toast('已取消'); }
+      else toast('AI 失败：' + (e.message || e));
+    } finally {
+      applyBtn.removeEventListener('click', onStop);
+      applyBtn.textContent = prevText;
+      applyBtn.disabled = false;
+    }
   } finally {
-    applyBtn.disabled = false;
-    applyBtn.textContent = prevText;
+    _aiApplyRunning = false;
   }
 }
 
@@ -3355,7 +3893,7 @@ const shortcutGroups = [
     ['Ctrl/⌘ + Alt + T', '表格'],
     ['Ctrl/⌘ + Alt + H', '分隔线'],
     ['Ctrl/⌘ + Shift + H', '导出 HTML'],
-    ['Ctrl/⌘ + Shift + D', '导出 Markdown'],
+    ['Ctrl/⌘ + Alt + D', '导出 Markdown'],
     ['Ctrl/⌘ + Shift + W', '导出 Word']
   ]]
 ];
@@ -3365,7 +3903,7 @@ function buildShortcutHelp() {
   el.className = 'shortcut-overlay';
   el.hidden = true;
   el.innerHTML = '<div class="shortcut-panel" role="dialog" aria-modal="true" aria-label="快捷键">' +
-    '<div class="shortcut-head"><strong>快捷键</strong><button class="shortcut-close" type="button" title="关闭">×</button></div>' +
+    '<div class="shortcut-head"><strong>快捷键</strong><button class="shortcut-close" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>' +
     '<div class="shortcut-body">' + shortcutGroups.map(group =>
       '<section class="shortcut-section"><h3>' + escapeHtml(group[0]) + '</h3>' +
       group[1].map(item => '<div class="shortcut-row"><kbd>' + escapeHtml(item[0]) + '</kbd><span>' + escapeHtml(item[1]) + '</span></div>').join('') +
@@ -3394,7 +3932,11 @@ function isNativeField(target) {
 let lastCtrlATime = 0; // 飞书式 Ctrl+A 两段选：记录上次按 Ctrl+A 的时间
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
-  if (e.key === 'Escape') { hideShortcutHelp(); if (aiModal && !aiModal.hidden) closeAiModal(); }
+  if (e.key === 'Escape') {
+    hideShortcutHelp();
+    if (aiModal && !aiModal.hidden) { closeAiModal(); return; }
+    if (aiPanel && !aiPanel.hidden) { closeAiPanel(); return; }
+  }
   if (!ctrl) return;
   if (isNativeField(e.target) && e.target !== docTitleEl && e.target !== searchInput) return;
   const k = e.key.toLowerCase();
@@ -3424,15 +3966,36 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
   else if (k === 'r' && e.altKey) { e.preventDefault(); toggleReadingMode(); }
   else if (k === 'h' && e.shiftKey && !e.altKey) { e.preventDefault(); exportHTML(); }
-  else if (k === 'd' && e.shiftKey && !e.altKey) { e.preventDefault(); exportMarkdown(); }
+  else if (k === 'd' && e.altKey && !e.shiftKey) { e.preventDefault(); exportMarkdown(); }
   else if (k === 'w' && e.shiftKey && !e.altKey) { e.preventDefault(); exportWord(); }
   else if (k === 'p' && e.shiftKey && !e.altKey) { e.preventDefault(); activatePaintFormat(); }
   else if (k === 'j' && !e.altKey && !e.shiftKey) { e.preventDefault(); toggleAiPanel(); }
 });
 
+// 离开页面前用 keepalive fetch 发送未保存内容
+// 浏览器不会等 async fetch 完成，普通 saveCurrent() 在 beforeunload 里大概率丢失；
+// keepalive 标志允许请求在页面卸载后继续发送（类似 sendBeacon 但支持完整 fetch API）
+function beaconSave() {
+  if (!currentDoc || currentDoc._pending || switching) return;
+  if (!saveTimer) return; // 没有待保存的内容
+  clearTimeout(saveTimer); saveTimer = null;
+  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
+  stripAiFlashMarks(editorEl);
+  const content = editor.getHTML();
+  try {
+    fetch('/api/documents/' + currentDoc.id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      keepalive: true,
+      body: JSON.stringify({ title, content })
+    }).catch(() => {});
+  } catch(_) {}
+}
+
 // 离开前保存
 window.addEventListener('beforeunload', () => {
-  if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveCurrent(); }
+  if (currentDoc && saveTimer) beaconSave();
 });
 
 /* ---------- 工具 ---------- */
@@ -3615,52 +4178,192 @@ function pickAvatarColor(seed) {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
-// 上传头像：前端 Canvas 压缩到 256×256 PNG，POST 给后端
-async function uploadUserAvatar(file) {
+/* ---------- 头像裁剪弹窗（拖动选区 + 缩放） ---------- */
+const avatarCropModal = $('avatarCropModal');
+const avatarCropStage = $('avatarCropStage');
+const avatarCropImage = $('avatarCropImage');
+const avatarCropZoom = $('avatarCropZoom');
+const avatarCropStatus = $('avatarCropStatus');
+const avatarCropConfirm = $('avatarCropConfirm');
+const avatarCropCancel = $('avatarCropCancel');
+const avatarCropClose = $('avatarCropClose');
+let avatarCrop = null;
+const AVATAR_TARGET_BYTES = 180 * 1024;
+
+function clampAvatarCrop() {
+  const s = avatarCrop;
+  if (!s || !s.frame) return;
+  const maxX = Math.max(0, (s.image.naturalWidth * s.scale - s.frame) / 2);
+  const maxY = Math.max(0, (s.image.naturalHeight * s.scale - s.frame) / 2);
+  s.x = Math.max(-maxX, Math.min(maxX, s.x));
+  s.y = Math.max(-maxY, Math.min(maxY, s.y));
+}
+function drawAvatarCrop() {
+  const s = avatarCrop;
+  if (!s) return;
+  avatarCropImage.style.width = (s.image.naturalWidth * s.scale) + 'px';
+  avatarCropImage.style.height = (s.image.naturalHeight * s.scale) + 'px';
+  avatarCropImage.style.transform = 'translate(-50%,-50%) translate(' + s.x + 'px,' + s.y + 'px)';
+}
+function layoutAvatarCrop() {
+  const s = avatarCrop;
+  if (!s || !avatarCropStage.clientWidth) return;
+  s.frame = avatarCropStage.clientWidth;
+  s.minScale = Math.max(s.frame / s.image.naturalWidth, s.frame / s.image.naturalHeight);
+  s.scale = s.minScale * s.zoom / 100;
+  clampAvatarCrop();
+  drawAvatarCrop();
+}
+function closeAvatarCropper(force) {
+  const s = avatarCrop;
+  if (!s || (s.saving && !force)) return;
+  URL.revokeObjectURL(s.url);
+  avatarCrop = null;
+  avatarCropModal.hidden = true;
+  avatarCropImage.removeAttribute('src');
+  avatarCropZoom.value = '100';
+  avatarCropConfirm.disabled = false;
+  avatarCropConfirm.textContent = '保存头像';
+}
+async function encodeAvatarCrop() {
+  const s = avatarCrop;
+  if (!s) throw new Error('裁剪未就绪，无法编码');
+  const crop = s.frame / s.scale;
+  const sx = s.image.naturalWidth / 2 - s.x / s.scale - crop / 2;
+  const sy = s.image.naturalHeight / 2 - s.y / s.scale - crop / 2;
+  // 检测 webp 编码支持（iOS < 14 等环境 canvas 不支持 webp 编码，toDataURL 会回退为 png）
+  const supportsWebp = (() => {
+    try { return document.createElement('canvas').toDataURL('image/webp').startsWith('data:image/webp'); }
+    catch (_) { return false; }
+  })();
+  const types = supportsWebp ? ['image/webp', 'image/jpeg'] : ['image/jpeg'];
+  // 兜底：若所有档位都超过目标，取体积最小的一档返回，绝不因体积拒绝用户
+  let bestUrl = null;
+  let bestBytes = Infinity;
+  for (const outputSize of [512, 448, 384, 320, 256, 192, 160]) {
+    const canvas = document.createElement('canvas');
+    canvas.width = outputSize; canvas.height = outputSize;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, outputSize, outputSize);
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(s.image, sx, sy, crop, crop, 0, 0, outputSize, outputSize);
+    for (const type of types) {
+      for (const quality of [.92, .84, .76, .68, .6]) {
+        // 用 canvas.toDataURL 直接生成标准 data URL，避免 toBlob 在部分浏览器
+        // 返回空 blob.type 导致 FileReader.readAsDataURL 生成 data:;base64, 格式
+        const dataUrl = canvas.toDataURL(type, quality);
+        const m = dataUrl.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/);
+        if (!m) continue;
+        // base64 解码后字节数 = 字符数 × 3/4 - padding
+        const b64 = m[2];
+        const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+        const bytes = Math.floor(b64.length * 3 / 4) - padding;
+        if (bytes <= AVATAR_TARGET_BYTES) return dataUrl;
+        if (bytes < bestBytes) { bestBytes = bytes; bestUrl = dataUrl; }
+      }
+    }
+  }
+  // 所有档位都超目标：取最小档兜底（通常是 160px × .6，体积很小），不让用户上传失败
+  if (bestUrl) return bestUrl;
+  throw new Error('图片编码失败，请换一张图');
+}
+async function saveCroppedAvatar(avatar) {
+  const resp = await fetch('/api/user/avatar', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ avatar })
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error || '保存失败');
+  }
+  currentUser.avatar = (await resp.json()).avatar;
+  updateUserBadge();
+}
+async function openAvatarCropper(file, onSaved) {
   if (!file) return;
   if (!/^image\//.test(file.type)) { toast('请选择图片文件'); return; }
-  if (file.size > 8 * 1024 * 1024) { toast('图片过大，请选择 8MB 以内的图片'); return; }
+  if (file.size > 8 * 1024 * 1024) { toast('图片过大，请小于 8MB 后重试'); return; }
+  const url = URL.createObjectURL(file);
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('读取文件失败'));
-      reader.readAsDataURL(file);
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = url;
     });
-    const img = await new Promise((resolve, reject) => {
-      const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = () => reject(new Error('图片加载失败'));
-      im.src = dataUrl;
-    });
-    // 居中裁剪到正方形，再缩放到 256×256
-    const size = 256;
-    const canvas = document.createElement('canvas');
-    canvas.width = size; canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    const srcSize = Math.min(img.width, img.height);
-    const sx = (img.width - srcSize) / 2;
-    const sy = (img.height - srcSize) / 2;
-    ctx.drawImage(img, sx, sy, srcSize, srcSize, 0, 0, size, size);
-    const png = canvas.toDataURL('image/png');
-    const resp = await fetch('/api/user/avatar', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ avatar: png })
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || '上传失败');
-    }
-    const data = await resp.json();
-    currentUser.avatar = data.avatar;
-    updateUserBadge();
-    toast('头像已更新');
+    if (Math.min(image.naturalWidth, image.naturalHeight) < 160) throw new Error('图片尺寸过小，最短边需大于 160 像素');
+    if (avatarCrop) URL.revokeObjectURL(avatarCrop.url);
+    avatarCrop = { image, url, onSaved, zoom: 100, minScale: 1, scale: 1, frame: 0, x: 0, y: 0, saving: false };
+    avatarCropImage.src = url;
+    avatarCropZoom.value = '100';
+    avatarCropStatus.textContent = '建议选择正方形区域，输出为 512×512 像素头像';
+    avatarCropModal.hidden = false;
+    requestAnimationFrame(() => { layoutAvatarCrop(); avatarCropStage.focus(); });
   } catch (e) {
-    toast(e.message || '上传失败');
+    URL.revokeObjectURL(url);
+    toast(e.message || '打开图片失败');
   }
 }
-
+function chooseUserAvatar(onSaved) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = () => openAvatarCropper(input.files && input.files[0], onSaved);
+  input.click();
+}
+if (avatarCropStage) {
+  let drag = null;
+  avatarCropStage.addEventListener('pointerdown', (e) => {
+    if (!avatarCrop || avatarCrop.saving) return;
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, imageX: avatarCrop.x, imageY: avatarCrop.y };
+    avatarCropStage.setPointerCapture(e.pointerId);
+    avatarCropStage.classList.add('dragging');
+    e.preventDefault();
+  });
+  avatarCropStage.addEventListener('pointermove', (e) => {
+    if (!drag || drag.id !== e.pointerId || !avatarCrop) return;
+    avatarCrop.x = drag.imageX + e.clientX - drag.x;
+    avatarCrop.y = drag.imageY + e.clientY - drag.y;
+    clampAvatarCrop(); drawAvatarCrop();
+  });
+  const endAvatarDrag = (e) => {
+    if (!drag || drag.id !== e.pointerId) return;
+    if (avatarCropStage.hasPointerCapture(e.pointerId)) avatarCropStage.releasePointerCapture(e.pointerId);
+    drag = null; avatarCropStage.classList.remove('dragging');
+  };
+  avatarCropStage.addEventListener('pointerup', endAvatarDrag);
+  avatarCropStage.addEventListener('pointercancel', endAvatarDrag);
+}
+if (avatarCropZoom) avatarCropZoom.addEventListener('input', () => {
+  if (!avatarCrop || avatarCrop.saving) return;
+  avatarCrop.zoom = Number(avatarCropZoom.value);
+  avatarCrop.scale = avatarCrop.minScale * avatarCrop.zoom / 100;
+  clampAvatarCrop(); drawAvatarCrop();
+});
+if (avatarCropClose) avatarCropClose.addEventListener('click', () => closeAvatarCropper());
+if (avatarCropCancel) avatarCropCancel.addEventListener('click', () => closeAvatarCropper());
+if (avatarCropModal) avatarCropModal.addEventListener('pointerdown', (e) => { if (e.target === avatarCropModal) closeAvatarCropper(); });
+if (avatarCropConfirm) avatarCropConfirm.addEventListener('click', async () => {
+  const s = avatarCrop;
+  if (!s || s.saving) return;
+  s.saving = true; avatarCropConfirm.disabled = true; avatarCropConfirm.textContent = '保存中';
+  avatarCropStatus.textContent = '正在上传头像…';
+  try {
+    await saveCroppedAvatar(await encodeAvatarCrop());
+    const onSaved = s.onSaved;
+    closeAvatarCropper(true);
+    if (onSaved) onSaved();
+    toast('头像已更新');
+  } catch (e) {
+    if (avatarCrop) {
+      avatarCrop.saving = false; avatarCropConfirm.disabled = false; avatarCropConfirm.textContent = '保存头像';
+      avatarCropStatus.textContent = '建议选择正方形区域，输出为 512×512 像素头像';
+    }
+    toast(e.message || '保存失败');
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && avatarCropModal && !avatarCropModal.hidden) closeAvatarCropper();
+});
 function bindAvatarUpload() {
   const badge = $('userBadge');
   if (!badge) return;
@@ -3672,7 +4375,7 @@ function bindAvatarUpload() {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.onchange = () => uploadUserAvatar(input.files && input.files[0]);
+      input.onchange = () => openAvatarCropper(input.files && input.files[0]);
       input.click();
     });
   }
@@ -3860,7 +4563,7 @@ function populateMeSheet(body) {
       input.type = 'file';
       input.accept = 'image/*';
       input.onchange = async () => {
-        await uploadUserAvatar(input.files && input.files[0]);
+        await openAvatarCropper(input.files && input.files[0], () => populateMeSheet(body));
         // 上传完成后重新填充面板，刷新头像
         populateMeSheet(body);
       };
@@ -3878,7 +4581,7 @@ function populateMeSheet(body) {
   const themeBtn = document.createElement('button');
   themeBtn.className = 'ms-item';
   themeBtn.innerHTML =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke-linecap="round"/></svg><span>切换主题</span>';
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg><span>切换主题</span>';
   themeBtn.addEventListener('click', () => { closeMobileSheet(); toggleTheme(); });
   grid.appendChild(themeBtn);
 
@@ -3887,7 +4590,7 @@ function populateMeSheet(body) {
     const logoutBtnEl = document.createElement('button');
     logoutBtnEl.className = 'ms-item ms-item-danger';
     logoutBtnEl.innerHTML =
-      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5V3a1 1 0 0 0-1-1H3.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1H8a1 1 0 0 0 1-1v-1.5M11 5l3 3-3 3M6 8h8"/></svg><span>退出登录</span>';
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg><span>退出登录</span>';
     logoutBtnEl.addEventListener('click', async () => {
       closeMobileSheet();
       stopVersionPolling();
@@ -3913,20 +4616,20 @@ function populateToolsSheet(body) {
       { label: '标题3', action: () => editor.exec('formatBlock', '<H3>') },
       { label: '正文',  action: () => editor.exec('formatBlock', '<P>') },
       { label: '引用',  action: () => editor.exec('formatBlock', '<BLOCKQUOTE>'), svg: '<svg viewBox="0 0 24 24"><path d="M5 8c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3H5V8zm9 0c0-1.7 1.3-3 3-3v2c-.6 0-1 .4-1 1v1h1v3h-3V8z" fill="currentColor" stroke="none"/></svg>' },
-      { label: '代码块', action: () => editor.insertCodeBlock(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M5 6l-2 2 2 2M11 6l2 2-2 2"/></svg>' },
+      { label: '代码块', action: () => editor.insertCodeBlock(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' },
     ]},
     { section: '格式', children: [
       { label: '删除线', cmd: 'strikeThrough', text: 'S' },
-      { label: '无序列表', cmd: 'insertUnorderedList', svg: '<svg viewBox="0 0 16 16"><circle cx="3" cy="4" r="1.2" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1.2" fill="currentColor" stroke="none"/><path d="M7 4h7M7 8h7M7 12h7"/></svg>' },
-      { label: '有序列表', cmd: 'insertOrderedList', svg: '<svg viewBox="0 0 16 16"><path d="M2 4h1v1H2zM2 8h1.5l-1 1H2zM2 12h1.5v.5H2.5v.5H2v-1zM7 4h7M7 8h7M7 12h7"/></svg>' },
-      { label: '行内代码', action: () => editor.insertCodeInline(), svg: '<svg viewBox="0 0 16 16"><path d="M5 4L1 8l4 4M11 4l4 4-4 4"/></svg>' },
-      { label: '清除格式', cmd: 'removeFormat', svg: '<svg viewBox="0 0 16 16"><path d="M3 3l10 10M5 4l5 5"/><path d="M8 12h6"/></svg>' },
+      { label: '无序列表', cmd: 'insertUnorderedList', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3.5" y1="6" x2="3.5" y2="6"/><line x1="3.5" y1="12" x2="3.5" y2="12"/><line x1="3.5" y1="18" x2="3.5" y2="18"/></svg>' },
+      { label: '有序列表', cmd: 'insertOrderedList', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4M4 10h2M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/></svg>' },
+      { label: '行内代码', action: () => editor.insertCodeInline(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' },
+      { label: '清除格式', cmd: 'removeFormat', svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v6M4 17v3h16v-6"/><line x1="4" y1="12" x2="20" y2="12"/></svg>' },
     ]},
     { section: '插入', children: [
-      { label: '表格', action: () => editor.insertTable(3, 3), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M1.5 6h13M1.5 10h13M5.5 2.5v11M10.5 2.5v11"/></svg>' },
-      { label: '分隔线', action: () => editor.insertHR(), svg: '<svg viewBox="0 0 16 16"><path d="M2 8h12"/><circle cx="4" cy="8" r="0.8" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="0.8" fill="currentColor" stroke="none"/><circle cx="12" cy="8" r="0.8" fill="currentColor" stroke="none"/></svg>' },
-      { label: '目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h7M2.5 12h7"/></svg>' },
-      { label: '图片', action: () => importInput.click(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2 11l3-3 3 2 3-3 3 3"/></svg>' },
+      { label: '表格', action: () => editor.insertTable(3, 3), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>' },
+      { label: '分隔线', action: () => editor.insertHR(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>' },
+      { label: '目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="18" x2="14" y2="18"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg>' },
+      { label: '图片', action: () => importInput.click(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' },
     ]},
     { section: 'AI', children: [
       { label: 'AI 排版', action: () => openAiLayoutModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/></svg>' },
@@ -3934,14 +4637,14 @@ function populateToolsSheet(body) {
     ]},
     { section: '字体', children: [
       { label: '字体', select: 'fontSelect' },
-      { label: '主题', action: () => toggleTheme(), svg: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke-linecap="round"/></svg>' },
+      { label: '主题', action: () => toggleTheme(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>' },
     ]},
     { section: '文件', children: [
-      { label: '导出 Word', action: () => exportWord(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
-      { label: '导出 HTML', action: () => exportHTML(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
-      { label: '导出 MD', action: () => exportMarkdown(), svg: '<svg viewBox="0 0 16 16"><path d="M8 10V2M5 5l3-3 3 3M2.5 12v1.5h11V12"/></svg>' },
-      { label: '导出图片', action: () => openExportImageModal(), svg: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2 11l3-3 3 2 3-3 3 3"/></svg>' },
-      { label: '阅读模式', action: () => toggleReadingMode(), svg: '<svg viewBox="0 0 16 16"><path d="M2.5 4.5h5a2 2 0 0 1 2 2v7a1.5 1.5 0 0 0-1.5-1.5h-5.5zM13.5 4.5h-5a2 2 0 0 0-2 2v7a1.5 1.5 0 0 1 1.5-1.5h5.5z"/></svg>' },
+      { label: '导出 Word', action: () => exportWord(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>' },
+      { label: '导出 HTML', action: () => exportHTML(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' },
+      { label: '导出 MD', action: () => exportMarkdown(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>' },
+      { label: '导出图片', action: () => openExportImageModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' },
+      { label: '阅读模式', action: () => toggleReadingMode(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>' },
     ]},
   ];
 
@@ -4172,7 +4875,7 @@ async function renderSensitiveWords() {
     html += '<span style="color:var(--ink-faint);font-size:13px">暂无敏感词</span>';
   } else {
     words.forEach(w => {
-      html += '<span class="sensitive-tag">' + escapeHtml(w.word) + '<button class="sensitive-tag-remove" data-id="' + w.id + '">×</button></span>';
+      html += '<span class="sensitive-tag">' + escapeHtml(w.word) + '<button class="sensitive-tag-remove" data-id="' + w.id + '" aria-label="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></span>';
     });
   }
   html += '</div>';
@@ -4207,7 +4910,7 @@ async function renderSensitiveWords() {
 function renderInviteList(list) {
   const unused = list.filter(i => !i.used).length;
   const used = list.length - unused;
-  const copyIcon = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>';
+  const copyIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   let html = '<div class="invite-toolbar">' +
     '<div class="invite-stat">共 ' + list.length + ' 个 · 未用 ' + unused + ' · 已用 ' + used + '</div>' +
     '<div class="invite-actions">' +
@@ -4460,6 +5163,10 @@ function renderShareForm(share) {
       '</div>' +
       '<div class="share-hint" id="shareHint">' + buildShareHint(share) + '</div>' +
     '</div>' +
+    '<div class="share-section share-visitors-section">' +
+      '<div class="share-label">最近访客<span class="share-visitors-meta" id="shareVisitorsMeta"></span></div>' +
+      '<div class="share-visitors-list" id="shareVisitorsList"><div class="share-visitors-loading">加载中…</div></div>' +
+    '</div>' +
     '<div class="share-actions">' +
       '<button class="share-revoke" id="shareRevoke">撤销分享</button>' +
     '</div>';
@@ -4532,6 +5239,45 @@ function renderShareForm(share) {
       } catch (e) { toast('更新失败'); }
     });
   });
+
+  // 拉取并渲染最近访客列表
+  loadShareVisitors();
+}
+
+// 分享弹窗：拉取访客统计并渲染列表
+async function loadShareVisitors() {
+  const listEl = $('shareVisitorsList');
+  const metaEl = $('shareVisitorsMeta');
+  if (!listEl || !currentDoc) return;
+  try {
+    const r = await fetch('/api/documents/' + currentDoc.id + '/share-stats', { credentials: 'same-origin' });
+    if (!r.ok) { listEl.innerHTML = '<div class="share-visitors-empty">暂无访客数据</div>'; return; }
+    const data = await r.json();
+    const total = data.total || 0;
+    const online = data.online_30min || 0;
+    if (metaEl) metaEl.textContent = total > 0 ? ' · ' + total + ' 人访问' + (online > 0 ? ' · ' + online + ' 人在线' : '') : '';
+    const visitors = data.visitors || [];
+    if (!visitors.length) {
+      listEl.innerHTML = '<div class="share-visitors-empty">还没有访客记录</div>';
+      return;
+    }
+    listEl.innerHTML = visitors.slice(0, 20).map(v => {
+      const isReg = !!v.is_registered;
+      const name = v.nickname || '游客';
+      const initial = (name || '?').slice(-1).toUpperCase();
+      const time = v.last_visit_at ? relativeTime(v.last_visit_at) : '';
+      const cnt = v.visit_count > 1 ? ' · 访问 ' + v.visit_count + ' 次' : '';
+      return '<div class="share-visitor' + (isReg ? ' registered' : '') + '">' +
+        '<span class="share-visitor-avatar' + (isReg ? ' registered' : '') + '">' + escapeHtml(initial) + '</span>' +
+        '<span class="share-visitor-info">' +
+          '<span class="share-visitor-name">' + escapeHtml(name) + '</span>' +
+          '<span class="share-visitor-meta">' + time + cnt + '</span>' +
+        '</span>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = '<div class="share-visitors-empty">加载失败</div>';
+  }
 }
 
 function buildShareHint(share) {
@@ -4553,7 +5299,9 @@ function setupPinInputs() {
       if (input.value && i < inputs.length - 1) inputs[i + 1].focus();
       if (Array.prototype.every.call(inputs, inp => inp.value)) {
         const pwd = Array.prototype.map.call(inputs, inp => inp.value).join('');
-        updateShare({ password: pwd }).then(() => toast('密码已保存')).catch(() => {});
+        // updateShare 内部已 toast 错误（如 "保存失败：密码须为4位或以上字母或数字"），
+        // 这里 .catch 仅吞掉 re-throw 避免 unhandled rejection，不再二次提示
+        updateShare({ password: pwd }).then(() => toast('密码已保存')).catch(() => { /* updateShare 已 toast */ });
       }
     });
     input.addEventListener('keydown', (e) => {

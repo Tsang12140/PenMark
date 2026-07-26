@@ -8,8 +8,9 @@ function getDb() {
 }
 
 /* ---------- 将 $1, $2 占位符转换为 ? ---------- */
+// 注意：SQLite 的 ? 按出现顺序绑定，因此业务 SQL 中 $N 必须按数字顺序出现，
+// 否则 PostgreSQL（按 $N 数字绑定）与 SQLite（按出现顺序绑定）语义不一致。
 function convertPlaceholders(sql) {
-  let idx = 0;
   return sql.replace(/\$(\d+)/g, () => '?');
 }
 
@@ -79,8 +80,8 @@ async function transaction(fn) {
     }
   };
   await _acquireTxLock();
-  db.exec('BEGIN');
   try {
+    db.exec('BEGIN');
     const result = await fn(txClient);
     db.exec('COMMIT');
     return result;

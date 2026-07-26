@@ -375,8 +375,8 @@ function base64UrlDecode(str) {
 }
 
 function generateShareToken() {
-  // 96 位熵（12 字节）：避免短 token 被穷举
-  return crypto.randomBytes(12).toString('base64url');
+  // 48 位熵（6 字节 → 8 字符 base64url）：短码好分享，配合生成时唯一性重试避免碰撞
+  return crypto.randomBytes(6).toString('base64url');
 }
 
 function signShareSession(payload) {
@@ -405,13 +405,21 @@ function verifyShareSession(ss) {
   } catch (e) { return null; }
 }
 
-function setShareCookie(res, ss) {
+// 与 setCookie/clearCookie 对齐：生产 HTTPS 下加 Secure 标志，防止会话劫持
+// （中间人降级 http、企业代理等场景下，无 Secure 的 Cookie 会以明文发出）
+function setShareCookie(res, ss, req) {
   const maxAge = SHARE_SESSION_EXPIRE_DAYS * 24 * 3600;
-  res.setHeader('Set-Cookie', SHARE_COOKIE_NAME + '=' + encodeURIComponent(ss) +
-    '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge);
+  const secure = req ? isSecure(req) : false;
+  let cookie = SHARE_COOKIE_NAME + '=' + encodeURIComponent(ss) +
+    '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge;
+  if (secure) cookie += '; Secure';
+  res.setHeader('Set-Cookie', cookie);
 }
-function clearShareCookie(res) {
-  res.setHeader('Set-Cookie', SHARE_COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+function clearShareCookie(res, req) {
+  const secure = req ? isSecure(req) : false;
+  let cookie = SHARE_COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+  if (secure) cookie += '; Secure';
+  res.setHeader('Set-Cookie', cookie);
 }
 function readShareCookie(req) {
   return readCookie(req, SHARE_COOKIE_NAME);

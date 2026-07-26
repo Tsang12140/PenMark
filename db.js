@@ -200,6 +200,9 @@ CREATE TABLE IF NOT EXISTS share_visitors (
 CREATE INDEX IF NOT EXISTS idx_share_visitors_token ON share_visitors(share_token);
 CREATE INDEX IF NOT EXISTS idx_share_visitors_last ON share_visitors(last_visit_at);
 CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id);
+-- 复合索引：覆盖 share-stats 查询模式 WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT N
+-- 和 WHERE share_token = $1 AND last_visit_at >= $2，避免内部 sort
+CREATE INDEX IF NOT EXISTS idx_share_visitors_token_last ON share_visitors(share_token, last_visit_at DESC);
 `);
 
 // share_visitors 增量迁移：加 user_id 列（NULL=未识别游客，非 NULL=注册用户回访）

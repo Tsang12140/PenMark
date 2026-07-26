@@ -2,6 +2,7 @@
 // Express + PostgreSQL（网页版）/ SQLite（桌面版）
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
@@ -321,11 +322,19 @@ function isPrivateHost(hostname) {
 
 /* ---------- 远程图片代理 ---------- */
 function fetchImageAsBase64(url, maxRedirects, cb) {
-  if (maxRedirects < 0) { cb(new Error('too many redirects')); return; }
+  // finished 守卫：防止 timeout / error / data 多次回调 cb（destroy 是异步的，
+  // 期间可能还有 data/end 事件触发，导致下游 res.json 被调用两次引发 "Cannot set headers"）
+  let finished = false;
+  function done(err, data, ct, len) {
+    if (finished) return;
+    finished = true;
+    cb(err, data, ct, len);
+  }
+  if (maxRedirects < 0) { done(new Error('too many redirects')); return; }
   let parsed;
-  try { parsed = new URL(url); } catch (_) { cb(new Error('invalid url')); return; }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { cb(new Error('bad protocol')); return; }
-  if (isPrivateHost(parsed.hostname)) { cb(new Error('blocked host')); return; }
+  try { parsed = new URL(url); } catch (_) { done(new Error('invalid url')); return; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { done(new Error('bad protocol')); return; }
+  if (isPrivateHost(parsed.hostname)) { done(new Error('blocked host')); return; }
   const lib = parsed.protocol === 'https:' ? https : http;
   const req = lib.get(url, {
     headers: {
@@ -338,26 +347,26 @@ function fetchImageAsBase64(url, maxRedirects, cb) {
     if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
       resp.resume();
       const next = new URL(resp.headers.location, url).href;
-      fetchImageAsBase64(next, maxRedirects - 1, cb);
+      fetchImageAsBase64(next, maxRedirects - 1, done);
       return;
     }
-    if (resp.statusCode !== 200) { resp.resume(); cb(new Error('HTTP ' + resp.statusCode)); return; }
+    if (resp.statusCode !== 200) { resp.resume(); done(new Error('HTTP ' + resp.statusCode)); return; }
     const chunks = [];
     let size = 0;
     const MAX = 15 * 1024 * 1024;
     resp.on('data', (c) => {
       size += c.length;
-      if (size > MAX) { req.destroy(); cb(new Error('too large')); return; }
+      if (size > MAX) { try { req.destroy(); } catch (_) {} done(new Error('too large')); return; }
       chunks.push(c);
     });
     resp.on('end', () => {
       const buf = Buffer.concat(chunks);
       const ct = (resp.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
-      cb(null, 'data:' + ct + ';base64,' + buf.toString('base64'), ct, buf.length);
+      done(null, 'data:' + ct + ';base64,' + buf.toString('base64'), ct, buf.length);
     });
   });
-  req.on('error', cb);
-  req.on('timeout', () => { req.destroy(); cb(new Error('timeout')); });
+  req.on('error', (err) => done(err));
+  req.on('timeout', () => { try { req.destroy(); } catch (_) {} done(new Error('timeout')); });
 }
 
 app.get('/api/proxy-image', proxyImageLimiter, wrap(async (req, res) => {
@@ -508,18 +517,35 @@ app.get('/api/og', ogLimiter, wrap(async (req, res) => {
   }
 }));
 
-/* ---------- 用户头像（base64，前端 Canvas 压缩到 256×256 PNG） ---------- */
-// 头像字段最大 100KB（base64 后约 133KB），避免 users 表过大
-const AVATAR_MAX_BYTES = 100 * 1024;
+/* ---------- 导出真 .docx（零依赖 OOXML，AI 文档解析器可读） ---------- */
+app.post('/api/export/docx', wrap(async (req, res) => {
+  const html = String(req.body && req.body.html || '');
+  const title = String(req.body && req.body.title || '文档').slice(0, 200);
+  if (!html.trim()) return res.status(400).json({ error: '内容为空' });
+  try {
+    const docxBuffer = require('./desktop/docx.cjs').generateDocx(html, title);
+    const safeName = encodeURIComponent(title.replace(/[\\/:*?"<>|]/g, '_'));
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${safeName}.docx`);
+    res.setHeader('Content-Length', docxBuffer.length);
+    res.send(docxBuffer);
+  } catch (e) {
+    res.status(500).json({ error: '导出失败：' + (e.message || e) });
+  }
+}));
+
+/* ---------- 用户头像（base64，前端裁剪弹窗 Canvas 压缩） ---------- */
+// 头像字段最大 200KB（前端主动压缩兜底，极端图取最小档）
+const AVATAR_MAX_BYTES = 200 * 1024;
 app.post('/api/user/avatar', wrap(async (req, res) => {
   const avatar = String(req.body && req.body.avatar || '').trim();
   if (!avatar) return res.status(400).json({ error: '请上传头像' });
-  // 仅接受 data:image/png;base64, 前缀，由前端 Canvas.toBlob 生成
-  const m = avatar.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  // 接受 data:image/(png|jpeg|webp);base64, 前缀，由前端裁剪弹窗 Canvas.toBlob 生成
+  const m = avatar.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/i);
   if (!m) return res.status(400).json({ error: '头像格式不正确' });
-  const buf = Buffer.from(m[1], 'base64');
+  const buf = Buffer.from(m[2], 'base64');
   if (buf.length > AVATAR_MAX_BYTES) {
-    return res.status(400).json({ error: '头像过大，请压缩到 100KB 以内' });
+    return res.status(400).json({ error: '头像过大，请换一张图' });
   }
   await db.execute('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, req.user.id]);
   // 桌面用户缓存失效，下次 /api/auth/me 返回最新头像
@@ -595,19 +621,49 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
   const docId = req.params.id;
   const userId = req.user.id;
 
-  // 读取旧内容用于版本快照差异计算（不阻塞主保存路径：失败仅 warn）
-  let prevRow = null;
+  // 读取旧内容 + UPDATE + 版本号回查放在同一事务内，避免 TOCTOU：
+  // 原实现先读 prevRow 再 UPDATE，中间若插入并发保存，prevRow 会指向更早的版本，
+  // 导致版本快照差异算错（应与"上一版"比较，却与"上上版"比较）。
+  // 事务内读取保证 SQLite 下 read+update 原子（事务互斥锁串行化）。
+  let updatedChanges = 0;
+  let vRow = null;
+  let snapshotPayload = null; // 事务内算好差异，事务外再 setImmediate 落库
   try {
-    prevRow = await db.one('SELECT title, content, version FROM documents WHERE id = $1 AND user_id = $2', [docId, userId]);
-  } catch (e) { /* 表不存在或数据库异常时静默忽略 */ }
+    const txResult = await db.transaction(async (tx) => {
+      let prevRow = null;
+      try {
+        prevRow = await tx.one('SELECT title, content, version FROM documents WHERE id = $1 AND user_id = $2', [docId, userId]);
+      } catch (e) {
+        // 表不存在或异常时不阻塞主保存，但记录日志便于排查版本历史丢失
+        console.warn('[doc/save] 读取旧版本快照失败：', e && e.message);
+      }
 
-  const info = await db.execute(
-    'UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND user_id = $5',
-    [title, content, now, docId, userId]
-  );
-  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
-  // 回查最新版本号，回传给客户端用于多端同步判断
-  const vRow = await db.one('SELECT version, updated_at FROM documents WHERE id = $1', [docId]);
+      const info = await tx.execute(
+        'UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND user_id = $5',
+        [title, content, now, docId, userId]
+      );
+      if (info.changes === 0) throw new Error('NOT_FOUND');
+      // 回查最新版本号，回传给客户端用于多端同步判断
+      const v = await tx.one('SELECT version, updated_at FROM documents WHERE id = $1', [docId]);
+
+      // 事务内计算差异（基于与 UPDATE 同一快照的 prevRow），事务外再异步写入
+      if (prevRow) {
+        const prevText = stripHtml(prevRow.content || '');
+        const currText = stripHtml(content || '');
+        const charsDiff = Math.abs(currText.length - prevText.length);
+        if (charsDiff > 50) {
+          snapshotPayload = { title, content, charsDiff, version: (v && v.version) || 1 };
+        }
+      }
+      return { changes: info.changes, v };
+    });
+    updatedChanges = txResult.changes;
+    vRow = txResult.v;
+  } catch (e) {
+    if (e.message === 'NOT_FOUND') return res.status(404).json({ error: 'not found' });
+    throw e;
+  }
+
   if (req.body.folder_id !== undefined) {
     const raw = req.body.folder_id;
     let fid;
@@ -626,6 +682,7 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
     await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, docId, userId]);
   }
   // 异步敏感词检查 + 版本快照写入（不阻塞保存；错误必须被捕获避免 unhandled rejection）
+  // 快照的差异已在事务内算好（snapshotPayload），此处仅落库，避免 TOCTOU
   setImmediate(() => {
     (async () => {
       try {
@@ -640,25 +697,20 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
       } catch (e) {
         console.warn('敏感词检查跳过：', e && e.message);
       }
-      // 版本快照：与上一版可见字符数差异 > 50 才写
+      // 版本快照：差异已在事务内算好，此处仅 INSERT
       try {
-        if (prevRow) {
-          const prevText = stripHtml(prevRow.content || '');
-          const currText = stripHtml(content || '');
-          const charsDiff = Math.abs(currText.length - prevText.length);
-          if (charsDiff > 50) {
-            await db.execute(
-              'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-              [docId, userId, title, content, charsDiff, (vRow && vRow.version) || 1, now]
-            );
-          }
+        if (snapshotPayload) {
+          await db.execute(
+            'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [docId, userId, snapshotPayload.title, snapshotPayload.content, snapshotPayload.charsDiff, snapshotPayload.version, now]
+          );
         }
       } catch (e) {
         console.warn('版本快照写入跳过：', e && e.message);
       }
     })().catch(e => console.warn('保存后处理异常：', e && e.message));
   });
-  res.json({ updated: info.changes, version: vRow ? vRow.version : undefined, updated_at: vRow ? vRow.updated_at : now });
+  res.json({ updated: updatedChanges, version: vRow ? vRow.version : undefined, updated_at: vRow ? vRow.updated_at : now });
 }));
 
 /* 文档版本历史列表（轻量元数据：不返回 content，前端按需请求单条详情） */
@@ -722,9 +774,12 @@ app.post('/api/folders', wrap(async (req, res) => {
   const name = String(req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: '文件夹名不能为空' });
   if (name.length > 40) return res.status(400).json({ error: '文件夹名过长' });
+  // sort_order 是 32 位 integer（PG）/ 64 位 INTEGER（SQLite），只能存小整数；
+  // 早期误传 Date.now()（毫秒时间戳 ~1.78e12）会触发 PG numeric_value_out_of_range (22003)，
+  // 桌面版 SQLite 因 INTEGER 是 64 位而不报错，导致此 bug 仅在线上暴露。
   const info = await db.execute(
     'INSERT INTO folders (name, user_id, sort_order, created_at) VALUES ($1, $2, $3, $4)',
-    [name, req.user.id, Date.now(), Date.now()]
+    [name, req.user.id, 0, Date.now()]
   );
   res.json({ id: info.insertId });
 }));
@@ -801,6 +856,37 @@ function restoreAiAssets(html, assets) {
     return assets[index] || match;
   });
 }
+/* 分享内容净化：剥离脚本/事件/危险协议，但保留 <style>（公众号依赖内联样式）。
+   与 sanitizeAiHtmlFragment 的区别：不删 <style> 标签，因为分享页内容来自编辑器，
+   内联 <style> 已在前端 _sanitizeStyleSheet 清洗过，这里只防可执行脚本。 */
+function sanitizeShareContent(html) {
+  if (!html) return '';
+  let out = String(html);
+  // 1. 移除危险标签整体（含内容）：script/iframe/object/embed/applet/frame/frameset/noscript/template/math/svg/link/meta/base/form/button/input/textarea/select
+  //    注意：保留 <style>（公众号内联样式已在前端清洗）
+  out = out.replace(/<(script|iframe|object|embed|applet|frame|frameset|noscript|template|math|svg|link|meta|base|form|button|input|textarea|select)\b[\s\S]*?<\/\1\s*>/gi, '');
+  // 自闭合危险标签
+  out = out.replace(/<(iframe|object|embed|link|meta|base|svg|math|image)\b[^>]*\/?>/gi, '');
+  // script 残留（无闭合标签）
+  out = out.replace(/<script\b[^>]*>/gi, '');
+  // 2. 移除所有事件处理器（on*）
+  out = out.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // 3. 移除 javascript:/vbscript:/data: 协议（href/src/xlink:href）
+  out = out.replace(/\s(?:href|src|xlink:href)\s*=\s*(?:"\s*(?:javascript|vbscript|data):[^"]*"|'\s*(?:javascript|vbscript|data):[^']*'|\s*(?:javascript|vbscript|data):[^\s>]+)/gi, '');
+  // 4. 移除 CSS expression() 与 -moz-binding（style 属性级）
+  out = out.replace(/style\s*=\s*"[^"]*expression\s*\([^"]*"/gi, '');
+  out = out.replace(/style\s*=\s*'[^']*expression\s*\([^']*'/gi, '');
+  out = out.replace(/style\s*=\s*"[^"]*-moz-binding[^"]*"/gi, '');
+  out = out.replace(/style\s*=\s*'[^']*-moz-binding[^']*'/gi, '');
+  // 5. 移除 formaction 等绕过属性
+  out = out.replace(/\sform(?:action|method|target|enctype)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // 6. 移除 srcset 中的危险协议
+  out = out.replace(/srcset\s*=\s*"(?:[^"]*javascript:[^"]*)"/gi, '');
+  out = out.replace(/srcset\s*=\s*'(?:[^']*javascript:[^']*)'/gi, '');
+  // 7. 移除 HTML 注释中隐藏的脚本
+  out = out.replace(/<!--[\s\S]*?-->/g, '');
+  return out;
+}
 function sanitizeAiHtmlFragment(html) {
   // 1. 移除危险标签整体（含内容）
   let out = String(html || '')
@@ -842,7 +928,7 @@ app.get('/api/ai/presets', wrap(async (req, res) => {
 
 app.post('/api/ai/presets', wrap(async (req, res) => {
   const label = String(req.body && req.body.label || '').trim().slice(0, 30);
-  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 1000);
+  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 3000);
   if (!label) return res.status(400).json({ error: '预设名称不能为空' });
   const cnt = await db.query('SELECT COUNT(*) AS n FROM ai_presets WHERE user_id = $1', [req.user.id]);
   if (Number(cnt[0].n) >= 20) return res.status(400).json({ error: '最多 20 个自定义预设' });
@@ -859,7 +945,7 @@ app.put('/api/ai/presets/:id', wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '无效 ID' });
   const label = String(req.body && req.body.label || '').trim().slice(0, 30);
-  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 1000);
+  const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 3000);
   if (!label) return res.status(400).json({ error: '预设名称不能为空' });
   const info = await db.execute(
     'UPDATE ai_presets SET label = $1, prompt = $2 WHERE id = $3 AND user_id = $4',
@@ -881,17 +967,28 @@ app.delete('/api/ai/presets/:id', wrap(async (req, res) => {
 }));
 
 app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
+  // 客户端断开（用户点停止/切走文档）时取消 AI 请求，避免空跑占用配额
+  const abortController = new AbortController();
+  const onClientClose = () => abortController.abort();
+  req.on('close', onClientClose);
   try {
     const rawHtml = String(req.body && req.body.html || '');
     const preset = String(req.body && req.body.preset || 'share');
-    const customPrompt = String(req.body && req.body.customPrompt || '').slice(0, 1000);
+    const customPrompt = String(req.body && req.body.customPrompt || '').slice(0, 3000);
     const docId = req.body && req.body.docId ? Number(req.body.docId) : null;
     if (!rawHtml.trim()) return res.status(400).json({ error: 'empty html' });
+    // 校验 docId 归属：避免攻击者把他人 doc_id 写入 editor_actions 表（外键通过、孤儿记录污染 DB）
+    // 与 /api/ai/chat 路由对齐（chat 在 line 1064-1067 已做此校验）
+    if (docId) {
+      if (!Number.isInteger(docId) || docId <= 0) return res.status(400).json({ error: '无效的文档ID' });
+      const owned = await db.one('SELECT id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [docId, req.user.id]);
+      if (!owned) return res.status(404).json({ error: 'document not found' });
+    }
     const protectedInput = protectAiAssets(rawHtml);
     if (protectedInput.html.length > Number(process.env.AI_LAYOUT_MAX_INPUT || 120000)) {
       return res.status(413).json({ error: 'document is too large for one AI layout request' });
     }
-    const aiHtml = await ai.layoutHtml(protectedInput.html, preset, customPrompt);
+    const aiHtml = await ai.layoutHtml(protectedInput.html, preset, customPrompt, { signal: abortController.signal });
     const restoredHtml = sanitizeAiHtmlFragment(restoreAiAssets(aiHtml, protectedInput.assets));
     const beforeText = normalizeVisibleText(stripHtml(rawHtml));
     const afterText = normalizeVisibleText(stripHtml(restoredHtml));
@@ -917,18 +1014,34 @@ app.post('/api/ai/layout', aiLimiter, wrap(async (req, res) => {
     }
     res.json({ html: restoredHtml, textUnchanged: beforeText === afterText, beforeChars: beforeText.length, afterChars: afterText.length });
   } catch (err) {
+    // 客户端取消：返回 499（非标准但常见用于"客户端已断开"），不写入错误日志
+    if (err && (err.name === 'AbortError' || err.message === 'AbortError')) {
+      return res.status(499).json({ error: '已取消' });
+    }
     res.status(500).json({ error: err.message || String(err) });
+  } finally {
+    req.removeListener('close', onClientClose);
   }
 }));
 
 app.post('/api/ai/rewrite-selection', aiLimiter, wrap(async (req, res) => {
+  // 客户端断开时取消 AI 请求，避免空跑（用户点了停止/切走文档）
+  const abortController = new AbortController();
+  const onClientClose = () => abortController.abort();
+  req.on('close', onClientClose);
   try {
     const selectedText = String(req.body && req.body.selectedText || '').slice(0, Number(process.env.AI_SELECTION_MAX_CHARS || 10000));
     const instruction = String(req.body && req.body.instruction || '').slice(0, 500);
     const contextText = String(req.body && req.body.contextText || '').slice(0, Number(process.env.AI_CONTEXT_MAX_CHARS || 24000));
     const docId = req.body && req.body.docId ? Number(req.body.docId) : null;
     if (!selectedText.trim()) return res.status(400).json({ error: 'empty selection' });
-    const replacement = await ai.rewriteSelection(selectedText, instruction, contextText);
+    // 校验 docId 归属（与 /api/ai/layout 和 /api/ai/chat 对齐）
+    if (docId) {
+      if (!Number.isInteger(docId) || docId <= 0) return res.status(400).json({ error: '无效的文档ID' });
+      const owned = await db.one('SELECT id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [docId, req.user.id]);
+      if (!owned) return res.status(404).json({ error: 'document not found' });
+    }
+    const replacement = await ai.rewriteSelection(selectedText, instruction, contextText, { signal: abortController.signal });
     // 同步写一条编辑动作日志（供 AI 对话感知"刚才做了什么"），出错时打日志便于诊断
     if (docId) {
       try {
@@ -950,7 +1063,12 @@ app.post('/api/ai/rewrite-selection', aiLimiter, wrap(async (req, res) => {
     }
     res.json({ replacement });
   } catch (err) {
+    if (err && (err.name === 'AbortError' || err.message === 'AbortError')) {
+      return res.status(499).json({ error: '已取消' });
+    }
     res.status(500).json({ error: err.message || String(err) });
+  } finally {
+    req.removeListener('close', onClientClose);
   }
 }));
 
@@ -970,6 +1088,10 @@ const ACTION_KEYWORDS = ['刚才', '做了', '改写', '改了', '动作', '操�
 const AI_CHAT_MAX_TURNS = Number(process.env.AI_CHAT_MAX_TURNS || 20);
 
 app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
+  // 多轮对话耗时较长，客户端断开时取消 AI 请求
+  const abortController = new AbortController();
+  const onClientClose = () => abortController.abort();
+  req.on('close', onClientClose);
   try {
     const docId = req.body && req.body.docId;
     const userMessage = String((req.body && req.body.message) || '').slice(0, 8000);
@@ -1040,8 +1162,6 @@ app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
       } catch (e) {
         console.warn('[ai/chat] 动作日志注入跳过：', e && e.message);
       }
-    } else {
-      console.log('[ai/chat] 未命中动作关键词（消息："' + userMessage.slice(0, 40) + '..."）');
     }
 
     // 拼接消息序列：system + 历史 + 当前用户消息
@@ -1056,7 +1176,8 @@ app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
     const reply = await ai.chat(messages, {
       temperature: 0.5,
       maxTokens: Number(process.env.AI_CHAT_MAX_TOKENS || 2048),
-      timeoutMs: 70000
+      timeoutMs: 70000,
+      signal: abortController.signal
     });
 
     // 持久化对话（按文档保留：关闭面板/刷新后再打开仍能看到）
@@ -1077,7 +1198,12 @@ app.post('/api/ai/chat', aiLimiter, wrap(async (req, res) => {
 
     res.json({ reply, docTitle: doc ? doc.title : null, versionsInjected: shouldInjectVersions, actionsInjected: shouldInjectActions });
   } catch (err) {
+    if (err && (err.name === 'AbortError' || err.message === 'AbortError')) {
+      return res.status(499).json({ error: '已取消' });
+    }
     res.status(500).json({ error: err.message || String(err) });
+  } finally {
+    req.removeListener('close', onClientClose);
   }
 }));
 
@@ -1099,9 +1225,15 @@ app.delete('/api/documents/:id/chat-history', wrap(async (req, res) => {
 app.get('/api/search', wrap(async (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) return res.json([]);
-  const pattern = '%' + q + '%';
+  // 转义 LIKE 通配符（%/_/\），否则搜 "100%" 会变成 "100+任意字符"，
+  // 搜 "user_1" 匹配 "userA1" 等，结果与用户预期不符
+  const escaped = q.replace(/[%_\\]/g, c => '\\' + c);
+  const pattern = '%' + escaped + '%';
+  // LIMIT 50：避免文档量大的用户搜常见词时一次拉上千条全文（content）撑爆内存/带宽。
+  // LIKE '%q%' 前导通配符无法走索引，只能扫该用户全部文档；无 LIMIT 时是 P0 性能问题。
+  // 长远应上线 SQLite FTS5 虚拟表用 MATCH 替代 LIKE，但当前先加 LIMIT 兜底。
   const rows = await db.query(
-    "SELECT id, title, content, updated_at FROM documents WHERE user_id = $1 AND deleted_at IS NULL AND (LOWER(title) LIKE LOWER($2) OR LOWER(content) LIKE LOWER($3)) ORDER BY updated_at DESC",
+    "SELECT id, title, content, updated_at FROM documents WHERE user_id = $1 AND deleted_at IS NULL AND (LOWER(title) LIKE LOWER($2) ESCAPE '\\' OR LOWER(content) LIKE LOWER($3) ESCAPE '\\') ORDER BY updated_at DESC LIMIT 50",
     [req.user.id, pattern, pattern]
   );
   res.json(rows.map(r => ({
@@ -1173,6 +1305,11 @@ app.delete('/api/trash/:id', wrap(async (req, res) => {
       }
       await tx.execute('DELETE FROM shares WHERE doc_id = $1', [targetId]);
       await tx.execute('DELETE FROM reports WHERE doc_id = $1', [targetId]);
+      // 关键修复：document_versions / ai_chat_history / editor_actions 都有指向 documents(id) 的外键，
+      // 且未声明 ON DELETE CASCADE；不先清理这些表，DELETE FROM documents 会因外键约束失败
+      await tx.execute('DELETE FROM document_versions WHERE doc_id = $1', [targetId]);
+      await tx.execute('DELETE FROM ai_chat_history WHERE doc_id = $1', [targetId]);
+      await tx.execute('DELETE FROM editor_actions WHERE doc_id = $1', [targetId]);
       const info = await tx.execute('DELETE FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL', [targetId, req.user.id]);
       if (info.changes === 0) throw new Error('NOT_FOUND');
     });
@@ -1298,7 +1435,10 @@ app.post('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
 
   let expireAt = existing ? existing.expire_at : null;
   if (req.body.expire_at !== undefined) {
-    expireAt = req.body.expire_at ? Number(req.body.expire_at) : null;
+    // Number.isFinite 防护：非数字字符串/Infinity/NaN 一律视为"无过期"
+    // 否则 NaN 会绕过 < Date.now() 校验（NaN < x 恒为 false）并落库
+    const parsed = req.body.expire_at ? Number(req.body.expire_at) : null;
+    expireAt = (parsed !== null && Number.isFinite(parsed)) ? parsed : null;
     if (expireAt && expireAt < Date.now()) return res.status(400).json({ error: '过期时间必须晚于当前' });
   }
 
@@ -1346,19 +1486,24 @@ app.get('/api/documents/:id/share-stats', wrap(async (req, res) => {
   if (share.expire_at && share.expire_at < Date.now()) {
     return res.json({ shared: true, expired: true, token: share.token, total: 0, online_30min: 0, visitors: [] });
   }
-  const recent = await db.query(
-    'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 20',
-    [share.token]
-  );
-  const totalRow = await db.one(
-    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
-    [share.token]
-  );
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  const onlineRow = await db.one(
-    'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
-    [share.token, cutoff]
-  );
+  // 三个 visitor 查询相互独立，串行 await 是 3 倍 RTT；并行 Promise.all 提速
+  // （SQLite WAL 模式下读不互斥，PostgreSQL 也安全）
+  // cutoff 在 Promise.all 之前计算，确保 5 分钟窗口在整批查询开始时就固定
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  const [recent, totalRow, onlineRow] = await Promise.all([
+    db.query(
+      'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 20',
+      [share.token]
+    ),
+    db.one(
+      'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
+      [share.token]
+    ),
+    db.one(
+      'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
+      [share.token, cutoff]
+    )
+  ]);
   res.json({
     shared: true,
     expired: false,
@@ -1398,7 +1543,7 @@ app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
   if (!share.password_hash) {
     const ss = auth.signShareSession({ token: share.token, authed: true });
-    auth.setShareCookie(res, ss);
+    auth.setShareCookie(res, ss, req);
     return res.json({ ok: true });
   }
   const limitKey = req.ip + ':' + req.params.token;
@@ -1423,13 +1568,15 @@ app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
   if (share.password_hash) {
-    const ss = auth.verifyShareSession(auth.readShareCookies(req));
+    const ss = auth.verifyShareSession(auth.readShareCookie(req));
     if (!ss || !ss.authed || ss.token !== share.token) {
       return res.status(401).json({ error: 'need_password', has_password: true });
     }
   }
   const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
+  // 读取侧也净化一次：防御历史存量数据中可能存在的恶意脚本（写入侧净化是新增的）
+  doc.content = sanitizeShareContent(doc.content || '');
   res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit', owner_nickname: share.owner_nickname || '' });
 }));
 
@@ -1446,7 +1593,9 @@ app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
   }
   const now = Date.now();
   const title = String(req.body.title || '无标题').slice(0, DOC_TITLE_MAX_LENGTH);
-  const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
+  // 服务端净化：分享编辑权限可能开放给半信任用户，必须剥离 script/事件/危险协议，
+  // 防 stored XSS（恶意协作者写入脚本，作者或其他读者查看时执行）
+  const content = sanitizeShareContent(String(req.body.content || '').slice(0, DOC_MAX_BYTES));
   const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND deleted_at IS NULL',
     [title, content, now, share.doc_id]);
   if (info.changes === 0) return res.status(404).json({ error: '文档不存在' });
@@ -1472,14 +1621,12 @@ app.get('/api/public/share/:token/version', wrap(async (req, res) => {
 
 // 访客上报：前端生成 fingerprint（Canvas+UA hash），后端 UPSERT 记录最近访问
 app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) => {
-  console.log('[share/visit] 收到请求 token=' + req.params.token.slice(0, 8) + ' body=' + JSON.stringify(req.body || {}).slice(0, 100));
   const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
-  if (!share) { console.warn('[share/visit] token 不存在'); return res.status(404).json({ error: '链接无效' }); }
+  if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
 
   const fingerprint = String(req.body.fingerprint || '').slice(0, 64);
   if (!/^[a-f0-9]{8,64}$/i.test(fingerprint)) {
-    console.warn('[share/visit] fingerprint 不合法：' + fingerprint.slice(0, 20));
     return res.status(400).json({ error: 'fingerprint 不合法' });
   }
   const nickname = String(req.body.nickname || '游客').slice(0, 20).replace(/[<>]/g, '');
@@ -1511,13 +1658,11 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
     );
     if (existing) {
       // 如果之前是游客（user_id NULL），现在登录了，把 user_id 补上 + 改用真名
-      const updateUserClause = (visitorUserId && !existing.user_id)
-        ? ', user_id = $4, nickname = $2 '
-        : (visitorUserId && existing.user_id === visitorUserId ? ', nickname = $2 ' : '');
+      // 注意：SQLite 适配器把 $N 按出现顺序转成 ?，必须让 $N 数字顺序 = 出现顺序
       if (visitorUserId && !existing.user_id) {
         await db.execute(
-          'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2, user_id = $4 WHERE id = $3',
-          [now, visitorNickname, existing.id, visitorUserId]
+          'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1, nickname = $2, user_id = $3 WHERE id = $4',
+          [now, visitorNickname, visitorUserId, existing.id]
         );
       } else {
         await db.execute(
@@ -1527,31 +1672,30 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
       }
     } else {
       await db.execute(
-        'INSERT INTO share_visitors (share_token, fingerprint, nickname, user_id, first_visit_at, last_visit_at, visit_count) VALUES ($1, $2, $3, $4, $5, $5, 1)',
-        [share.token, fingerprint, visitorNickname, visitorUserId, now]
+        'INSERT INTO share_visitors (share_token, fingerprint, nickname, user_id, first_visit_at, last_visit_at, visit_count) VALUES ($1, $2, $3, $4, $5, $6, 1)',
+        [share.token, fingerprint, visitorNickname, visitorUserId, now, now]
       );
     }
   } catch (e) {
-    console.warn('[share/visit] UPSERT 失败，尝试退化为更新：', e && e.message);
-    // 并发插入冲突时退化为更新
+    // 并发插入冲突时退化为更新；记录真实错误避免静默吞没 DB 异常
+    console.warn('[share/visit] UPSERT 失败，退化更新：', e && e.message);
     await db.execute(
       'UPDATE share_visitors SET last_visit_at = $1, visit_count = visit_count + 1 WHERE share_token = $2 AND fingerprint = $3',
       [now, share.token, fingerprint]
-    ).catch(() => null);
+    ).catch(e2 => console.warn('[share/visit] 退化更新也失败：', e2 && e2.message));
   }
 
-  console.log('[share/visit] token=' + share.token.slice(0, 8) + ' fp=' + fingerprint.slice(0, 8) + ' user_id=' + (visitorUserId || 'null') + ' nickname=' + visitorNickname);
-
   // 同时返回最新访客列表，避免前端再发一次请求
+  // 注意：$N 必须按出现顺序编号，SQLite 适配器按出现顺序转 ?
   const recent = await db.query(
-    'SELECT nickname, user_id, last_visit_at, visit_count, CASE WHEN fingerprint = $2 THEN 1 ELSE 0 END AS is_me FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
-    [share.token, fingerprint]
+    'SELECT nickname, user_id, last_visit_at, visit_count, CASE WHEN fingerprint = $1 THEN 1 ELSE 0 END AS is_me FROM share_visitors WHERE share_token = $2 ORDER BY last_visit_at DESC LIMIT 50',
+    [fingerprint, share.token]
   );
   const totalRow = await db.one(
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
     [share.token]
   );
-  const cutoff = now - 30 * 60 * 1000;
+  const cutoff = now - 5 * 60 * 1000;
   const onlineRow = await db.one(
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
     [share.token, cutoff]
@@ -1584,7 +1728,7 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
     [share.token]
   );
-  const cutoff = Date.now() - 30 * 60 * 1000;
+  const cutoff = Date.now() - 5 * 60 * 1000;
   const onlineRow = await db.one(
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
     [share.token, cutoff]
@@ -1602,11 +1746,108 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
   });
 }));
 
+/* ---------- 分享页 OG / Twitter 卡片 ---------- */
+// 可配置短域名：设置 SHARE_BASE_URL=https://p.dnbox.cn 后，og:url 与卡片链接走短域名
+function shareAbsoluteUrl(req, token) {
+  const base = process.env.SHARE_BASE_URL
+    ? String(process.env.SHARE_BASE_URL).replace(/\/+$/, '')
+    : getPublicRequestOrigin(req);
+  return base + '/s/' + token;
+}
+// 从文档 HTML 中提取第一张远程图片（http/https），base64 不适合做 OG 图
+function extractFirstRemoteImage(html) {
+  if (!html) return '';
+  const re = /<img[^>]+src=["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (/^https?:\/\//i.test(m[1])) return m[1];
+  }
+  return '';
+}
+// 从文档 HTML 提取纯文本摘要
+function extractTextExcerpt(html, max) {
+  if (!html) return '';
+  const text = String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return text.length > max ? text.slice(0, max) + '…' : text;
+}
+function escapeMeta(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\n/g, ' ');
+}
+let shareHtmlTemplate = null;
+function getShareHtmlTemplate() {
+  if (!shareHtmlTemplate) {
+    shareHtmlTemplate = fs.readFileSync(path.join(__dirname, 'public', 'share.html'), 'utf8');
+  }
+  return shareHtmlTemplate;
+}
+function renderShareHTML(card) {
+  const title = escapeMeta(card.title);
+  const desc = escapeMeta(card.desc);
+  const url = escapeMeta(card.url);
+  const image = escapeMeta(card.ogImage);
+  const siteName = escapeMeta(card.siteName);
+  const fullTitle = title + ' · ' + siteName;
+  const metas = [
+    '<title>' + fullTitle + '</title>',
+    '<meta name="description" content="' + desc + '">',
+    '<link rel="canonical" href="' + url + '">',
+    '<meta property="og:type" content="article">',
+    '<meta property="og:title" content="' + title + '">',
+    '<meta property="og:description" content="' + desc + '">',
+    '<meta property="og:image" content="' + image + '">',
+    '<meta property="og:url" content="' + url + '">',
+    '<meta property="og:site_name" content="' + siteName + '">',
+    '<meta name="twitter:card" content="summary_large_image">',
+    '<meta name="twitter:title" content="' + title + '">',
+    '<meta name="twitter:description" content="' + desc + '">',
+    '<meta name="twitter:image" content="' + image + '">'
+  ].join('\n');
+  // 替换原 <title> 占位行，注入卡片 meta
+  return getShareHtmlTemplate().replace(
+    /<title>分享文档 · 知著 PenMark<\/title>/,
+    metas
+  );
+}
+
 app.get('/s/:token', wrap(async (req, res) => {
-  const share = await db.one('SELECT expire_at FROM shares WHERE token = $1', [req.params.token]);
-  if (!share) return res.status(404).send('<h1>链接不存在或已被撤销</h1>');
-  if (share.expire_at && share.expire_at < Date.now()) return res.status(410).send('<h1>链接已过期</h1>');
-  res.sendFile(path.join(__dirname, 'public', 'share.html'));
+  const token = req.params.token;
+  const row = await db.one(
+    'SELECT s.permission, s.password_hash IS NOT NULL AS has_password, s.expire_at, ' +
+    'd.title, d.content, d.deleted_at, u.nickname AS owner_nickname ' +
+    'FROM shares s ' +
+    'LEFT JOIN documents d ON d.id = s.doc_id ' +
+    'LEFT JOIN users u ON u.id = s.owner_id ' +
+    'WHERE s.token = $1',
+    [token]
+  );
+  if (!row || row.deleted_at) return res.status(404).sendFile(path.join(__dirname, 'public', '404.html'));
+  if (row.expire_at && row.expire_at < Date.now()) return res.status(410).send('<h1>链接已过期</h1>');
+
+  // 加密分享不泄露标题/正文，仅给通用卡片
+  const protectedDoc = !!row.has_password;
+  const origin = getPublicRequestOrigin(req);
+  const card = {
+    title: protectedDoc ? '知著 PenMark 分享文档' : ((row.title || '无标题').trim() || '无标题'),
+    desc: protectedDoc
+      ? '这是一份加密分享的文档，请输入密码查看。'
+      : (extractTextExcerpt(row.content, 140) || '在知著 PenMark 分享的文档。'),
+    ogImage: protectedDoc
+      ? (origin + '/PenMark_Brand_Assets/penmark-app-icon-1024.png')
+      : (extractFirstRemoteImage(row.content) || (origin + '/PenMark_Brand_Assets/penmark-app-icon-1024.png')),
+    url: shareAbsoluteUrl(req, token),
+    siteName: '知著 PenMark'
+  };
+  res.type('html').send(renderShareHTML(card));
 }));
 
 /* ---------- 统一错误处理 ---------- */
@@ -1625,6 +1866,15 @@ app.use((err, req, res, next) => {
   } else {
     res.status(500).json({ error: '服务器内部错误', requestId });
   }
+});
+
+/* ---------- 通配 404：未匹配的 GET 请求返回品牌 404 页 ---------- */
+app.use((req, res) => {
+  // 只对浏览器导航的 GET 请求返回 HTML 404 页；API 仍走 JSON
+  if (req.method === 'GET' && !req.path.startsWith('/api/') && !req.path.startsWith('/s/')) {
+    return res.status(404).sendFile(path.join(__dirname, 'public', '404.html'));
+  }
+  res.status(404).json({ error: 'not found' });
 });
 
 /* ---------- 可编程启动 ---------- */

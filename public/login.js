@@ -15,6 +15,13 @@
     }
   } catch (_) {}
 
+  // 登录/注册后回到来源页（如分享页）。仅放行站内相对路径，防开放重定向。
+  var redirectTarget = '/';
+  try {
+    var p = new URLSearchParams(location.search).get('redirect');
+    if (p && p.charAt(0) === '/' && p.charAt(1) !== '/' && !/^[a-zA-Z]+:/.test(p)) redirectTarget = p;
+  } catch (_) {}
+
   /* ---------- 密码显示/隐藏 ---------- */
   document.querySelectorAll('.pwd-toggle').forEach(function (btn) {
     btn.addEventListener('click', function () {
@@ -157,7 +164,7 @@
         loginSubmit.textContent = '登录';
         return;
       }
-      window.location.href = '/';
+      window.location.href = redirectTarget;
     }).catch(function (err) {
       showError('loginError', '网络错误：' + (err.message || err));
       loginSubmit.disabled = false;
@@ -202,7 +209,7 @@
         regSubmit.textContent = '注册';
         return;
       }
-      window.location.href = '/';
+      window.location.href = redirectTarget;
     }).catch(function (err) {
       showError('regError', '网络错误：' + (err.message || err));
       regSubmit.disabled = false;

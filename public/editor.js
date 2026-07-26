@@ -1394,6 +1394,14 @@ export class Editor {
     this.styleUndoStack.push({ container, w: before.width, h: before.height });
     this._afterChange();
   }
+  // 小图：缩到编辑器宽度的 33%，适合做内联示意图
+  smallImageSize(container) {
+    const before = container.getBoundingClientRect();
+    const ew = this._editorContentWidth();
+    this._setImageDisplaySize(container, ew * 0.33);
+    this.styleUndoStack.push({ container, w: before.width, h: before.height });
+    this._afterChange();
+  }
   // 对齐方式
   alignImage(container, align) {
     container.style.float = '';
@@ -1664,11 +1672,25 @@ export class Editor {
       } else {
         // 纯文本：若含 URL 则自动转为超链接，否则放行默认
         const text = cd.getData('text/plain') || '';
+        const trimmed = text.trim();
+        // 粘贴单个裸 URL → 先插链接，后台抓 OG 升级为卡片（先显示，再修复，符合热路径原则）
+        const isSingleUrl = trimmed && /^(https?:\/\/|www\.)[^\s<]+$/i.test(trimmed);
         if (text && /(?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(text)) {
           e.preventDefault();
           const html = this._linkifyPlainText(text);
           document.execCommand('insertHTML', false, html);
-          setTimeout(() => this._afterPasteCleanup(), 60);
+          setTimeout(() => {
+            this._afterPasteCleanup();
+            if (isSingleUrl) {
+              const href = this._normalizeUrl(trimmed.replace(/[.,!?;:，。！？；：)\]]+$/, ''));
+              // 倒序匹配：若文档中已存在相同 href 的链接，优先取最后插入的那个（刚粘贴的），
+              // 避免 querySelectorAll 按文档顺序命中旧链接导致旧链接被替换成卡片
+              const anchors = Array.prototype.slice.call(this.editor.querySelectorAll('a[target="_blank"]'));
+              for (let i = anchors.length - 1; i >= 0; i--) {
+                if (anchors[i].getAttribute('href') === href) { this.convertLinkToCard(anchors[i]); break; }
+              }
+            }
+          }, 60);
         } else {
           setTimeout(() => this._afterPasteCleanup(), 60);
         }
@@ -1738,8 +1760,25 @@ export class Editor {
   }
 
   _sanitizeStyle(styleText) {
-    return String(styleText || '')
-      .split(';')
+    const raw = String(styleText || '').trim();
+    if (!raw) return '';
+    // 简单按 ; 切分会破坏 url(data:image/png;base64,xxx) 这类含 ; 的值，
+    // 因此先按括号配对切分：仅在括号深度为 0 时识别 ; 作为声明边界
+    const decls = [];
+    let depth = 0, cur = '';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth = Math.max(0, depth - 1);
+      if (ch === ';' && depth === 0) {
+        decls.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur.trim()) decls.push(cur);
+    return decls
       .map(s => s.trim())
       .filter(Boolean)
       .filter(s => !/expression\s*\(/i.test(s))
@@ -1747,12 +1786,45 @@ export class Editor {
       .join('; ');
   }
 
+  /* 安全清洗 <style> 标签内容：保留公众号内联样式声明，过滤危险引用
+     - 删除 @import、@charset 等外链引入
+     - url(...) 中只放行 http(s)/data:image/相对路径，剥离 javascript:/file:/等
+     - 删除 expression()、-moz-binding 等可执行 CSS
+  */
+  _sanitizeStyleSheet(cssText) {
+    if (!cssText) return '';
+    let s = String(cssText);
+    // 去注释
+    s = s.replace(/\/\*[\s\S]*?\*\//g, '');
+    // 去 at-rule 外链（@import/@charset/@namespace 等）
+    s = s.replace(/@import[^;]*;/gi, '');
+    s = s.replace(/@charset[^;]*;/gi, '');
+    s = s.replace(/@namespace[^;]*;/gi, '');
+    // 禁止 expression() 与 -moz-binding
+    if (/expression\s*\(/i.test(s) || /-moz-binding/i.test(s)) return '';
+    // url() 白名单：仅放行 http(s):/data:image/相对路径
+    s = s.replace(/url\s*\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (m, q, val) => {
+      const v = val.trim();
+      if (/^https?:\/\//i.test(v) || /^data:image\//i.test(v) || !/^[a-z][a-z0-9+.-]*:/i.test(v)) {
+        return 'url(' + q + v + q + ')';
+      }
+      return 'none';
+    });
+    return s.trim();
+  }
+
   /* 粘贴 HTML 后的结构清理：去 style/svg/追踪像素/空行/超宽/懒加载兜底 */
   _postCleanPastedDOM(body) {
-    // 1. 移除样式标签、SVG 图标、表单元素、noscript 等
-    body.querySelectorAll('style, svg, noscript, template, form, input, button, textarea, select, link').forEach(n => n.remove());
+    // 1. 移除 SVG 图标、表单元素、noscript 等；<style> 走安全清洗而非直接删除（公众号依赖内联样式）
+    body.querySelectorAll('svg, noscript, template, form, input, button, textarea, select, link').forEach(n => n.remove());
+    body.querySelectorAll('style').forEach(styleEl => {
+      const cleaned = this._sanitizeStyleSheet(styleEl.textContent || '');
+      if (cleaned) styleEl.textContent = cleaned;
+      else styleEl.remove();
+    });
 
-    // 2. 懒加载兜底：公众号常用 data-src，如果 src 为空或占位，提升 data-src 为 src
+    // 2. 懒加载兜底：公众号常用 data-src，如果 src 为空或占位，提升 data-src 为 src；
+    //    同时读取 data-w（原始宽度 px）/ data-ratio（宽高比）设为 width/height，保留公众号图片尺寸语义
     body.querySelectorAll('img').forEach(img => {
       const src = (img.getAttribute('src') || '').trim();
       const dataSrc = (img.getAttribute('data-src') || '').trim();
@@ -1760,6 +1832,16 @@ export class Editor {
         if (!src || /loading|placeholder|blank|data:image\/gif/i.test(src)) {
           img.setAttribute('src', dataSrc);
         }
+      }
+      // 公众号 data-w 是原始宽度（数字，单位 px）；data-ratio 是宽高比（width/height）
+      const dataW = parseInt(img.getAttribute('data-w') || '0', 10);
+      if (dataW > 0 && !img.getAttribute('width')) {
+        img.setAttribute('width', String(dataW));
+      }
+      const dataRatio = parseFloat(img.getAttribute('data-ratio') || '0');
+      if (dataRatio > 0 && !img.getAttribute('height')) {
+        const w = parseFloat(img.getAttribute('width') || '0') || dataW;
+        if (w > 0) img.setAttribute('height', String(Math.round(w / dataRatio)));
       }
     });
 
@@ -2283,6 +2365,12 @@ export class Editor {
       const r = await fetch('/api/og?url=' + encodeURIComponent(url), { credentials: 'same-origin' });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'HTTP ' + r.status); }
       const meta = await r.json();
+      // await 期间用户可能切换文档、撤销粘贴或删除该链接；
+      // 此时 anchor 已脱离编辑器 DOM，直接 replaceChild 会抛 NotFoundError
+      if (!anchor.parentNode || !this.editor.contains(anchor)) {
+        this.onToast('链接已不在编辑器中，跳过卡片生成');
+        return;
+      }
       const card = this._buildLinkCard(meta);
       // 用卡片替换链接；若链接独占一个块则替换整块，否则替换链接节点
       const block = this._currentBlock();
@@ -2508,6 +2596,16 @@ export class Editor {
     const lines = [];
     const innerText = n => n.textContent || '';
     const tableToMarkdown = table => this._tableToMarkdown(table);
+    // 图片转 Markdown：base64 内联图（粘贴图）输出 [图片] 占位，避免巨串撑爆 AI 上下文；
+    // 远程 URL（上传图）保留 ![](url) 供 AI 引用。
+    const imgToMarkdown = im => {
+      if (!im) return '';
+      const src = (im.getAttribute('src') || '').trim();
+      const alt = (im.getAttribute('alt') || '').trim();
+      if (!src) return '';
+      if (/^data:/i.test(src)) return '[' + (alt || '图片') + ']';
+      return '![' + alt + '](' + src + ')';
+    };
     function walk(node) {
       let n = node.firstChild;
       while (n) {
@@ -2530,17 +2628,58 @@ export class Editor {
           case 'div':
           case 'span':
             if (n.classList.contains('img-container')) {
-              const im = n.querySelector('img');
-              if (im && im.getAttribute('src')) lines.push('\n![](' + im.getAttribute('src') + ')\n');
-              else walk(n);
+              const md = imgToMarkdown(n.querySelector('img'));
+              if (md) lines.push('\n' + md + '\n'); else walk(n);
             } else walk(n);
             break;
-          case 'img': if (n.getAttribute('src')) lines.push('\n![](' + n.getAttribute('src') + ')\n'); break;
+          case 'img': { const md = imgToMarkdown(n); if (md) lines.push('\n' + md + '\n'); break; }
           case 'b': case 'strong': lines.push('**' + innerText(n) + '**'); break;
           case 'i': case 'em': lines.push('*' + innerText(n) + '*'); break;
           case 's': case 'del': lines.push('~~' + innerText(n) + '~~'); break;
           case 'code': lines.push('`' + innerText(n) + '`'); break;
           case 'a': lines.push('[' + innerText(n) + '](' + (n.getAttribute('href') || '') + ')'); break;
+          default: walk(n);
+        }
+        n = n.nextSibling;
+      }
+    }
+    walk(this.editor);
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  }
+
+  /* 纯文本导出：剥除所有标签，只保留可读文本与最基本的层级/列表结构。
+     这是喂给 AI 最友好的格式——没有标签噪声、没有 base64 巨串。 */
+  toPlainText() {
+    const lines = [];
+    const text = n => (n.textContent || '').replace(/\s+/g, ' ').trim();
+    const tableToText = table => {
+      const rows = Array.from(table.rows || []);
+      if (!rows.length) return '';
+      return rows.map(row => Array.from(row.cells).map(c => text(c)).join('\t')).join('\n');
+    };
+    function walk(node) {
+      let n = node.firstChild;
+      while (n) {
+        if (n.nodeType === 3) { lines.push(n.textContent.replace(/\n/g, ' ')); n = n.nextSibling; continue; }
+        if (n.nodeType !== 1) { n = n.nextSibling; continue; }
+        const tag = n.tagName.toLowerCase();
+        switch (tag) {
+          case 'h1': case 'h2': case 'h3': case 'h4':
+            lines.push('\n' + text(n) + '\n'); break;
+          case 'p': lines.push('\n' + text(n) + '\n'); break;
+          case 'br': lines.push('\n'); break;
+          case 'blockquote': lines.push('\n' + text(n) + '\n'); break;
+          case 'ul': lines.push(''); Array.prototype.forEach.call(n.querySelectorAll(':scope > li'), li => lines.push('• ' + text(li))); lines.push(''); break;
+          case 'ol': lines.push(''); let i = 1; Array.prototype.forEach.call(n.querySelectorAll(':scope > li'), li => lines.push((i++) + '. ' + text(li))); lines.push(''); break;
+          case 'hr': lines.push('\n---\n'); break;
+          case 'pre': lines.push('\n' + (n.textContent || '') + '\n'); break;
+          case 'table': lines.push('\n' + tableToText(n) + '\n'); break;
+          case 'div':
+          case 'span':
+            if (n.classList.contains('img-container')) lines.push('\n[图片]\n');
+            else walk(n);
+            break;
+          case 'img': lines.push('\n[图片]\n'); break;
           default: walk(n);
         }
         n = n.nextSibling;

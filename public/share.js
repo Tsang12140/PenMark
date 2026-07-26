@@ -58,6 +58,30 @@ function relativeTime(ts) {
   return (d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
+// 右上角登录入口：带上 redirect 回到本分享页；已登录则换成"工作台"
+function setupShareLoginBtn() {
+  const btn = $('shareLoginBtn');
+  if (!btn) return;
+  const back = location.pathname + location.search;
+  btn.href = '/login.html?redirect=' + encodeURIComponent(back);
+  // 非阻塞检查登录态：已登录则升级为"工作台"入口
+  fetch('/api/auth/me', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || !data.user) return;
+      btn.classList.add('logged-in');
+      btn.href = '/';
+      btn.title = '进入工作台';
+      const label = btn.querySelector('.share-login-label');
+      if (label) label.textContent = '工作台';
+      const svg = btn.querySelector('svg');
+      if (svg) svg.innerHTML = '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>';
+    })
+    // 网络异常/500/JSON 解析失败等都被吞掉，但至少打一次日志便于排查
+    // （否则"登录用户在分享页看不到工作台入口"问题无从诊断）
+    .catch(e => console.warn('[share] /api/auth/me 检查失败：', e && e.message));
+}
+
 async function init() {
   if (!token) { renderError('链接无效'); return; }
   try {
@@ -79,6 +103,9 @@ async function init() {
       applyShareTheme(next);
       toast('主题：' + THEME_LABELS[next]);
     });
+
+    // 右上角登录入口：带 redirect，登录后回到本分享页
+    setupShareLoginBtn();
 
     // 先尝试直接拿文档；若需密码会返回 401
     const docRes = await fetch('/api/public/share/' + token + '/doc', { credentials: 'same-origin' });
@@ -149,6 +176,8 @@ async function submitPassword() {
     if (!docRes.ok) { errEl.textContent = '加载文档失败'; return; }
     const data = await docRes.json();
     renderDoc(data);
+    // 关键修复：密码验证成功后也要上报访客，否则加密分享的访问记录永远为空
+    setupVisitors(token);
   } catch (e) { errEl.textContent = '网络错误'; }
 }
 
@@ -313,6 +342,24 @@ function setupEditor(token) {
       } catch (e) { stateEl.textContent = '保存失败'; }
     }, 1500);
   });
+
+  // 关闭/刷新页面前 flush 未保存的编辑（1.5s 防抖窗口内的内容），
+  // 用 keepalive 确保请求在页面卸载时仍能发出，避免轻编辑模式丢字
+  window.addEventListener('beforeunload', () => {
+    if (!saveTimer) return; // 没有待保存的内容
+    clearTimeout(saveTimer); saveTimer = null;
+    const title = extractTitle(editorEl);
+    const content = editorEl.innerHTML;
+    try {
+      fetch('/api/public/share/' + token + '/doc', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        keepalive: true,
+        body: JSON.stringify({ title, content })
+      }).catch(() => {});
+    } catch (_) {}
+  });
 }
 
 function extractTitle(editorEl) {
@@ -393,7 +440,7 @@ function setupTOC() {
 function renderError(msg) {
   container.innerHTML =
     '<div class="share-error-card">' +
-      '<div class="share-error-icon">⊘</div>' +
+      '<div class="share-error-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>' +
       '<div class="share-error-msg">' + escapeHtml(msg) + '</div>' +
       '<a class="share-error-link" href="/">返回首页</a>' +
     '</div>';
@@ -469,7 +516,14 @@ function nicknameFromFingerprint(fp) {
   return '游客 ' + tail;
 }
 
+let _visitorPollTimer = null;
+let _visitorsSetup = false;
+
 async function setupVisitors(token) {
+  // 重入防护：避免 submitPassword 自动提交场景触发两次，生成两份轮询
+  if (_visitorsSetup) return;
+  _visitorsSetup = true;
+
   const fp = await getVisitorFingerprint();
   const nickname = nicknameFromFingerprint(fp);
 
@@ -483,18 +537,24 @@ async function setupVisitors(token) {
       body: JSON.stringify({ fingerprint: fp, nickname })
     });
     if (res.ok) data = await res.json();
-    else console.warn('[visit] 上报失败 HTTP ' + res.status);
-  } catch(e) { console.warn('[visit] 上报异常：', e && e.message); }
+  } catch(e) { /* 上报失败静默，不影响阅读 */ }
 
   if (data) renderVisitorCapsule(data);
 
-  // 30 秒轮询一次在线数（不写入，只拉取）
-  setInterval(async () => {
+  // 30 秒轮询一次在线数（不写入，只拉取）；标签页隐藏时跳过，节省请求
+  const poll = async () => {
+    if (document.hidden) return;
     try {
       const r = await fetch('/api/public/share/' + token + '/visitors', { credentials: 'same-origin' });
       if (r.ok) renderVisitorCapsule(await r.json());
     } catch(_) {}
-  }, 30000);
+  };
+  _visitorPollTimer = setInterval(poll, 30000);
+
+  // 页面卸载时清理定时器，避免泄漏
+  window.addEventListener('pagehide', () => {
+    if (_visitorPollTimer) { clearInterval(_visitorPollTimer); _visitorPollTimer = null; }
+  }, { once: true });
 }
 
 function renderVisitorCapsule(data) {
@@ -535,7 +595,7 @@ function renderVisitorCapsule(data) {
     '<button type="button" class="sv-trigger" title="查看访客">' +
       '<span class="sv-dot' + (online > 0 ? ' online' : '') + '"></span>' +
       '<span class="sv-text">' + total + ' 人访问' + (online > 0 ? ' · ' + online + ' 人在线' : '') + '</span>' +
-      '<svg class="sv-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>' +
+      '<svg class="sv-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>' +
     '</button>' +
     '<div class="sv-list"></div>';
 }

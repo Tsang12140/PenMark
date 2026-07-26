@@ -1,7 +1,6 @@
 // PostgreSQL 数据层 — 使用 pg 驱动，连接池，异步接口
 // 业务代码统一使用 $1, $2 风格占位符
 const { Pool } = require('pg');
-const crypto = require('crypto');
 
 let pool = null;
 let _connected = false;

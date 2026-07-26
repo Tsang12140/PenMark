@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>页面不存在 - 知著 PenMark</title>
+  <style>
+    :root{
+      --bg:#f4f2ed;--panel:#fbfaf7;--ink:#20292e;--ink-soft:#626b6a;--ink-faint:#969c98;
+      --line:#dddcd5;--accent:#6f897a;--accent-soft:#c8d4cd;
+      --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",Roboto,Arial,sans-serif;
+    }
+    @media (prefers-color-scheme:dark){
+      :root{
+        --bg:#171b1c;--panel:#1d2324;--ink:#eceae4;--ink-soft:#aab1ad;--ink-faint:#707975;
+        --line:#343b39;--accent:#91aa9b;--accent-soft:#52685c;
+      }
+    }
+    *{box-sizing:border-box;}
+    html,body{height:100%;margin:0;}
+    body{
+      background:var(--bg);color:var(--ink);
+      font-family:var(--sans);
+      display:flex;align-items:center;justify-content:center;
+      padding:24px;-webkit-font-smoothing:antialiased;
+    }
+    .card{
+      max-width:460px;width:100%;
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:14px;
+      box-shadow:0 4px 24px rgba(32,41,46,.08);
+      padding:48px 32px 36px;
+      text-align:center;
+    }
+    .logo{
+      width:64px;height:64px;margin:0 auto 20px;display:block;
+    }
+    .code{
+      font-size:64px;font-weight:700;color:var(--accent);
+      letter-spacing:2px;line-height:1;margin-bottom:6px;
+    }
+    .title{
+      font-size:18px;font-weight:600;color:var(--ink);
+      margin:0 0 8px;
+    }
+    .desc{
+      font-size:13.5px;color:var(--ink-soft);line-height:1.6;
+      margin:0 0 28px;
+    }
+    .actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;}
+    .btn{
+      display:inline-flex;align-items:center;gap:6px;
+      height:38px;padding:0 18px;
+      border:1px solid transparent;border-radius:8px;
+      font-family:var(--sans);font-size:13.5px;font-weight:600;
+      text-decoration:none;cursor:pointer;
+      transition:background .12s,opacity .12s;
+    }
+    .btn-primary{background:var(--accent);color:#fff;}
+    .btn-primary:hover{opacity:.9;}
+    .btn-secondary{background:transparent;color:var(--ink-soft);border-color:var(--line);}
+    .btn-secondary:hover{background:var(--bg);color:var(--ink);}
+    .btn svg{width:16px;height:16px;}
+    @media (max-width:480px){
+      .card{padding:36px 20px 24px;}
+      .code{font-size:48px;}
+      .title{font-size:16px;}
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img class="logo" src="/PenMark_Brand_Assets/penmark-app-icon-1024.png" alt="知著 PenMark">
+    <div class="code">404</div>
+    <h1 class="title">页面不存在</h1>
+    <p class="desc">你访问的链接可能已失效、被撤销，或地址输入有误。</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10"/></svg>
+        返回首页
+      </a>
+      <a class="btn btn-secondary" href="javascript:history.back()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        返回上一页
+      </a>
+    </div>
+  </main>
+</body>
+</html>
