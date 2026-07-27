@@ -232,7 +232,11 @@ function renderDoc(data) {
 
   container.innerHTML = html;
 
-  markManualListItems($('shareReader'));
+  const reader = $('shareReader');
+  markManualListItems(reader);
+  if (reader) reader.querySelectorAll('img').forEach((image) => {
+    image.loading = 'lazy'; image.decoding = 'async';
+  });
 
   if (canEdit) setupShareEditToggle(token);
   setupProgress();

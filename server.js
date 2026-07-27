@@ -10,6 +10,8 @@ const db = require('./database');
 const auth = require('./auth');
 const invites = require('./invites');
 const ai = require('./ai');
+const { createAssetStore } = require('./assets');
+const assetStore = createAssetStore(db);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -594,6 +596,63 @@ app.get('/api/documents/:id', wrap(async (req, res) => {
   const row = await db.one('SELECT * FROM documents WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json(row);
+}));
+
+// Private image route: only the document owner can read a random UUID asset.
+app.get('/api/assets/:id', wrap(async (req, res) => {
+  const asset = await db.one(
+    'SELECT a.* FROM media_assets a JOIN documents d ON d.id = a.doc_id WHERE a.id = $1 AND a.owner_id = $2 AND d.user_id = $3 AND d.deleted_at IS NULL',
+    [req.params.id, req.user.id, req.user.id]
+  );
+  if (!asset) return res.status(404).json({ error: 'not found' });
+  const filePath = await assetStore.filePath(asset);
+  if (!filePath) return res.status(404).json({ error: '\u8d44\u6e90\u4e0d\u5b58\u5728' });
+  res.set({
+    'Content-Type': asset.mime_type,
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.sendFile(filePath);
+}));
+
+// New pasted/dropped images show locally first, then upload in the background.
+app.post('/api/documents/:id/assets', wrap(async (req, res) => {
+  const doc = await db.one('SELECT id, user_id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, req.user.id]);
+  if (!doc) return res.status(404).json({ error: 'not found' });
+  const dataUrl = String(req.body && req.body.data_url || '');
+  let asset;
+  try {
+    asset = await assetStore.create({ docId: doc.id, ownerId: doc.user_id, dataUrl });
+  } catch (err) {
+    return res.status(400).json({ error: err && err.message ? err.message : '\u56fe\u7247\u4e0a\u4f20\u5931\u8d25' });
+  }
+  res.status(201).json(asset);
+}));
+
+// Legacy Base64 images migrate after a document has opened; first paint never waits.
+// The version predicate prevents this background job from overwriting a new edit.
+app.post('/api/documents/:id/optimize-images', wrap(async (req, res) => {
+  const doc = await db.one(
+    'SELECT id, user_id, content, version FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+    [req.params.id, req.user.id]
+  );
+  if (!doc) return res.status(404).json({ error: 'not found' });
+  const optimized = await assetStore.externalize(doc);
+  if (!optimized.optimized) return res.json({ optimized: 0, skipped: optimized.skipped || 0, version: doc.version });
+  const now = Date.now();
+  const info = await db.execute(
+    'UPDATE documents SET content = $1, updated_at = $2, version = version + 1 WHERE id = $3 AND user_id = $4 AND version = $5',
+    [optimized.content, now, doc.id, req.user.id, doc.version]
+  );
+  if (!info.changes) return res.status(409).json({ error: '\u6587\u6863\u5df2\u66f4\u65b0\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5' });
+  const latest = await db.one('SELECT version, updated_at FROM documents WHERE id = $1 AND user_id = $2', [doc.id, req.user.id]);
+  res.json({
+    optimized: optimized.optimized,
+    skipped: optimized.skipped || 0,
+    content: optimized.content,
+    version: latest && latest.version,
+    updated_at: latest && latest.updated_at
+  });
 }));
 
 app.post('/api/documents', wrap(async (req, res) => {
@@ -1563,6 +1622,42 @@ app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Public-share image route. It has its own authorization because the normal asset route
+// requires a signed-in owner session; password-protected shares reuse the share cookie.
+function rewriteShareAssetUrls(html, token) {
+  const base = '/api/public/share/' + encodeURIComponent(token) + '/assets/';
+  return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => quote + base + id + quote);
+}
+
+function restorePrivateAssetUrls(html, token) {
+  const escapedToken = String(token).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp('(["\'])/api/public/share/' + escapedToken + '/assets/([0-9a-f-]{36})\\1', 'gi');
+  return String(html || '').replace(pattern, (match, quote, id) => quote + '/api/assets/' + id + quote);
+}
+
+app.get('/api/public/share/:token/assets/:assetId', wrap(async (req, res) => {
+  const share = await db.one('SELECT doc_id, token, expire_at, password_hash FROM shares WHERE token = $1', [req.params.token]);
+  if (!share) return res.status(404).json({ error: 'invalid share' });
+  if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: 'share expired' });
+  if (share.password_hash) {
+    const session = auth.verifyShareSession(auth.readShareCookie(req));
+    if (!session || !session.authed || session.token !== share.token) return res.status(401).json({ error: 'need_password' });
+  }
+  const asset = await db.one(
+    'SELECT * FROM media_assets WHERE id = $1 AND doc_id = $2',
+    [req.params.assetId, share.doc_id]
+  );
+  if (!asset) return res.status(404).json({ error: 'not found' });
+  const filePath = await assetStore.filePath(asset);
+  if (!filePath) return res.status(404).json({ error: '\u8d44\u6e90\u4e0d\u5b58\u5728' });
+  res.set({
+    'Content-Type': asset.mime_type,
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.sendFile(filePath);
+}));
+
 app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
   const share = await db.one('SELECT s.*, u.nickname AS owner_nickname FROM shares s LEFT JOIN users u ON u.id = s.owner_id WHERE s.token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
@@ -1576,7 +1671,7 @@ app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
   const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
   // 读取侧也净化一次：防御历史存量数据中可能存在的恶意脚本（写入侧净化是新增的）
-  doc.content = sanitizeShareContent(doc.content || '');
+  doc.content = rewriteShareAssetUrls(sanitizeShareContent(doc.content || ''), share.token);
   res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit', owner_nickname: share.owner_nickname || '' });
 }));
 
@@ -1595,7 +1690,7 @@ app.put('/api/public/share/:token/doc', wrap(async (req, res) => {
   const title = String(req.body.title || '无标题').slice(0, DOC_TITLE_MAX_LENGTH);
   // 服务端净化：分享编辑权限可能开放给半信任用户，必须剥离 script/事件/危险协议，
   // 防 stored XSS（恶意协作者写入脚本，作者或其他读者查看时执行）
-  const content = sanitizeShareContent(String(req.body.content || '').slice(0, DOC_MAX_BYTES));
+  const content = sanitizeShareContent(restorePrivateAssetUrls(String(req.body.content || '').slice(0, DOC_MAX_BYTES), share.token));
   const info = await db.execute('UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND deleted_at IS NULL',
     [title, content, now, share.doc_id]);
   if (info.changes === 0) return res.status(404).json({ error: '文档不存在' });

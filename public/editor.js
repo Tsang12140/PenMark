@@ -15,6 +15,7 @@ export class Editor {
     this.onToast = opts.onToast || function(){};
     this.onPrompt = opts.onPrompt || null;
     this.onImageSelect = opts.onImageSelect || function(){};
+    this.onDataImageInserted = opts.onDataImageInserted || function(){};
     this.dropOverlay = opts.dropOverlay;
     this.selectedImage = null;
     this.imageClipboard = null;
@@ -273,7 +274,7 @@ export class Editor {
     const uid = this._uid();
     // span.img-container 包裹 img + 尺寸标签 + 四角手柄，末尾 \u200B 维持光标
     const html = '<div class="img-container" contenteditable="false" data-type="image" draggable="true" data-uid="' + uid + '">' +
-      '<img src="' + src + '" alt="image" draggable="false">' +
+      '<img src="' + src + '" alt="image" draggable="false" loading="lazy" decoding="async">' +
       '<span class="img-size-label"></span>' +
       '<span class="rs-handle rs-nw" data-dir="nw" draggable="false"></span>' +
       '<span class="rs-handle rs-ne" data-dir="ne" draggable="false"></span>' +
@@ -288,6 +289,11 @@ export class Editor {
     if (container) {
       container.removeAttribute('data-uid');
       this._attachImgLoad(container);
+      if (/^data:image\//i.test(String(src || ''))) {
+        const image = container.querySelector('img');
+        try { this.onDataImageInserted({ container, image, src }); }
+        catch (err) { console.warn('[editor] image upload callback failed:', err && err.message); }
+      }
     }
     this._afterChange();
     return uid;
@@ -315,6 +321,8 @@ export class Editor {
   /* ---------- 把裸 img 包装成可编辑容器（粘贴/打开文件后调用） ---------- */
   fixImageContainers() {
     this.editor.querySelectorAll('img').forEach(img => {
+      img.loading = 'lazy';
+      img.decoding = 'async';
       if (img.closest('.img-container, .link-card, .lc-thumb')) return;
       const container = document.createElement('div');
       container.className = 'img-container';

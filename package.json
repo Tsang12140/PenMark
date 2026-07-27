@@ -54,6 +54,7 @@
         "files": [
             "public/**/*",
             "server.js",
+            "assets.js",
             "db.js",
             "auth.js",
             "invites.js",

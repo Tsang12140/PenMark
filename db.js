@@ -276,4 +276,22 @@ CREATE TABLE IF NOT EXISTS ai_presets (
 CREATE INDEX IF NOT EXISTS idx_ai_presets_user ON ai_presets(user_id, sort_order);
 `);
 
+// Image bytes live in the data directory; document HTML only keeps a short controlled URL.
+// SQLite creates this directly; PostgreSQL receives the same shape via 009_media_assets.sql.
+db.exec(`
+CREATE TABLE IF NOT EXISTS media_assets (
+  id TEXT PRIMARY KEY,
+  doc_id INTEGER NOT NULL,
+  owner_id INTEGER NOT NULL,
+  storage_name TEXT NOT NULL UNIQUE,
+  mime_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (doc_id) REFERENCES documents(id),
+  FOREIGN KEY (owner_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_assets_document ON media_assets(doc_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_media_assets_owner ON media_assets(owner_id, created_at DESC);
+`);
+
 module.exports = db;

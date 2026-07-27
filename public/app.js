@@ -24,6 +24,111 @@ const aiModalClose = $('aiModalClose');
 
 let currentDoc = null;
 let saveTimer = null;
+let editorHydrating = false;
+
+// A small in-memory LRU makes repeatedly opened documents switch instantly.
+const docCache = new Map();
+const DOC_CACHE_LIMIT = 8;
+
+function cacheDoc(doc) {
+  if (!doc || doc.id === undefined || doc.id === null) return;
+  const key = String(doc.id);
+  docCache.delete(key);
+  docCache.set(key, {
+    id: doc.id,
+    title: doc.title || '',
+    content: doc.content || '',
+    folder_id: doc.folder_id || null,
+    created_at: doc.created_at,
+    updated_at: doc.updated_at,
+    version: doc.version || 1
+  });
+  while (docCache.size > DOC_CACHE_LIMIT) docCache.delete(docCache.keys().next().value);
+}
+
+function readCachedDoc(id) {
+  const key = String(id);
+  const cached = docCache.get(key);
+  if (!cached) return null;
+  docCache.delete(key);
+  docCache.set(key, cached);
+  return { ...cached, _fromCache: true, _dirty: false };
+}
+
+function setEditorHTML(html) {
+  editorHydrating = true;
+  try { editor.setHTML(html || ''); }
+  finally { editorHydrating = false; }
+}
+
+function replaceUploadedSources(html, replacements) {
+  let output = String(html || '');
+  if (!replacements) return output;
+  replacements.forEach((url, source) => { output = output.split(source).join(url); });
+  return output;
+}
+
+function waitForDocumentId(doc) {
+  if (doc && !doc._pending && doc.id) return Promise.resolve(doc.id);
+  return new Promise((resolve) => {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts++;
+      if (doc && !doc._pending && doc.id) { clearInterval(timer); resolve(doc.id); }
+      else if (!doc || doc._pendingFailed || attempts >= 200) { clearInterval(timer); resolve(null); }
+    }, 50);
+  });
+}
+
+function queueDataImageUpload({ image, src }) {
+  const doc = currentDoc;
+  if (!doc || !image || !src) return;
+  doc._assetUploads = (doc._assetUploads || 0) + 1;
+  if (!doc._assetReplacements) doc._assetReplacements = new Map();
+  (async () => {
+    const docId = await waitForDocumentId(doc);
+    if (!docId) throw new Error('document unavailable');
+    const result = await api('/api/documents/' + docId + '/assets', 'POST', { data_url: src });
+    doc._assetReplacements.set(src, result.url);
+    if (currentDoc === doc && editorEl.contains(image) && image.getAttribute('src') === src) {
+      image.setAttribute('src', result.url);
+      editorEl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })().catch((err) => {
+    console.warn('[assets] background image upload failed:', err && err.message);
+  }).finally(() => {
+    doc._assetUploads = Math.max(0, (doc._assetUploads || 1) - 1);
+    if (doc._assetUploads) return;
+    if (doc._pendingAssetSave) {
+      const pending = doc._pendingAssetSave;
+      delete doc._pendingAssetSave;
+      saveDocInBackground(doc, pending.title, replaceUploadedSources(pending.html, doc._assetReplacements));
+    } else if (currentDoc === doc && doc._pendingSave) {
+      delete doc._pendingSave;
+      saveCurrent();
+    }
+  });
+}
+
+async function optimizeLegacyImages(doc) {
+  if (!doc || !/data:image\//i.test(String(doc.content || ''))) return;
+  const openedVersion = doc.version || 1;
+  try {
+    const result = await api('/api/documents/' + doc.id + '/optimize-images', 'POST', {});
+    if (!result || !result.optimized) return;
+    const upgraded = { ...doc, content: result.content, version: result.version || openedVersion, updated_at: result.updated_at || doc.updated_at, _dirty: false };
+    cacheDoc(upgraded);
+    if (currentDoc && currentDoc.id === doc.id && !currentDoc._dirty && (currentDoc.version || 1) === openedVersion) {
+      currentDoc = upgraded;
+      setEditorHTML(upgraded.content);
+      updateDocumentTitle(upgraded.title);
+      scheduleAfterSwitch(() => { if (currentDoc === upgraded) updateStats(); });
+      toast('Images optimized in the background');
+    }
+  } catch (err) {
+    console.warn('[assets] legacy image optimization skipped:', err && err.message);
+  }
+}
 
 /* ---------- 多端同步：版本号轮询（轻量级，B 端发现他人改动时弹横幅） ---------- */
 let versionCheckTimer = null;
@@ -31,6 +136,31 @@ let lastEditedAt = 0;             // 最近一次用户输入时间戳；编辑�
 let dismissedVersion = 0;         // 用户已"稍后"过的版本号；同版本不重复弹
 const VERSION_POLL_INTERVAL = 8000; // 8 秒一次轮询
 const EDITING_QUIET_WINDOW = 3000;  // 距离上次输入 3 秒内不弹横幅
+
+async function revalidateCachedDoc(cachedDoc) {
+  try {
+    const version = await api('/api/documents/' + cachedDoc.id + '/version');
+    if (!version || version.version === cachedDoc.version) return;
+    const fresh = await api('/api/documents/' + cachedDoc.id);
+    cacheDoc(fresh);
+    if (!currentDoc || currentDoc.id !== cachedDoc.id || currentDoc._dirty) return;
+    const active = { ...fresh, _dirty: false };
+    currentDoc = active;
+    setDocTitle(active.title === '\u65e0\u6807\u9898' ? '' : active.title);
+    setEditorHTML(active.content);
+    refreshToolbar();
+    updateDocumentTitle(active.title);
+    scheduleAfterSwitch(() => {
+      if (currentDoc === active) {
+        updateStats();
+        updateOutline(true);
+      }
+    });
+    optimizeLegacyImages(active);
+  } catch (err) {
+    console.warn('[cache] document revalidation skipped:', err && err.message);
+  }
+}
 
 function startVersionPolling() {
   stopVersionPolling();
@@ -326,9 +456,15 @@ document.addEventListener('keydown', (e) => {
 const editor = new Editor({
   editor: editorEl,
   dropOverlay,
-  onUpdate: () => { lastEditedAt = Date.now(); updateStats(); scheduleAutoSave(); updateOutline(); },
+  onUpdate: () => {
+    if (editorHydrating) return;
+    lastEditedAt = Date.now();
+    if (currentDoc) currentDoc._dirty = true;
+    updateStats(); scheduleAutoSave(); updateOutline();
+  },
   onToast: toast,
   onPrompt: showPrompt,
+  onDataImageInserted: queueDataImageUpload,
   onImageSelect: (container) => updateImageFloatMenu(container)
 });
 
@@ -1307,11 +1443,12 @@ async function saveCurrent(opts) {
   if (!currentDoc) return;
   // 乐观新建期间（id 尚为 local-*）：暂存保存意图，等真实 ID 落地后再 flush
   if (currentDoc._pending) { currentDoc._pendingSave = true; return; }
+  if (currentDoc._assetUploads) { currentDoc._pendingSave = true; return; }
   opts = opts || {};
   const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
   // 保存前剥离 AI 改写残留的呼吸高亮 mark，避免被序列化进数据库
   stripAiFlashMarks(editorEl);
-  const content = editor.getHTML();
+  const content = replaceUploadedSources(editor.getHTML(), currentDoc._assetReplacements);
   try {
     const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
     currentDoc.title = title;
@@ -1325,6 +1462,8 @@ async function saveCurrent(opts) {
       hideVersionBanner();
     }
     saveStateEl.textContent = '已保存 ' + timeStr();
+    currentDoc._dirty = false;
+    cacheDoc(currentDoc);
     updateDocumentTitle(title);
     // 更新列表中该项的标题和时间（不重新拉列表，避免抖动）
     updateListItem(currentDoc, { reorder: opts.reorder !== false });
@@ -1338,11 +1477,18 @@ async function saveCurrent(opts) {
    快照在调用前已捕获，因此即便 currentDoc 已切到别的文档，也能把旧文档存对。 */
 function saveDocInBackground(doc, title, html) {
   if (!doc) return;
+  if (doc._assetUploads) {
+    doc._pendingAssetSave = { title, html };
+    return;
+  }
+  html = replaceUploadedSources(html, doc._assetReplacements);
   api('/api/documents/' + doc.id, 'PUT', { title, content: html }).then(res => {
     doc.title = title;
     doc.content = html;
     doc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') doc.version = res.version;
+    doc._dirty = false;
+    cacheDoc(doc);
     if (currentDoc && currentDoc.id === doc.id) {
       saveStateEl.textContent = '已保存 ' + timeStr();
       updateDocumentTitle(title);
@@ -1368,6 +1514,10 @@ function saveCurrentInBackground() {
   const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
   const html = editor.getHTML();
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  if (doc._assetUploads) {
+    doc._pendingAssetSave = { title, html };
+    return;
+  }
   saveDocInBackground(doc, title, html);
 }
 
@@ -2015,16 +2165,18 @@ async function openDoc(id) {
   // 加载遮罩：避免旧内容在 fetch 期间继续可见造成闪烁
   if (editorWrap) editorWrap.classList.add('editor-loading');
   try {
-    const doc = await api('/api/documents/' + id);
+    const doc = readCachedDoc(id) || await api('/api/documents/' + id);
     currentDoc = doc;
+    currentDoc._dirty = false;
     setDocTitle(doc.title === '无标题' ? '' : doc.title);
-    editor.setHTML(doc.content || '');
+    setEditorHTML(doc.content || '');
     // 兜底清理历史脏数据：旧版本可能把 AI 改写的 <mark class="ai-flash"> 存进了数据库
     stripAiFlashMarks(editorEl);
     Array.prototype.forEach.call(docListEl.querySelectorAll('.doc-item'), el => {
       el.classList.toggle('active', el.getAttribute('data-id') == id);
     });
     saveStateEl.textContent = '已加载';
+    cacheDoc(doc);
     refreshToolbar();
     updateDocumentTitle(doc.title);
     enterMobileEditor();
@@ -2046,6 +2198,8 @@ async function openDoc(id) {
       refreshAiPanelContext();
       loadAiChatHistory(doc.id);
     }
+    if (doc._fromCache) revalidateCachedDoc(doc);
+    else optimizeLegacyImages(doc);
     openSucceeded = true;
   } catch (e) { toast('打开失败：' + (e.message || e)); }
   finally {
