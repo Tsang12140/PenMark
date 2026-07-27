@@ -552,6 +552,8 @@ body.pre-auth .app{visibility:hidden;}
 }
 .tb-group{
   display:flex;align-items:center;gap:2px;
+  flex:0 0 auto;
+  min-width:max-content;
   padding:0 8px;
   border-right:1px solid var(--line);
   height:30px;
@@ -565,6 +567,9 @@ body.pre-auth .app{visibility:hidden;}
   border-radius:5px;cursor:pointer;
   font-family:var(--sans);font-size:13px;
   display:inline-flex;align-items:center;justify-content:center;gap:4px;
+  white-space:nowrap;
+  word-break:keep-all;
+  overflow-wrap:normal;
   transition:background .12s,color .12s;
   user-select:none;
 }
@@ -1282,7 +1287,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 }
 
 /* ============ 导出下拉菜单 ============ */
-.tb-dropdown{position:relative;display:inline-flex;}
+.tb-dropdown{position:relative;display:inline-flex;flex:0 0 auto;}
 .tb-dropdown .caret{width:12px;height:12px;opacity:.6;margin-left:2px;flex:0 0 auto;}
 .dropdown-menu{
   position:absolute;top:100%;right:0;margin-top:4px;
@@ -2173,6 +2178,9 @@ body.reading-mode .block-handle{display:none;}
 .share-btn{
   background:var(--accent)!important;
   color:#fff!important;
+  flex:0 0 auto;
+  min-width:56px;
+  white-space:nowrap;
   font-weight:500;
   padding:0 10px!important;
 }
