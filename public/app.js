@@ -5373,6 +5373,7 @@ function renderShareForm(share) {
       '<div class="share-link-label">分享链接</div>' +
       '<div class="share-link-row">' +
         '<input type="text" class="share-link-url" id="shareLinkUrl" value="' + escapeHtml(url) + '" readonly>' +
+        '<button class="share-copy share-copy-link" id="shareCopyLink">\u590d\u5236\u94fe\u63a5</button>' +
         '<button class="share-copy" id="shareCopy">复制</button>' +
       '</div>' +
       '<div class="share-hint" id="shareHint">' + buildShareHint(share) + '</div>' +
@@ -5457,6 +5458,16 @@ function renderShareForm(share) {
   });
 
   // 复制链接
+  const shareCopyLinkButton = $('shareCopyLink');
+  if (shareCopyLinkButton) {
+    shareCopyLinkButton.addEventListener('click', () => {
+      writeShareText(url).then(
+        () => toast('\u94fe\u63a5\u5df2\u590d\u5236'),
+        () => toast('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236\u94fe\u63a5')
+      );
+    });
+  }
+
   $('shareCopy').addEventListener('click', () => {
     writeShareText(shareCopyText(url)).then(
       () => toast('\u5206\u4eab\u6587\u6848\u5df2\u590d\u5236'),
