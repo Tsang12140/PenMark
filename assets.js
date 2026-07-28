@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { createS4AssetMirror } = require('./s4-assets');
 
 const MAX_BYTES = Number(process.env.PENMARK_ASSET_MAX_BYTES) || 15 * 1024 * 1024;
 const MIME_EXTENSIONS = {
@@ -44,28 +45,32 @@ function findInlineImageSources(html) {
 function createAssetStore(db) {
   const root = path.resolve(process.env.PENMARK_ASSET_DIR || path.join(process.env.PENMARK_DATA_DIR || path.join(__dirname, 'data'), 'assets'));
   if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+  const remoteMirror = createS4AssetMirror(db, filePath);
 
   function url(id) { return '/api/assets/' + id; }
 
-  async function create({ docId, ownerId, dataUrl }) {
+  async function create({ docId, ownerId, dataUrl, mirrorToRemote }) {
     const image = decodeInlineImage(dataUrl);
     const id = crypto.randomUUID();
     const storageName = id + '.' + MIME_EXTENSIONS[image.mimeType];
+    const shouldMirror = !!mirrorToRemote && remoteMirror.enabled;
+    const remoteKey = shouldMirror ? remoteMirror.keyFor(id, MIME_EXTENSIONS[image.mimeType]) : null;
     const finalPath = path.join(root, storageName);
     const tempPath = finalPath + '.uploading-' + crypto.randomBytes(6).toString('hex');
     await fs.promises.writeFile(tempPath, image.buffer, { flag: 'wx' });
     try {
       await fs.promises.rename(tempPath, finalPath);
       await db.execute(
-        'INSERT INTO media_assets (id, doc_id, owner_id, storage_name, mime_type, byte_size, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [id, docId, ownerId, storageName, image.mimeType, image.buffer.length, Date.now()]
+        'INSERT INTO media_assets (id, doc_id, owner_id, storage_name, mime_type, byte_size, created_at, remote_provider, remote_key, remote_status, remote_attempts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)',
+        [id, docId, ownerId, storageName, image.mimeType, image.buffer.length, Date.now(), shouldMirror ? 's4' : 'local', remoteKey, shouldMirror ? 'pending' : 'local']
       );
     } catch (err) {
       await fs.promises.unlink(tempPath).catch(() => {});
       await fs.promises.unlink(finalPath).catch(() => {});
       throw err;
     }
-    return { id, url: url(id), mime_type: image.mimeType, byte_size: image.buffer.length };
+    if (shouldMirror) remoteMirror.schedule(id);
+    return { id, url: url(id), mime_type: image.mimeType, byte_size: image.buffer.length, remote_status: shouldMirror ? 'pending' : 'local' };
   }
 
   async function filePath(asset) {
@@ -86,7 +91,7 @@ function createAssetStore(db) {
     let skipped = 0;
     for (const source of sources) {
       if (replacements.has(source)) continue;
-      try { replacements.set(source, await create({ docId: doc.id, ownerId: doc.user_id, dataUrl: source })); }
+      try { replacements.set(source, await create({ docId: doc.id, ownerId: doc.user_id, dataUrl: source, mirrorToRemote: doc.mirrorToRemote })); }
       catch (err) { skipped++; console.warn('[assets] skipped an inline image:', err && err.message); }
     }
     if (!replacements.size) return { optimized: 0, skipped, content: doc.content };
@@ -97,7 +102,7 @@ function createAssetStore(db) {
     return { optimized: replacements.size, skipped, content };
   }
 
-  return { create, externalize, filePath, url };
+  return { create, externalize, filePath, url, signedRemoteUrl: remoteMirror.signedUrl, startRemoteMirrorWorker: remoteMirror.start, s4Enabled: remoteMirror.enabled };
 }
 
 module.exports = { createAssetStore };

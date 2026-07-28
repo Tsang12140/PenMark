@@ -635,6 +635,13 @@ app.get('/api/assets/:id', wrap(async (req, res) => {
     [req.params.id, req.user.id, req.user.id]
   );
   if (!asset) return res.status(404).json({ error: 'not found' });
+  // The stable PenMark URL remains in document HTML. Only an authorized request
+  // receives a fresh S4 redirect, so expiry/revocation checks still happen here.
+  const remoteUrl = assetStore.signedRemoteUrl(asset);
+  if (remoteUrl) {
+    res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    return res.redirect(302, remoteUrl);
+  }
   const filePath = await assetStore.filePath(asset);
   if (!filePath) return res.status(404).json({ error: '\u8d44\u6e90\u4e0d\u5b58\u5728' });
   res.set({
@@ -652,7 +659,7 @@ app.post('/api/documents/:id/assets', wrap(async (req, res) => {
   const dataUrl = String(req.body && req.body.data_url || '');
   let asset;
   try {
-    asset = await assetStore.create({ docId: doc.id, ownerId: doc.user_id, dataUrl });
+    asset = await assetStore.create({ docId: doc.id, ownerId: doc.user_id, dataUrl, mirrorToRemote: !!req.user.isAdmin });
   } catch (err) {
     return res.status(400).json({ error: err && err.message ? err.message : '\u56fe\u7247\u4e0a\u4f20\u5931\u8d25' });
   }
@@ -667,7 +674,8 @@ app.post('/api/documents/:id/optimize-images', wrap(async (req, res) => {
     [req.params.id, req.user.id]
   );
   if (!doc) return res.status(404).json({ error: 'not found' });
-  const optimized = await assetStore.externalize(doc);
+  // Legacy inline images use the same admin-only mirror policy as new pastes.
+  const optimized = await assetStore.externalize(Object.assign(doc, { mirrorToRemote: !!req.user.isAdmin }));
   if (!optimized.optimized) return res.json({ optimized: 0, skipped: optimized.skipped || 0, version: doc.version });
   const now = Date.now();
   const info = await db.execute(
@@ -1720,6 +1728,11 @@ app.get('/api/public/share/:token/assets/:assetId', wrap(async (req, res) => {
     [req.params.assetId, share.doc_id]
   );
   if (!asset) return res.status(404).json({ error: 'not found' });
+  const remoteUrl = assetStore.signedRemoteUrl(asset);
+  if (remoteUrl) {
+    res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    return res.redirect(302, remoteUrl);
+  }
   const filePath = await assetStore.filePath(asset);
   if (!filePath) return res.status(404).json({ error: '\u8d44\u6e90\u4e0d\u5b58\u5728' });
   res.set({
@@ -2061,6 +2074,9 @@ async function startServer(opts) {
       // 自动执行迁移
       const { migrate } = require('./database/migrate');
       await migrate();
+      if (assetStore.startRemoteMirrorWorker()) {
+        console.log('[assets] administrator S4 mirror enabled; local fallback retained');
+      }
     } catch (err) {
       console.error('PostgreSQL 连接失败:', err.message);
       throw err;

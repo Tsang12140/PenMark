@@ -288,11 +288,30 @@ CREATE TABLE IF NOT EXISTS media_assets (
   mime_type TEXT NOT NULL,
   byte_size INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
+  remote_provider TEXT NOT NULL DEFAULT 'local',
+  remote_key TEXT,
+  remote_status TEXT NOT NULL DEFAULT 'local',
+  remote_synced_at INTEGER,
+  remote_attempted_at INTEGER,
+  remote_attempts INTEGER NOT NULL DEFAULT 0,
+  remote_error TEXT,
   FOREIGN KEY (doc_id) REFERENCES documents(id),
   FOREIGN KEY (owner_id) REFERENCES users(id)
 );
 CREATE INDEX IF NOT EXISTS idx_media_assets_document ON media_assets(doc_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_media_assets_owner ON media_assets(owner_id, created_at DESC);
 `);
+
+// SQLite has no additive migration runner. Keep old desktop data compatible
+// with the PostgreSQL 011_admin_s4_assets.sql shape.
+const mediaAssetColumns = new Set(db.prepare('PRAGMA table_info(media_assets)').all().map(column => column.name));
+const mediaAssetAdditions = [
+  ['remote_provider', "TEXT NOT NULL DEFAULT 'local'"], ['remote_key', 'TEXT'], ['remote_status', "TEXT NOT NULL DEFAULT 'local'"],
+  ['remote_synced_at', 'INTEGER'], ['remote_attempted_at', 'INTEGER'], ['remote_attempts', 'INTEGER NOT NULL DEFAULT 0'], ['remote_error', 'TEXT']
+];
+for (const [name, definition] of mediaAssetAdditions) {
+  if (!mediaAssetColumns.has(name)) db.exec('ALTER TABLE media_assets ADD COLUMN ' + name + ' ' + definition);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_media_assets_remote_queue ON media_assets(remote_provider, remote_status, remote_attempted_at)');
 
 module.exports = db;

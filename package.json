@@ -27,9 +27,11 @@
         "test": "node test/test-table-utils.mjs && node desktop/test-exporter.cjs && node desktop/test-export-integration.cjs && node desktop/test-importer.cjs && node desktop/test-security.cjs",
         "test:importer": "node desktop/test-importer.cjs",
         "test:security": "node desktop/test-security.cjs",
+        "test:s4": "node test/test-s4-signing.cjs",
         "test:auth": "node test/test-auth-isolation.cjs",
         "db:migrate": "node database/migrate.js",
         "db:status": "node database/migrate.js status",
+        "assets:queue-s4-admin": "node scripts/queue-admin-s4-assets.js",
         "db:migrate-sqlite": "node scripts/migrate-sqlite-to-pg.js",
         "admin:create": "node scripts/admin-cli.js create",
         "admin:reset-password": "node scripts/admin-cli.js reset-password"

@@ -205,6 +205,14 @@ async function main() {
     check('B 创建文档成功', createB.status === 200 && createB.json && createB.json.id);
     const docIdB = createB.json.id;
 
+    const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLr7AAAAABJRU5ErkJggg==';
+    const normalUserAsset = await request(port, 'POST', '/api/documents/' + docIdB + '/assets', { data_url: tinyPng }, cookieB);
+    check('Normal-user image stays local', normalUserAsset.status === 201 && normalUserAsset.json && normalUserAsset.json.remote_status === 'local');
+    const normalUserImage = await request(port, 'GET', normalUserAsset.json && normalUserAsset.json.url, null, cookieB);
+    check('Normal user can read own local image', normalUserImage.status === 200);
+    const crossUserImage = await request(port, 'GET', normalUserAsset.json && normalUserAsset.json.url, null, cookieA);
+    check('Other users cannot read normal-user image', crossUserImage.status === 404);
+
     // A 查看文档列表，不应包含 B 的文档
     const listA = await request(port, 'GET', '/api/documents', null, cookieA);
     check('A 文档列表只含自己的文档', listA.json && listA.json.length === 1 && listA.json[0].id === docIdA);
