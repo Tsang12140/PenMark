@@ -63,7 +63,7 @@ function request(port, method, pathname, body, cookies, extraHeaders) {
         // 提取 Set-Cookie
         const setCookies = res.headers['set-cookie'] || [];
         const cookieStr = setCookies.map(c => c.split(';')[0]).join('; ');
-        resolve({ status: res.statusCode, json, body: buf, setCookie: cookieStr, rawSetCookies: setCookies });
+        resolve({ status: res.statusCode, json, body: buf, location: res.headers.location || '', setCookie: cookieStr, rawSetCookies: setCookies });
       });
     });
     req.on('error', reject);
@@ -100,6 +100,15 @@ async function main() {
     check('登录设置 Cookie', !!loginRes.setCookie, 'cookie=' + loginRes.setCookie);
     const adminCookie = loginRes.setCookie;
     check('Cookie 名称为 penmark_session', adminCookie && adminCookie.startsWith('penmark_session='));
+
+    const anonymousLoginPage = await request(port, 'GET', '/login.html');
+    check('Anonymous users can open the login page', anonymousLoginPage.status === 200 && anonymousLoginPage.body.includes('loginForm'));
+    const loggedInLoginPage = await request(port, 'GET', '/login.html', null, adminCookie);
+    check('Valid session bypasses login page', loggedInLoginPage.status === 302 && loggedInLoginPage.location === '/');
+    const safeLoginRedirect = await request(port, 'GET', '/login.html?redirect=/s/example', null, adminCookie);
+    check('Valid session keeps a safe return target', safeLoginRedirect.status === 302 && safeLoginRedirect.location === '/s/example');
+    const unsafeLoginRedirect = await request(port, 'GET', '/login.html?redirect=//evil.example', null, adminCookie);
+    check('Login redirect rejects external targets', unsafeLoginRedirect.status === 302 && unsafeLoginRedirect.location === '/');
 
     // /api/auth/me 验证会话
     const meRes = await request(port, 'GET', '/api/auth/me', null, adminCookie);

@@ -42,6 +42,36 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '100mb' }));
+
+function safeLoginRedirect(value) {
+  const target = String(value || '');
+  if (!target || !target.startsWith('/') || target.startsWith('//') || target.includes('\\')) return '/';
+  try {
+    const parsed = new URL(target, 'http://penmark.local');
+    return parsed.origin === 'http://penmark.local' ? target : '/';
+  } catch (_) {
+    return '/';
+  }
+}
+
+// Keep a valid session out of the static login form without a visible flash.
+// It must precede express.static so /login.html reaches this handler first.
+app.get('/login.html', async (req, res, next) => {
+  try {
+    if (process.env.PENMARK_DESKTOP === '1') return res.redirect(302, '/');
+    const token = auth.readCookie(req, auth.COOKIE_NAME);
+    if (!token) return next();
+    const user = await auth.verifySession(token);
+    if (!user) {
+      auth.clearCookie(res, req);
+      return next();
+    }
+    return res.redirect(302, safeLoginRedirect(req.query && req.query.redirect));
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ---------- async 路由包装器 ---------- */
