@@ -10,6 +10,8 @@ const docTitleEl = $('docTitle');
 const docTitleOverflow = $('docTitleOverflow');
 const TITLE_MAX = 100; // 标题最大字数（与 input maxlength、粘贴截断一致，防止超长内容撑爆标题栏）
 const searchInput = $('searchInput');
+docTitleEl.placeholder = '\u8f93\u5165\u6807\u9898';
+docTitleEl.setAttribute('aria-label', '\u6587\u6863\u6807\u9898');
 const charCountEl = $('charCount');
 const imgCountEl = $('imgCount');
 const saveStateEl = $('saveState');
@@ -319,6 +321,7 @@ const PENMARK_SUFFIX = ' - 知著 PenMark';
 function setDocTitle(text){
   const v = (text == null ? '' : String(text)).slice(0, TITLE_MAX);
   docTitleEl.value = v;
+  docTitleEl.title = v || '\u8f93\u5165\u6807\u9898';
   if (docTitleOverflow) docTitleOverflow.textContent = v;
 }
 
@@ -2284,6 +2287,7 @@ docTitleEl.addEventListener('input', () => {
     docTitleEl.value = docTitleEl.value.slice(0, TITLE_MAX);
     docTitleEl.setSelectionRange(TITLE_MAX, TITLE_MAX);
   }
+  docTitleEl.title = docTitleEl.value || '\u8f93\u5165\u6807\u9898';
   if (docTitleOverflow) docTitleOverflow.textContent = docTitleEl.value;
   updateDocumentTitle(docTitleEl.value);
   scheduleAutoSave();
@@ -5221,6 +5225,58 @@ const shareModal = $('shareModal');
 const shareModalBody = $('shareModalBody');
 $('shareModalClose').addEventListener('click', () => shareModal.hidden = true);
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.hidden = true; });
+const SHARE_THEME_LABELS = { light: '\u7eb8\u58a8', feishu: '\u96fe\u7eb8', dark: '\u591c\u58a8' };
+const SHARE_THEME_ORDER = ['light', 'feishu', 'dark'];
+
+function currentEditorTheme() {
+  const theme = document.documentElement.getAttribute('data-theme');
+  return SHARE_THEME_ORDER.includes(theme) ? theme : 'light';
+}
+
+function shareThemeOption(theme, active) {
+  const label = SHARE_THEME_LABELS[theme];
+  const check = '<svg class="share-theme-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+  return '<button type="button" class="share-theme-btn theme-' + theme + (active ? ' active' : '') + '" data-theme="' + theme + '" aria-pressed="' + (active ? 'true' : 'false') + '">' +
+    '<span class="share-theme-preview" aria-hidden="true"><span class="share-theme-preview-title"></span><span class="share-theme-preview-line"></span><span class="share-theme-preview-line short"></span></span>' +
+    '<span class="share-theme-card-foot"><span>' + label + '</span>' + check + '</span>' +
+  '</button>';
+}
+
+function shareCopyText(url) {
+  const author = String((currentUser && (currentUser.nickname || currentUser.username)) || '\u77e5\u8457\u7528\u6237')
+    .replace(/\s+/g, ' ').trim().slice(0, 50) || '\u77e5\u8457\u7528\u6237';
+  const title = String(docTitleEl.value || (currentDoc && currentDoc.title) || '\u65e0\u6807\u9898')
+    .replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX) || '\u65e0\u6807\u9898';
+  return author + ' \u7ed9\u4f60\u5206\u4eab\u4e86\u6587\u6863\u201c' + title + '\u201d\n' + url;
+}
+
+function writeShareText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => writeShareTextFallback(text));
+  }
+  return writeShareTextFallback(text);
+}
+
+function writeShareTextFallback(text) {
+  return new Promise((resolve, reject) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      if (!document.execCommand('copy')) throw new Error('copy failed');
+      resolve();
+    } catch (err) {
+      reject(err);
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  });
+}
 
 // 访客统计小胶囊：点击打开分享弹窗（与分享按钮行为一致，便于查看详情）
 const shareStatsBtnEl = document.getElementById('shareStatsBtn');
@@ -5251,9 +5307,9 @@ function renderShareForm(share) {
       '</div>';
     $('shareCreate').addEventListener('click', async () => {
       try {
-        const res = await api('/api/documents/' + currentDoc.id + '/share', 'POST', { permission: 'view' });
+        const res = await api('/api/documents/' + currentDoc.id + '/share', 'POST', { permission: 'view', theme: currentEditorTheme() });
         toast('已开启分享');
-        renderShareForm({ permission: res.permission, has_password: res.has_password, expire_at: res.expire_at, url: res.url });
+        renderShareForm({ permission: res.permission, has_password: res.has_password, expire_at: res.expire_at, theme: res.theme, url: res.url });
         refreshShareStats();
       } catch (e) { toast('开启失败：' + (e.message || e)); }
     });
@@ -5263,6 +5319,8 @@ function renderShareForm(share) {
   const permission = share.permission;
   const hasPassword = share.has_password;
   const expireAt = share.expire_at;
+  const editorTheme = currentEditorTheme();
+  const selectedTheme = SHARE_THEME_ORDER.includes(share.theme) ? share.theme : editorTheme;
   const url = location.origin + share.url;
   let expVal = '';
   if (expireAt) {
@@ -5327,6 +5385,32 @@ function renderShareForm(share) {
       '<button class="share-revoke" id="shareRevoke">撤销分享</button>' +
     '</div>';
 
+  const themeRow = $('shareThemeRow');
+  if (themeRow) {
+    const themeSection = themeRow.closest('.share-section');
+    if (themeSection) {
+      themeSection.classList.add('share-theme-section');
+      const themeLabel = themeSection.querySelector('.share-label');
+      if (themeLabel) {
+        themeLabel.textContent = '\u5206\u4eab\u9875\u9762\u5916\u89c2';
+        const themeHead = document.createElement('div');
+        themeHead.className = 'share-theme-head';
+        themeLabel.parentNode.insertBefore(themeHead, themeLabel);
+        themeHead.appendChild(themeLabel);
+        const current = document.createElement('span');
+        current.className = 'share-theme-current';
+        current.textContent = '\u5f53\u524d\u7f16\u8f91\u5668\uff1a' + SHARE_THEME_LABELS[editorTheme];
+        themeHead.appendChild(current);
+      }
+      const help = document.createElement('div');
+      help.className = 'share-theme-help';
+      help.textContent = '\u8bfb\u8005\u9996\u6b21\u6253\u5f00\u65f6\u91c7\u7528\u6b64\u4e3b\u9898\uff0c\u4e4b\u540e\u53ef\u81ea\u884c\u5207\u6362\u9605\u8bfb\u5916\u89c2\u3002';
+      themeRow.insertAdjacentElement('beforebegin', help);
+    }
+    themeRow.innerHTML = SHARE_THEME_ORDER.map(theme => shareThemeOption(theme, theme === selectedTheme)).join('');
+  }
+  const shareCopyButton = $('shareCopy');
+  if (shareCopyButton) shareCopyButton.textContent = '\u590d\u5236\u5206\u4eab\u6587\u6848';
   // 权限切换：实时保存
   $('sharePermSeg').addEventListener('click', async (e) => {
     const btn = e.target.closest('.seg-btn');
@@ -5374,6 +5458,11 @@ function renderShareForm(share) {
 
   // 复制链接
   $('shareCopy').addEventListener('click', () => {
+    writeShareText(shareCopyText(url)).then(
+      () => toast('\u5206\u4eab\u6587\u6848\u5df2\u590d\u5236'),
+      () => toast('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236\u94fe\u63a5')
+    );
+    return;
     const urlInput = $('shareLinkUrl');
     urlInput.select();
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -5392,6 +5481,11 @@ function renderShareForm(share) {
         await api('/api/documents/' + currentDoc.id + '/share/theme', 'PUT', { theme });
         shareModalBody.querySelectorAll('.share-theme-btn').forEach(b => b.classList.toggle('active', b === btn));
         toast('主题已更新');
+        shareModalBody.querySelectorAll('.share-theme-btn').forEach(b => {
+          const active = b === btn;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-pressed', String(active));
+        });
       } catch (e) { toast('更新失败'); }
     });
   });

@@ -19,12 +19,25 @@ const SHARE_THEMES = ['light', 'feishu', 'dark'];
 const THEME_LABELS = { light: '纸墨', feishu: '雾纸', dark: '夜墨' };
 const THEME_COLORS = { light: '#F4F2ED', feishu: '#F4F6F4', dark: '#171B1C' };
 
-function applyShareTheme(theme) {
+function shareThemeStorageKey() {
+  return 'penmark_share_theme:' + token;
+}
+
+function applyShareTheme(theme, persist = true) {
+  theme = SHARE_THEMES.includes(theme) ? theme : 'light';
   shareTheme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', THEME_COLORS[theme] || THEME_COLORS.light);
   document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem('penmark_share_theme', theme); } catch(_) {}
+  if (persist) {
+    try { localStorage.setItem(shareThemeStorageKey(), theme); } catch(_) {}
+  }
+  const themeBtn = $('themeToggle');
+  if (themeBtn) {
+    const label = '\u5207\u6362\u9605\u8bfb\u4e3b\u9898\uff08\u5f53\u524d\uff1a' + THEME_LABELS[shareTheme] + '\uff09';
+    themeBtn.title = label;
+    themeBtn.setAttribute('aria-label', label);
+  }
 }
 
 function toast(msg) {
@@ -95,8 +108,8 @@ async function init() {
 
     // 应用主题：优先读者上次选择，否则用作者预设
     let savedTheme = null;
-    try { savedTheme = localStorage.getItem('penmark_share_theme'); } catch(_) {}
-    applyShareTheme(savedTheme && SHARE_THEMES.includes(savedTheme) ? savedTheme : (shareInfo.theme || 'light'));
+    try { savedTheme = localStorage.getItem(shareThemeStorageKey()); } catch(_) {}
+    applyShareTheme(savedTheme && SHARE_THEMES.includes(savedTheme) ? savedTheme : (shareInfo.theme || 'light'), false);
     const themeBtn = $('themeToggle');
     themeBtn.hidden = false;
     themeBtn.addEventListener('click', () => {
@@ -561,8 +574,10 @@ async function setupVisitors(token) {
       body: JSON.stringify({ fingerprint: fp, nickname })
     });
     if (res.ok) data = await res.json();
+    else console.warn('[share/visit] report failed, HTTP ' + res.status);
   } catch(e) { /* 上报失败静默，不影响阅读 */ }
 
+  // Keep visitor reporting non-blocking for document reading.
   if (data) renderVisitorCapsule(data);
 
   // 30 秒轮询一次在线数（不写入，只拉取）；标签页隐藏时跳过，节省请求

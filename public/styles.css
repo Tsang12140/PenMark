@@ -1060,9 +1060,24 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   max-width:100%;
   display:flex;
   align-items:center;
+  min-height:72px;
+  padding:22px 12px 8px;
+  background:var(--bg-editor);
+  border:1px solid transparent;
+  border-bottom-color:var(--line);
+  border-radius:10px 10px 4px 4px;
+  transition:background .15s,border-color .15s,box-shadow .15s;
+}
+.doc-title-field:hover{background:var(--bg-panel);border-color:var(--line-soft);border-bottom-color:var(--accent-soft);}
+.doc-title-field:focus-within{background:var(--bg-panel);border-color:var(--accent-soft);border-bottom-color:var(--accent);box-shadow:0 1px 0 var(--accent);}
+.doc-title-label{
+  position:absolute;top:7px;left:12px;
+  color:var(--ink-faint);font-size:11px;font-weight:600;
+  letter-spacing:.08em;line-height:1;pointer-events:none;
 }
 .doc-title-bar input{
   width:100%;
+  min-width:0;
   background:transparent;
   border:none;
   outline:none;
@@ -1079,9 +1094,8 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 /* 失焦省略号层：input 不支持 text-overflow:ellipsis，用叠加 span 实现 */
 .doc-title-overflow{
   position:absolute;
-  inset:0;
+  top:22px;right:12px;bottom:8px;left:12px;
   display:none;
-  align-items:center;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
@@ -1092,9 +1106,10 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   color:var(--ink);
   padding:0;
   letter-spacing:0;
+  width:auto;
   pointer-events:none; /* 点击穿透到 input，使其聚焦 */
 }
-.doc-title-field input:not(:focus) + .doc-title-overflow{ display:flex; }
+.doc-title-field input:not(:focus) + .doc-title-overflow{ display:block; }
 /* input 为空（显示 placeholder）时不显示省略号层，让 placeholder 可见 */
 .doc-title-field input:not(:focus):placeholder-shown + .doc-title-overflow{ display:none; }
 /* 失焦且有值时隐藏 input 文字，避免与省略号层重叠 */
@@ -1862,9 +1877,10 @@ body.reading-mode .block-handle{display:none;}
     border-bottom:1px solid var(--line-soft);
     align-items:center;
   }
-  .doc-title-field{flex:1 1 auto;min-width:0;}
+  .doc-title-field{flex:1 1 auto;min-width:0;min-height:52px;padding:17px 8px 5px;border-radius:8px 8px 3px 3px;}
   .doc-title-bar input{font-size:20px;font-weight:600;}
-  .doc-title-overflow{font-size:20px;font-weight:600;}
+  .doc-title-label{top:5px;left:8px;font-size:10px;}
+  .doc-title-overflow{top:17px;right:8px;bottom:5px;left:8px;font-size:20px;font-weight:600;}
   .mobile-menu-btn{
     display:inline-flex;
     width:44px;height:44px;
@@ -2818,14 +2834,30 @@ body.reading-mode .block-handle{display:none;}
 .sensitive-tag-remove:hover{color:#c44;}
 
 /* 分享主题选择 */
-.share-theme-row{display:flex;gap:8px;margin-top:8px;}
+.share-theme-section{margin-top:18px;}
+.share-theme-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
+.share-theme-current{font-size:11.5px;color:var(--accent);white-space:nowrap;}
+.share-theme-help{margin-top:5px;font-size:11.5px;line-height:1.55;color:var(--ink-faint);}
+.share-theme-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;}
 .share-theme-btn{
-  flex:1;padding:8px 12px;border:1px solid var(--line);background:var(--bg-editor);
-  border-radius:6px;cursor:pointer;font-family:var(--sans);font-size:12px;
-  color:var(--ink-soft);text-align:center;transition:background .12s,border-color .12s;
+  position:relative;min-width:0;padding:7px;border:1px solid var(--line);background:var(--bg-editor);
+  border-radius:8px;cursor:pointer;font-family:var(--sans);font-size:12px;
+  color:var(--ink-soft);text-align:left;transition:background .12s,border-color .12s,box-shadow .12s,transform .12s;
 }
-.share-theme-btn:hover{background:var(--bg-hover);}
-.share-theme-btn.active{border-color:var(--accent);color:var(--accent);background:var(--highlight);}
+.share-theme-btn:hover{background:var(--bg-hover);border-color:var(--accent-soft);}
+.share-theme-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.share-theme-btn.active{border-color:var(--accent);color:var(--ink);background:var(--highlight);box-shadow:0 0 0 1px var(--accent);}
+.share-theme-preview{display:block;height:42px;padding:9px 8px;border:1px solid rgba(32,41,46,.12);border-radius:5px;overflow:hidden;}
+.share-theme-preview-title,.share-theme-preview-line{display:block;border-radius:999px;background:currentColor;opacity:.72;}
+.share-theme-preview-title{width:50%;height:5px;margin-bottom:7px;}
+.share-theme-preview-line{width:88%;height:3px;margin-top:4px;opacity:.36;}
+.share-theme-preview-line.short{width:65%;}
+.share-theme-btn.theme-light .share-theme-preview{background:#fffdf9;color:#20292e;}
+.share-theme-btn.theme-feishu .share-theme-preview{background:#fff;color:#2a3430;}
+.share-theme-btn.theme-dark .share-theme-preview{background:#222829;border-color:#3a4441;color:#eceae4;}
+.share-theme-card-foot{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-top:7px;font-weight:600;line-height:1.2;}
+.share-theme-check{width:14px;height:14px;color:var(--accent);opacity:0;transform:scale(.7);transition:opacity .12s,transform .12s;}
+.share-theme-btn.active .share-theme-check{opacity:1;transform:scale(1);}
 
 /* 分享页顶部工具栏：左 logo + 右工具组（不冻结，随页面滚动消失） */
 .share-topbar{
@@ -3211,6 +3243,7 @@ body.reading-mode .block-handle{display:none;}
   cursor:pointer;
   font-size:12.5px;
   transition:all .12s;
+  white-space:nowrap;
 }
 .share-copy:hover{background:var(--accent);color:#fff;border-color:var(--accent);}
 .share-hint{

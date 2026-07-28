@@ -1472,6 +1472,19 @@ app.delete('/api/admin/sensitive-words/:id', auth.adminOnly, wrap(async (req, re
 }));
 
 /* ---------- 分享管理 ---------- */
+const SHARE_THEMES = new Set(['light', 'feishu', 'dark']);
+const VISITOR_ONLINE_WINDOW_MS = 30 * 60 * 1000;
+
+function normalizeShareTheme(value, fallback = 'light') {
+  return SHARE_THEMES.has(value) ? value : fallback;
+}
+
+function normalizeVisitorFingerprint(value) {
+  // A browser-local deduplication key, not an authentication credential.
+  const fingerprint = String(value || '').trim().slice(0, 64);
+  return /^[A-Za-z0-9._:-]{8,64}$/.test(fingerprint) ? fingerprint : '';
+}
+
 function shareAllowed(req, res, next) {
   if (req.user && (req.user.isAdmin || req.user.can_share)) return next();
   return res.status(403).json({ error: 'No share permission' });
@@ -1520,7 +1533,9 @@ app.post('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
     if (expireAt && expireAt < Date.now()) return res.status(400).json({ error: '过期时间必须晚于当前' });
   }
 
-  const theme = req.body.theme !== undefined ? String(req.body.theme) : (existing ? existing.theme : 'light');
+  const theme = req.body.theme !== undefined
+    ? normalizeShareTheme(String(req.body.theme))
+    : normalizeShareTheme(existing && existing.theme);
 
   let token;
   if (existing) {
@@ -1548,7 +1563,7 @@ app.delete('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
 }));
 
 app.put('/api/documents/:id/share/theme', shareAllowed, wrap(async (req, res) => {
-  const theme = String(req.body.theme || 'light');
+  const theme = normalizeShareTheme(String(req.body.theme || 'light'));
   await db.execute('UPDATE shares SET theme = $1 WHERE doc_id = $2 AND owner_id = $3', [theme, req.params.id, req.user.id]);
   res.json({ ok: true });
 }));
@@ -1567,7 +1582,8 @@ app.get('/api/documents/:id/share-stats', wrap(async (req, res) => {
   // 三个 visitor 查询相互独立，串行 await 是 3 倍 RTT；并行 Promise.all 提速
   // （SQLite WAL 模式下读不互斥，PostgreSQL 也安全）
   // cutoff 在 Promise.all 之前计算，确保 5 分钟窗口在整批查询开始时就固定
-  const cutoff = Date.now() - 5 * 60 * 1000;
+  // The API field is online_30min: honor that full activity window.
+  const cutoff = Date.now() - VISITOR_ONLINE_WINDOW_MS;
   const [recent, totalRow, onlineRow] = await Promise.all([
     db.query(
       'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 20',
@@ -1605,7 +1621,7 @@ app.get('/api/public/share/:token/info', wrap(async (req, res) => {
   const share = await db.one('SELECT s.permission, s.password_hash IS NOT NULL AS has_password, s.expire_at, s.theme, u.nickname AS owner_nickname FROM shares s LEFT JOIN users u ON u.id = s.owner_id WHERE s.token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
-  res.json({ permission: share.permission, has_password: !!share.has_password, can_edit: share.permission === 'edit', theme: share.theme || 'light', owner_nickname: share.owner_nickname || '' });
+  res.json({ permission: share.permission, has_password: !!share.has_password, can_edit: share.permission === 'edit', theme: normalizeShareTheme(share.theme), owner_nickname: share.owner_nickname || '' });
 }));
 
 const shareRateLimit = new Map();
@@ -1746,8 +1762,8 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
 
-  const fingerprint = String(req.body.fingerprint || '').slice(0, 64);
-  if (!/^[a-f0-9]{8,64}$/i.test(fingerprint)) {
+  const fingerprint = normalizeVisitorFingerprint(req.body.fingerprint);
+  if (!fingerprint) {
     return res.status(400).json({ error: 'fingerprint 不合法' });
   }
   const nickname = String(req.body.nickname || '游客').slice(0, 20).replace(/[<>]/g, '');
@@ -1816,7 +1832,7 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
     [share.token]
   );
-  const cutoff = now - 5 * 60 * 1000;
+  const cutoff = now - VISITOR_ONLINE_WINDOW_MS;
   const onlineRow = await db.one(
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
     [share.token, cutoff]
@@ -1849,7 +1865,7 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1',
     [share.token]
   );
-  const cutoff = Date.now() - 5 * 60 * 1000;
+  const cutoff = Date.now() - VISITOR_ONLINE_WINDOW_MS;
   const onlineRow = await db.one(
     'SELECT COUNT(*) AS cnt FROM share_visitors WHERE share_token = $1 AND last_visit_at >= $2',
     [share.token, cutoff]
