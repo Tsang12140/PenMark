@@ -1,10 +1,12 @@
 // 知著 PenMark 分享公开页逻辑
 // 解析 token → 查元信息 → 必要时弹密码 → 加载文档 → 按权限渲染只读/可编辑
+import { setupImagePreview } from './image-preview.js';
 
 const $ = id => document.getElementById(id);
 const container = $('shareContainer');
 const toastStack = $('toastStack');
 const tocEl = $('shareToc');
+setupImagePreview(container, '.share-reader img, .share-editor img');
 
 const token = (function() {
   const parts = location.pathname.split('/');
@@ -217,10 +219,10 @@ function renderDoc(data) {
   html += '<div class="share-reader" id="shareReader">' + (doc.content || '<p><br></p>') + '</div>';
   html += '<div class="share-footer">';
   html += '<span class="share-footer-line">— 文档结束 —</span>';
-  html += '<a class="share-footer-brand" href="/" aria-label="知著 PenMark" title="知著 PenMark">' +
-            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
-            '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
-          '</a>';
+  html += '<a class="share-footer-brand" href="/" title="知著 PenMark" aria-label="知著 PenMark">' +
+    '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-light.svg" alt="" class="share-brand-logo brand-logo-light">' +
+    '<img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">' +
+    '</a>';
   html += '</div>';
   html += '</div>'; // .share-paper-body
 

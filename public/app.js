@@ -1,5 +1,6 @@
 // 知著 PenMark 应用主逻辑：文档管理、自动保存、搜索、暗色模式、工具栏
 import { Editor } from './editor.js';
+import { setupImagePreview } from './image-preview.js';
 
 const $ = id => document.getElementById(id);
 const editorEl = $('editor');
@@ -467,6 +468,7 @@ const editor = new Editor({
   onDataImageInserted: queueDataImageUpload,
   onImageSelect: (container) => updateImageFloatMenu(container)
 });
+setupImagePreview(editorEl, '.img-container img');
 
 /* ---------- 工具栏 ---------- */
 $('toolbar').addEventListener('click', (e) => {

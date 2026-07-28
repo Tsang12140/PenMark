@@ -205,13 +205,14 @@ CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id);
 CREATE INDEX IF NOT EXISTS idx_share_visitors_token_last ON share_visitors(share_token, last_visit_at DESC);
 `);
 
-// share_visitors 增量迁移：加 user_id 列（NULL=未识别游客，非 NULL=注册用户回访）
+// share_visitors 增量迁移：加 user_id 列 + 索引（老表可能没有 user_id，先 ADD 后建索引）
 try {
   const svCols = db.prepare("PRAGMA table_info(share_visitors)").all();
   if (!svCols.some(c => c.name === 'user_id')) {
     db.exec("ALTER TABLE share_visitors ADD COLUMN user_id INTEGER");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id)");
   }
+  // 不管 user_id 是新表自带还是刚 ADD 的，建索引
+  db.exec("CREATE INDEX IF NOT EXISTS idx_share_visitors_user ON share_visitors(user_id)");
 } catch (e) { console.warn('share_visitors 迁移跳过：', e.message); }
 
 // 文档版本快照表（每次保存内容差异 > 50 字符时自动落一条）

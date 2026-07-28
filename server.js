@@ -930,8 +930,27 @@ function sanitizeShareContent(html) {
   out = out.replace(/<script\b[^>]*>/gi, '');
   // 2. 移除所有事件处理器（on*）
   out = out.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-  // 3. 移除 javascript:/vbscript:/data: 协议（href/src/xlink:href）
+  // 3. 分享页仍需兼容尚未后台迁移的 Base64 图片。先把严格白名单内的
+  //    raster data URL 暂存起来，再清除其余 data:/javascript:/vbscript:。
+  //    SVG 不在白名单中，避免 data:image/svg+xml 携带可执行内容。
+  const safeDataImages = [];
+  const safeDataMarker = '__PENMARK_SAFE_DATA_IMAGE_' + crypto.randomBytes(12).toString('hex') + '_';
+  out = out.replace(/<img\b[^>]*>/gi, (tag) => tag.replace(
+    /\bsrc\s*=\s*(["'])(data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/=]+)\1/i,
+    (match, quote, source) => {
+      const index = safeDataImages.push(source) - 1;
+      return 'src=' + quote + safeDataMarker + index + '__' + quote;
+    }
+  ));
+  // 移除 javascript:/vbscript:/data: 协议（href/src/xlink:href）
   out = out.replace(/\s(?:href|src|xlink:href)\s*=\s*(?:"\s*(?:javascript|vbscript|data):[^"]*"|'\s*(?:javascript|vbscript|data):[^']*'|\s*(?:javascript|vbscript|data):[^\s>]+)/gi, '');
+  if (safeDataImages.length) {
+    const escapedMarker = safeDataMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escapedMarker + '(\\d+)__', 'g'), (match, rawIndex) => {
+      const source = safeDataImages[Number(rawIndex)];
+      return source || '';
+    });
+  }
   // 4. 移除 CSS expression() 与 -moz-binding（style 属性级）
   out = out.replace(/style\s*=\s*"[^"]*expression\s*\([^"]*"/gi, '');
   out = out.replace(/style\s*=\s*'[^']*expression\s*\([^']*'/gi, '');
@@ -1629,6 +1648,13 @@ function rewriteShareAssetUrls(html, token) {
   return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => quote + base + id + quote);
 }
 
+function rewriteShareAssetUrlsAbsolute(html, token, req) {
+  const origin = getPublicRequestOrigin(req);
+  if (!origin) return html;
+  const base = origin + '/api/public/share/' + encodeURIComponent(token) + '/assets/';
+  return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => quote + base + id + quote);
+}
+
 function restorePrivateAssetUrls(html, token) {
   const escapedToken = String(token).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp('(["\'])/api/public/share/' + escapedToken + '/assets/([0-9a-f-]{36})\\1', 'gi');
@@ -1671,7 +1697,7 @@ app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
   const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
   // 读取侧也净化一次：防御历史存量数据中可能存在的恶意脚本（写入侧净化是新增的）
-  doc.content = rewriteShareAssetUrls(sanitizeShareContent(doc.content || ''), share.token);
+  doc.content = rewriteShareAssetUrlsAbsolute(sanitizeShareContent(doc.content || ''), share.token, req);
   res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit', owner_nickname: share.owner_nickname || '' });
 }));
 
