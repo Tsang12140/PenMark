@@ -1,0 +1,161 @@
+function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stripHtml, titleMaxLength }) {
+  let inFlight = false;
+
+  async function isEnabled() {
+    const row = await db.one(
+      'SELECT setting_value FROM app_settings WHERE setting_key = $1',
+      [autoTitle.SETTING_KEY]
+    );
+    return !!row && row.setting_value === '1';
+  }
+
+  app.get('/api/admin/auto-title-settings', auth.adminOnly, wrap(async (req, res) => {
+    res.json({ enabled: await isEnabled() });
+  }));
+
+  app.put('/api/admin/auto-title-settings', auth.adminOnly, wrap(async (req, res) => {
+    const enabled = !!(req.body && req.body.enabled);
+    const now = Date.now();
+    const existing = await db.one(
+      'SELECT id FROM app_settings WHERE setting_key = $1',
+      [autoTitle.SETTING_KEY]
+    );
+    if (existing) {
+      await db.execute(
+        'UPDATE app_settings SET setting_value = $1, updated_at = $2 WHERE setting_key = $3',
+        [enabled ? '1' : '0', now, autoTitle.SETTING_KEY]
+      );
+    } else {
+      await db.execute(
+        'INSERT INTO app_settings (setting_key, setting_value, updated_at) VALUES ($1, $2, $3)',
+        [autoTitle.SETTING_KEY, enabled ? '1' : '0', now]
+      );
+    }
+    res.json({ enabled });
+  }));
+
+  // Manual suggestions are intentionally separate from the automatic-title flow:
+  // they never consume the document's single automatic attempt and never write.
+  app.post('/api/ai/suggest-title', auth.adminOnly, aiLimiter, wrap(async (req, res) => {
+    const docId = Number(req.body && req.body.docId);
+    const expectedVersion = Number(req.body && req.body.version);
+    if (!Number.isInteger(docId) || docId <= 0 || !Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+      return res.status(400).json({ error: 'invalid document version' });
+    }
+    if (!ai.configured()) return res.status(503).json({ error: 'AI is not configured' });
+    if (inFlight) return res.status(409).json({ error: 'title generation is busy', retryable: true });
+
+    const slices = autoTitle.sliceSelectSql(db.isPostgres());
+    const doc = await db.one(
+      'SELECT id, version, ' + slices + ' FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+      [docId, req.user.id, 9000, 3500]
+    );
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (doc.version !== expectedVersion) return res.status(409).json({ error: 'document changed' });
+
+    const excerpt = autoTitle.buildContext(doc.content_start, doc.content_end, stripHtml);
+    if (excerpt.visibleChars < autoTitle.MIN_CHARS) {
+      return res.json({ status: 'below_minimum', minimumChars: autoTitle.MIN_CHARS, version: doc.version });
+    }
+
+    inFlight = true;
+    const abortController = new AbortController();
+    const onClientClose = () => abortController.abort();
+    req.on('close', onClientClose);
+    try {
+      const result = await ai.suggestTitle(excerpt.context, { signal: abortController.signal });
+      res.json(Object.assign({ version: doc.version }, result));
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.message === 'AbortError')) {
+        return res.status(499).json({ error: 'cancelled' });
+      }
+      console.warn('[suggest-title] generation failed:', err && err.message);
+      res.status(502).json({ error: 'title suggestion failed' });
+    } finally {
+      inFlight = false;
+      req.removeListener('close', onClientClose);
+    }
+  }));
+
+  app.post('/api/ai/auto-title', auth.adminOnly, aiLimiter, wrap(async (req, res) => {
+    const docId = Number(req.body && req.body.docId);
+    const expectedVersion = Number(req.body && req.body.version);
+    if (!Number.isInteger(docId) || docId <= 0 || !Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+      return res.status(400).json({ error: 'invalid document version' });
+    }
+    if (!await isEnabled()) return res.status(403).json({ error: 'automatic titles are disabled' });
+    if (!ai.configured()) return res.status(503).json({ error: 'AI is not configured' });
+    if (inFlight) return res.status(409).json({ error: 'automatic title is busy', retryable: true });
+
+    const slices = autoTitle.sliceSelectSql(db.isPostgres());
+    const doc = await db.one(
+      'SELECT id, title, title_origin, auto_title_attempted_at, version, ' + slices +
+      ' FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+      [docId, req.user.id, 9000, 3500]
+    );
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!autoTitle.isEligible(doc)) return res.status(409).json({ error: 'automatic title is no longer eligible' });
+    if (doc.version !== expectedVersion) return res.status(409).json({ error: 'document changed' });
+
+    const excerpt = autoTitle.buildContext(doc.content_start, doc.content_end, stripHtml);
+    if (excerpt.visibleChars < autoTitle.MIN_CHARS) {
+      return res.json({ status: 'below_minimum', minimumChars: autoTitle.MIN_CHARS });
+    }
+
+    inFlight = true;
+    const claimed = await db.execute(
+      'UPDATE documents SET auto_title_attempted_at = $1 WHERE id = $2 AND user_id = $3 AND version = $4 AND title_origin = $5 AND auto_title_attempted_at IS NULL',
+      [Date.now(), docId, req.user.id, expectedVersion, 'untitled']
+    );
+    if (!claimed.changes) {
+      inFlight = false;
+      return res.status(409).json({ error: 'document changed' });
+    }
+
+    const abortController = new AbortController();
+    const onClientClose = () => abortController.abort();
+    req.on('close', onClientClose);
+    try {
+      const result = await ai.suggestTitle(excerpt.context, { signal: abortController.signal });
+      // This endpoint never persists a title. The browser must prove that its
+      // active document is still unchanged before it calls the apply endpoint.
+      res.json(Object.assign({ version: doc.version }, result));
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.message === 'AbortError')) {
+        return res.status(499).json({ error: 'cancelled' });
+      }
+      console.warn('[auto-title] generation failed:', err && err.message);
+      res.status(502).json({ error: 'automatic title failed' });
+    } finally {
+      inFlight = false;
+      req.removeListener('close', onClientClose);
+    }
+  }));
+
+  app.put('/api/documents/:id/auto-title', auth.adminOnly, wrap(async (req, res) => {
+    const docId = Number(req.params.id);
+    const expectedVersion = Number(req.body && req.body.version);
+    const title = String(req.body && req.body.title || '').replace(/\s+/g, ' ').trim().slice(0, titleMaxLength);
+    if (!Number.isInteger(docId) || docId <= 0 || !Number.isInteger(expectedVersion) || expectedVersion <= 0 || !title) {
+      return res.status(400).json({ error: 'invalid automatic title' });
+    }
+
+    if (!await isEnabled()) return res.status(403).json({ error: 'automatic titles are disabled' });
+    const info = await db.execute(
+      'UPDATE documents SET title = $1, title_origin = $2, version = version + 1 WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL AND version = $5 AND title_origin = $6 AND auto_title_attempted_at IS NOT NULL',
+      [title, 'auto', docId, req.user.id, expectedVersion, 'untitled']
+    );
+    if (!info.changes) return res.status(409).json({ error: 'document changed' });
+
+    const doc = await db.one(
+      'SELECT title, title_origin, auto_title_attempted_at, version, updated_at FROM documents WHERE id = $1 AND user_id = $2',
+      [docId, req.user.id]
+    );
+    res.json(doc);
+  }));
+}
+
+// Kept local so this module can use the same async error handling as server.js.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+module.exports = { registerAutoTitleRoutes };

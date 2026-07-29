@@ -61,6 +61,8 @@
             "auth.js",
             "invites.js",
             "ai.js",
+            "auto-title.js",
+            "auto-title-routes.js",
             "env.js",
             "database/index.js",
             "database/sqlite.js",

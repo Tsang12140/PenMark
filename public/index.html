@@ -227,6 +227,19 @@
             <input type="text" id="docTitle" placeholder="无标题" maxlength="100">
             <span class="doc-title-overflow" id="docTitleOverflow" aria-hidden="true"></span>
           </div>
+          <div class="doc-title-ai-wrap" id="docTitleAiWrap" hidden>
+            <button class="doc-title-ai-btn" id="docTitleAi" type="button" title="AI 拟标题" aria-label="AI 拟标题">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+            </button>
+            <div class="doc-title-suggestion" id="docTitleSuggestion" hidden aria-live="polite">
+              <span class="doc-title-suggestion-label">AI 建议</span>
+              <strong class="doc-title-suggestion-text" id="docTitleSuggestionText"></strong>
+              <div class="doc-title-suggestion-actions">
+                <button type="button" id="docTitleSuggestionRetry">换一个</button>
+                <button type="button" class="primary" id="docTitleSuggestionUse">使用</button>
+              </div>
+            </div>
+          </div>
           <button class="mobile-share-btn" id="mobileShareBtn" data-action="share" title="分享" hidden>分享</button>
         </div>
         <div class="mobile-toolbar" id="mobileToolbar">
@@ -472,6 +485,7 @@
       <button class="settings-tab" data-stab="invites">邀请码</button>
       <button class="settings-tab" data-stab="review">内容审核</button>
       <button class="settings-tab" data-stab="sensitive">敏感词</button>
+      <button class="settings-tab" data-stab="ai">AI &#20889;&#20316;</button>
     </div>
     <div class="modal-body" id="settingsModalBody"></div>
   </div>

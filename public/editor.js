@@ -8,6 +8,11 @@ import {
   resizeColumnWidth
 } from './table-utils.mjs';
 
+// Normal browser pasting turns every line break into a separate DOM node in
+// contenteditable. That is fine for a paragraph, but a pasted .txt with tens
+// of thousands of lines can freeze the tab before our deferred work even runs.
+const LARGE_PLAIN_TEXT_PASTE_THRESHOLD = 64 * 1024;
+
 export class Editor {
   constructor(opts) {
     this.editor = opts.editor;
@@ -98,7 +103,7 @@ export class Editor {
     document.execCommand(cmd, false, val);
     this._afterChange();
   }
-  _afterChange() { this.onUpdate(); }
+  _afterChange(change) { this.onUpdate(change); }
 
   /* ---------- Input handling ---------- */
   _bindInput() {
@@ -1631,8 +1636,19 @@ export class Editor {
     this.editor.addEventListener('paste', async (e) => {
       const cd = e.clipboardData || window.clipboardData;
       if (!cd) return;
-      this._prepareEmptyEditorForPaste();
       const html = cd.getData('text/html');
+      const plainText = cd.getData('text/plain') || '';
+
+      // Keep rich text and image pastes on their existing paths. A large
+      // plain-text file gets a single text node instead of one <div>/<br> per
+      // line, which makes a 300KB+ paste immediately editable.
+      if (!html && plainText.length >= LARGE_PLAIN_TEXT_PASTE_THRESHOLD) {
+        e.preventDefault();
+        this._insertLargePlainText(plainText);
+        return;
+      }
+
+      this._prepareEmptyEditorForPaste();
       if (html && this._shouldPasteAsHTML(html)) {
         e.preventDefault();
         const cleaned = this._cleanPastedHTML(html);
@@ -1679,7 +1695,7 @@ export class Editor {
         setTimeout(() => this._afterPasteCleanup(), 60);
       } else {
         // 纯文本：若含 URL 则自动转为超链接，否则放行默认
-        const text = cd.getData('text/plain') || '';
+        const text = plainText;
         const trimmed = text.trim();
         // 粘贴单个裸 URL → 先插链接，后台抓 OG 升级为卡片（先显示，再修复，符合热路径原则）
         const isSingleUrl = trimmed && /^(https?:\/\/|www\.)[^\s<]+$/i.test(trimmed);
@@ -1704,6 +1720,36 @@ export class Editor {
         }
       }
     });
+  }
+
+  _insertLargePlainText(text) {
+    const selection = window.getSelection();
+    let range = selection && selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+    if (!range || !this.editor.contains(range.commonAncestorContainer)) {
+      range = document.createRange();
+      range.selectNodeContents(this.editor);
+      range.collapse(false);
+    }
+
+    // A styled span is valid both inside an existing paragraph and at the root
+    // of the editable area. Its one Text node retains all line breaks without
+    // asking the browser to create thousands of editable blocks.
+    const inserted = document.createElement('span');
+    inserted.className = 'pm-plain-text-paste';
+    inserted.style.whiteSpace = 'pre-wrap';
+    inserted.style.overflowWrap = 'anywhere';
+    inserted.textContent = text;
+    range.deleteContents();
+    range.insertNode(inserted);
+
+    const caret = document.createRange();
+    caret.setStartAfter(inserted);
+    caret.collapse(true);
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(caret);
+    }
+    this._afterChange({ largePlainTextPaste: true });
   }
 
   _linkifyPlainText(text) {

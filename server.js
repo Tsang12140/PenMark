@@ -8,6 +8,8 @@ const http = require('http');
 const https = require('https');
 const db = require('./database');
 const auth = require('./auth');
+const autoTitle = require('./auto-title');
+const { registerAutoTitleRoutes } = require('./auto-title-routes');
 const invites = require('./invites');
 const ai = require('./ai');
 const { createAssetStore } = require('./assets');
@@ -597,6 +599,18 @@ const DOC_MAX_BYTES = Number(process.env.PENMARK_DOC_MAX_BYTES) || 5 * 1024 * 10
 // Keep API-created titles within the same limit as the browser editor.
 const DOC_TITLE_MAX_LENGTH = 100;
 
+const DEFAULT_UNTITLED_TITLE = String.fromCharCode(0x65e0, 0x6807, 0x9898);
+const AUTO_TITLE_SETTING_KEY = 'auto_title_enabled';
+const AUTO_TITLE_MIN_CHARS = 40;
+const AUTO_TITLE_CONTEXT_MAX = 2400;
+let autoTitleInFlight = false;
+
+function isUntitledTitle(value) {
+  const title = String(value || '').trim();
+  return !title || title === DEFAULT_UNTITLED_TITLE;
+}
+
+
 async function verifyFolderOwnership(folderId, userId) {
   if (folderId === null || folderId === undefined) return null;
   const fid = Number(folderId);
@@ -704,9 +718,10 @@ app.post('/api/documents', wrap(async (req, res) => {
       });
   const title = String(req.body.title || '无标题').slice(0, DOC_TITLE_MAX_LENGTH);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
+  const titleOrigin = isUntitledTitle(title) ? 'untitled' : 'manual';
   const info = await db.execute(
-    'INSERT INTO documents (title, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6)',
-    [title, content, now, now, req.user.id, folderId]
+    'INSERT INTO documents (title, title_origin, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [title, titleOrigin, content, now, now, req.user.id, folderId]
   );
   res.json({ id: info.insertId });
 }));
@@ -716,6 +731,8 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
   const title = String(req.body.title || '').slice(0, DOC_TITLE_MAX_LENGTH);
   const content = String(req.body.content || '').slice(0, DOC_MAX_BYTES);
   const docId = req.params.id;
+  const requestedTitleOrigin = String(req.body && req.body.title_origin || '');
+  const titleOrigin = isUntitledTitle(title) ? 'untitled' : (requestedTitleOrigin === 'auto' ? 'auto' : 'manual');
   const userId = req.user.id;
 
   // 读取旧内容 + UPDATE + 版本号回查放在同一事务内，避免 TOCTOU：
@@ -736,8 +753,8 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
       }
 
       const info = await tx.execute(
-        'UPDATE documents SET title = $1, content = $2, updated_at = $3, version = version + 1 WHERE id = $4 AND user_id = $5',
-        [title, content, now, docId, userId]
+        'UPDATE documents SET title = $1, title_origin = $2, content = $3, updated_at = $4, version = version + 1 WHERE id = $5 AND user_id = $6',
+        [title, titleOrigin, content, now, docId, userId]
       );
       if (info.changes === 0) throw new Error('NOT_FOUND');
       // 回查最新版本号，回传给客户端用于多端同步判断
@@ -1032,6 +1049,12 @@ function sanitizeAiHtmlFragment(html) {
 app.get('/api/ai/status', (req, res) => {
   res.json({ configured: ai.configured(), model: process.env.AI_MODEL || 'deepseek-chat' });
 });
+
+registerAutoTitleRoutes({
+  app, db, auth, ai, aiLimiter, autoTitle, stripHtml,
+  titleMaxLength: DOC_TITLE_MAX_LENGTH
+});
+
 
 /* ---------- AI 自定义预设（按用户绑定） ---------- */
 app.get('/api/ai/presets', wrap(async (req, res) => {

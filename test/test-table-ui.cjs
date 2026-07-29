@@ -114,8 +114,61 @@ async function run() {
       marker: pasted.getAttribute('data-pm-table')
     };
 
+    editor.setHTML('<p><br></p>');
+    const largeText = ('第一行文字\\n第二行文字\\n').repeat(24000);
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: { items: [], getData: (type) => type === 'text/plain' ? largeText : '' }
+    });
+    const pasteStartedAt = performance.now();
+    document.querySelector('#editor').dispatchEvent(pasteEvent);
+    const pasteElapsedMs = performance.now() - pasteStartedAt;
+    const largeNode = document.querySelector('#editor .pm-plain-text-paste');
+    const largePlainPaste = {
+      prevented: pasteEvent.defaultPrevented,
+      preserved: !!largeNode && largeNode.textContent === largeText,
+      textNodes: largeNode ? Array.from(largeNode.childNodes).filter(node => node.nodeType === Node.TEXT_NODE).length : 0,
+      lineBreaks: largeNode ? (largeNode.textContent.match(/\\n/g) || []).length : 0,
+      nestedBlocks: document.querySelectorAll('#editor .pm-plain-text-paste p, #editor .pm-plain-text-paste div, #editor .pm-plain-text-paste br').length,
+      elapsedMs: pasteElapsedMs
+    };
+
+    // Regression: AI starts on “原文”, the user types “1” while it waits,
+    // then the suggestion replaces only the original selection. One undo must
+    // restore 原文1; redo must restore 文言文1.
+    editor.setHTML('<p>原文</p>');
+    const rewriteNode = document.querySelector('#editor p').firstChild;
+    const rewriteRange = document.createRange();
+    rewriteRange.setStart(rewriteNode, 0);
+    rewriteRange.setEnd(rewriteNode, rewriteNode.nodeValue.length);
+    const rewriteSelection = window.getSelection();
+    rewriteSelection.removeAllRanges();
+    rewriteSelection.addRange(rewriteRange);
+    const laterInput = document.createRange();
+    laterInput.setStart(rewriteNode, rewriteNode.nodeValue.length);
+    laterInput.collapse(true);
+    rewriteSelection.removeAllRanges();
+    rewriteSelection.addRange(laterInput);
+    document.execCommand('insertText', false, '1');
+    rewriteSelection.removeAllRanges();
+    rewriteSelection.addRange(rewriteRange);
+    document.execCommand('insertHTML', false, '文言文');
+    const rewriteApplied = document.querySelector('#editor').innerText;
+    const nativeUndoOk = editor.undo();
+    const rewriteUndone = document.querySelector('#editor').innerText;
+    const nativeRedoOk = editor.redo();
+    const rewriteRedone = document.querySelector('#editor').innerText;
+    const rewriteUndo = {
+      trackedSource: rewriteRange.toString(),
+      applied: rewriteApplied,
+      undone: rewriteUndone,
+      redone: rewriteRedone,
+      nativeUndoOk,
+      nativeRedoOk
+    };
+
     return { initial, handles, resizeResult, rightEdgeResult, selected, mergedOk, merged, undoOk, undoCells, redoOk, redoColspan,
-      splitOk, splitCells, colors, widths, serialized, normalizedPaste };
+      splitOk, splitCells, colors, widths, serialized, normalizedPaste, largePlainPaste, rewriteUndo };
   })()`);
 
   check('插入 3×3 表格', result.initial.rows === 3 && result.initial.cols === 3, JSON.stringify(result.initial));
@@ -137,6 +190,8 @@ async function run() {
   check('均分列宽', Math.max(...numericWidths) - Math.min(...numericWidths) <= 0.002, JSON.stringify(result.widths));
   check('序列化不保存临时选中类', !/pm-table-cell-(?:active|selected)/.test(result.serialized));
   check('外部表格载入后立即标准化', result.normalizedPaste.cols === 2 && result.normalizedPaste.marker === '1', JSON.stringify(result.normalizedPaste));
+  check('大纯文本粘贴保留换行且不拆成海量 DOM 节点', result.largePlainPaste.prevented && result.largePlainPaste.preserved && result.largePlainPaste.textNodes === 1 && result.largePlainPaste.lineBreaks > 1000 && result.largePlainPaste.nestedBlocks === 0, JSON.stringify(result.largePlainPaste));
+  check('AI 改写在等待期间继续输入后，撤销只恢复原选区', result.rewriteUndo.trackedSource === '' && result.rewriteUndo.applied === '文言文1' && result.rewriteUndo.undone === '原文1' && result.rewriteUndo.redone === '文言文1' && result.rewriteUndo.nativeUndoOk && result.rewriteUndo.nativeRedoOk, JSON.stringify(result.rewriteUndo));
 
   win.destroy();
   console.log(`\n表格 DOM 集成测试：通过 ${passed}，失败 ${failed}`);

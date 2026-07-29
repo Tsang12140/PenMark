@@ -133,6 +133,26 @@ async function main() {
     check('真正的跨域写请求仍被拒绝', rejectedCreate.status === 403,
       'status=' + rejectedCreate.status + ' body=' + JSON.stringify(rejectedCreate.json));
 
+    // Automatic titles are admin-only and applying one must not change updated_at.
+    const autoSetting = await request(port, 'GET', '/api/admin/auto-title-settings', null, adminCookie);
+    check('Auto-title setting is readable by admin', autoSetting.status === 200 && autoSetting.json && autoSetting.json.enabled === false);
+    const autoEnable = await request(port, 'PUT', '/api/admin/auto-title-settings', { enabled: true }, adminCookie);
+    check('Admin can enable automatic titles', autoEnable.status === 200 && autoEnable.json && autoEnable.json.enabled === true);
+    const autoDocCreate = await request(port, 'POST', '/api/documents', {
+      title: '', content: '<p>this document has more than forty characters for an automatic title test</p>'
+    }, adminCookie);
+    const autoDocId = autoDocCreate.json && autoDocCreate.json.id;
+    const autoDocBefore = await request(port, 'GET', '/api/documents/' + autoDocId, null, adminCookie);
+    check('Untitled admin document is auto-title eligible', autoDocBefore.status === 200 && autoDocBefore.json && autoDocBefore.json.title_origin === 'untitled');
+    const testDb = require('../database');
+    await testDb.execute('UPDATE documents SET auto_title_attempted_at = $1 WHERE id = $2', [Date.now(), autoDocId]);
+    const autoApply = await request(port, 'PUT', '/api/documents/' + autoDocId + '/auto-title', {
+      title: 'Automatic title test', version: autoDocBefore.json.version
+    }, adminCookie);
+    const autoDocAfter = await request(port, 'GET', '/api/documents/' + autoDocId, null, adminCookie);
+    check('Automatic title applies with a version predicate', autoApply.status === 200 && autoDocAfter.json && autoDocAfter.json.title_origin === 'auto');
+    check('Automatic title keeps document list order timestamp', autoDocAfter.json && autoDocAfter.json.updated_at === autoDocBefore.json.updated_at);
+
     // 无 Cookie 访问 /api/auth/me
     const noCookieMe = await request(port, 'GET', '/api/auth/me');
     check('无 Cookie 访问 /api/auth/me 返回 401', noCookieMe.status === 401);
@@ -161,6 +181,10 @@ async function main() {
     check('用户 A 注册成功', regA.status === 200, 'status=' + regA.status + ' body=' + JSON.stringify(regA.json));
     check('注册返回 Cookie', !!regA.setCookie);
     const cookieA = regA.setCookie;
+    const autoSettingAsUser = await request(port, 'GET', '/api/admin/auto-title-settings', null, cookieA);
+    check('Non-admin cannot access automatic-title setting', autoSettingAsUser.status === 403);
+    const manualTitleAsUser = await request(port, 'POST', '/api/ai/suggest-title', { docId: autoDocId, version: 1 }, cookieA);
+    check('Non-admin cannot request an AI title suggestion', manualTitleAsUser.status === 403);
 
     // 注册用户 B
     const regB = await request(port, 'POST', '/api/auth/register', {

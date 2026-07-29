@@ -8,7 +8,14 @@ const editorWrap = $('editorWrap');
 const docListEl = $('docList');
 const docTitleEl = $('docTitle');
 const docTitleOverflow = $('docTitleOverflow');
+const docTitleAiWrap = $('docTitleAiWrap');
+const docTitleAiBtn = $('docTitleAi');
+const docTitleSuggestion = $('docTitleSuggestion');
+const docTitleSuggestionText = $('docTitleSuggestionText');
+const docTitleSuggestionUse = $('docTitleSuggestionUse');
+const docTitleSuggestionRetry = $('docTitleSuggestionRetry');
 const TITLE_MAX = 100; // 标题最大字数（与 input maxlength、粘贴截断一致，防止超长内容撑爆标题栏）
+const DEFAULT_UNTITLED_TITLE = String.fromCharCode(0x65e0, 0x6807, 0x9898);
 const searchInput = $('searchInput');
 docTitleEl.placeholder = '\u8f93\u5165\u6807\u9898';
 docTitleEl.setAttribute('aria-label', '\u6587\u6863\u6807\u9898');
@@ -28,6 +35,18 @@ const aiModalClose = $('aiModalClose');
 let currentDoc = null;
 let saveTimer = null;
 let editorHydrating = false;
+const AUTO_TITLE_IDLE_MS = 2 * 60 * 1000;
+const AUTO_TITLE_PAGE_IDLE_MS = 1500;
+let autoTitleEnabled = false;
+let autoTitleTimer = null;
+let autoTitleAbortController = null;
+let autoTitleApplyAbortController = null;
+let autoTitleLastActivityAt = Date.now();
+let autoTitleRun = 0;
+let manualTitleAbortController = null;
+let manualTitleRun = 0;
+let manualTitleSuggestion = '';
+
 
 // A small in-memory LRU makes repeatedly opened documents switch instantly.
 const docCache = new Map();
@@ -44,7 +63,9 @@ function cacheDoc(doc) {
     folder_id: doc.folder_id || null,
     created_at: doc.created_at,
     updated_at: doc.updated_at,
-    version: doc.version || 1
+    version: doc.version || 1,
+    title_origin: doc.title_origin || null,
+    auto_title_attempted_at: doc.auto_title_attempted_at || null,
   });
   while (docCache.size > DOC_CACHE_LIMIT) docCache.delete(docCache.keys().next().value);
 }
@@ -457,13 +478,26 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ---------- 编辑器 ---------- */
+// AI 请求返回时用它判断用户是否已继续写作；不参与输入、保存或渲染热路径。
+let editorContentVersion = 0;
+
 const editor = new Editor({
   editor: editorEl,
   dropOverlay,
-  onUpdate: () => {
+  onUpdate: (change) => {
     if (editorHydrating) return;
+    editorContentVersion += 1;
+    // 气泡只代表刚刚那次 AI 替换；后来再编辑时不能让它撤销错对象。
+    if (aiUndoBubble) hideAiUndoBubble();
     lastEditedAt = Date.now();
     if (currentDoc) currentDoc._dirty = true;
+    noteAutoTitleContentChange();
+    if (change && change.largePlainTextPaste) {
+      // Let the browser paint the pasted text before nonessential full-document
+      // scans and serialization. Subsequent typing still resets normal saves.
+      updateStats(1200); scheduleAutoSave(1600); updateOutline(false, 1500);
+      return;
+    }
     updateStats(); scheduleAutoSave(); updateOutline();
   },
   onToast: toast,
@@ -472,6 +506,10 @@ const editor = new Editor({
   onImageSelect: (container) => updateImageFloatMenu(container)
 });
 setupImagePreview(editorEl, '.img-container img');
+
+if (docTitleAiBtn) docTitleAiBtn.addEventListener('click', requestManualTitleSuggestion);
+if (docTitleSuggestionUse) docTitleSuggestionUse.addEventListener('click', applyManualTitleSuggestion);
+if (docTitleSuggestionRetry) docTitleSuggestionRetry.addEventListener('click', requestManualTitleSuggestion);
 
 /* ---------- 工具栏 ---------- */
 $('toolbar').addEventListener('click', (e) => {
@@ -1426,22 +1464,224 @@ editorEl.addEventListener('dblclick', (e) => {
 // 不加 debounce 会让长文档输入肉眼可见地卡顿（违反铁律：普通输入不得被重排阻塞）。
 // 250ms debounce 与 updateOutline 对齐；停止输入后立即刷新一次。
 let _statsTimer = null;
-function updateStats() {
-  if (_statsTimer) return;
+let _statsDelay = 0;
+function updateStats(delay) {
+  const wait = Number.isFinite(delay) ? Math.max(0, delay) : 250;
+  if (_statsTimer) {
+    // A large paste must be allowed to paint before the pending normal scan.
+    if (wait <= _statsDelay) return;
+    clearTimeout(_statsTimer);
+  }
+  _statsDelay = wait;
   _statsTimer = setTimeout(() => {
     _statsTimer = null;
+    _statsDelay = 0;
     const s = editor.getStats();
     charCountEl.textContent = s.chars;
     imgCountEl.textContent = s.imgs;
-  }, 250);
+  }, wait);
+}
+function autoTitleIsEligible(doc) {
+  return !!(currentUser && currentUser.isAdmin && autoTitleEnabled && doc &&
+    !doc._pending && doc.title_origin === 'untitled' && !doc.auto_title_attempted_at);
 }
 
+function cancelAutoTitleWork() {
+  if (autoTitleTimer) { clearTimeout(autoTitleTimer); autoTitleTimer = null; }
+  if (autoTitleAbortController) { try { autoTitleAbortController.abort(); } catch (_) {} autoTitleAbortController = null; }
+  if (autoTitleApplyAbortController) { try { autoTitleApplyAbortController.abort(); } catch (_) {} autoTitleApplyAbortController = null; }
+  autoTitleRun += 1;
+}
+
+function deferAutoTitleRun(docId, run, delay) {
+  if (autoTitleTimer) clearTimeout(autoTitleTimer);
+  autoTitleTimer = setTimeout(() => runAutoTitleWhenIdle(docId, run), delay);
+}
+
+function noteAutoTitlePageActivity() {
+  autoTitleLastActivityAt = Date.now();
+}
+function scheduleAutoTitleForCurrentDoc() {
+  const doc = currentDoc;
+  if (!autoTitleIsEligible(doc)) return;
+  if (autoTitleTimer) clearTimeout(autoTitleTimer);
+  const run = ++autoTitleRun;
+  autoTitleTimer = setTimeout(() => runAutoTitleWhenIdle(doc.id, run), AUTO_TITLE_IDLE_MS);
+}
+
+function noteAutoTitleContentChange() {
+  noteAutoTitlePageActivity();
+  cancelAutoTitleWork();
+  scheduleAutoTitleForCurrentDoc();
+}
+
+function syncManualTitleButton() {
+  if (!docTitleAiWrap || !docTitleAiBtn) return;
+  const isAdmin = !!(currentUser && currentUser.isAdmin);
+  docTitleAiWrap.hidden = !isAdmin;
+  docTitleAiBtn.disabled = !isAdmin || !currentDoc || !!currentDoc._pending || !!manualTitleAbortController;
+}
+
+function hideManualTitleSuggestion() {
+  manualTitleSuggestion = '';
+  if (docTitleSuggestion) docTitleSuggestion.hidden = true;
+}
+
+function cancelManualTitleSuggestion() {
+  manualTitleRun += 1;
+  if (manualTitleAbortController) {
+    try { manualTitleAbortController.abort(); } catch (_) {}
+    manualTitleAbortController = null;
+  }
+  if (docTitleAiBtn) docTitleAiBtn.classList.remove('loading');
+  hideManualTitleSuggestion();
+  syncManualTitleButton();
+}
+
+function showManualTitleSuggestion(title) {
+  manualTitleSuggestion = String(title || '').trim();
+  if (!manualTitleSuggestion || !docTitleSuggestion || !docTitleSuggestionText) return;
+  docTitleSuggestionText.textContent = manualTitleSuggestion;
+  docTitleSuggestion.hidden = false;
+}
+
+async function requestManualTitleSuggestion() {
+  const doc = currentDoc;
+  if (!currentUser || !currentUser.isAdmin || !doc) return;
+  if (doc._pending) { toast('文档正在创建，请稍候再试'); return; }
+  if (manualTitleAbortController) return;
+  hideManualTitleSuggestion();
+  const run = ++manualTitleRun;
+
+  // The click is deliberate, so save first and let the server read the exact
+  // document version. Normal typing and document switching never wait here.
+  if (doc._dirty) {
+    await saveCurrent({ reorder: false });
+    if (run !== manualTitleRun || currentDoc !== doc) return;
+    if (doc._dirty) { toast('正文尚未保存，请稍候再试'); return; }
+  }
+  const version = doc.version;
+  const controller = new AbortController();
+  manualTitleAbortController = controller;
+  docTitleAiBtn.classList.add('loading');
+  syncManualTitleButton();
+  try {
+    const result = await api('/api/ai/suggest-title', 'POST', { docId: doc.id, version }, { signal: controller.signal });
+    if (run !== manualTitleRun || currentDoc !== doc || doc.version !== version || doc._dirty) return;
+    if (result.status === 'below_minimum') {
+      toast('正文至少写够 ' + (result.minimumChars || 40) + ' 个字后再拟标题');
+      return;
+    }
+    if (result.status !== 'ok' || !result.title) {
+      toast('这篇内容暂时不适合拟标题');
+      return;
+    }
+    showManualTitleSuggestion(result.title);
+  } catch (e) {
+    if (controller.signal.aborted) return;
+    const message = String(e && e.message || '');
+    if (message.includes('busy')) toast('AI 正在拟其他标题，请稍候再试');
+    else toast('AI 拟标题失败：' + (message || '请稍后重试'));
+  } finally {
+    if (manualTitleAbortController === controller) manualTitleAbortController = null;
+    if (docTitleAiBtn) docTitleAiBtn.classList.remove('loading');
+    syncManualTitleButton();
+  }
+}
+
+function applyManualTitleSuggestion() {
+  const title = String(manualTitleSuggestion || '').trim();
+  if (!title || !currentDoc) return;
+  setDocTitle(title);
+  currentDoc.title = title;
+  currentDoc.title_origin = 'manual';
+  currentDoc._dirty = true;
+  lastEditedAt = Date.now();
+  cancelAutoTitleWork();
+  cacheDoc(currentDoc);
+  updateListItem(currentDoc, { reorder: false });
+  updateDocumentTitle(title);
+  hideManualTitleSuggestion();
+  scheduleAutoSave();
+  docTitleEl.focus();
+  docTitleEl.select();
+  toast('已采用 AI 建议标题');
+}
+
+function runAutoTitleWhenIdle(docId, run) {
+  autoTitleTimer = null;
+  if (run !== autoTitleRun || !currentDoc || currentDoc.id !== docId || !autoTitleIsEligible(currentDoc)) return;
+  const pageWait = AUTO_TITLE_PAGE_IDLE_MS - (Date.now() - autoTitleLastActivityAt);
+  if (pageWait > 0) return deferAutoTitleRun(docId, run, pageWait);
+  // The regular save remains the only write on the edit path. Wait for it instead
+  // of reading editor text or sending unsaved content to the server.
+  if (currentDoc._dirty) return deferAutoTitleRun(docId, run, 1500);
+  const request = () => requestAutoTitle(docId, run);
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(request, { timeout: 1000 });
+  else setTimeout(request, 0);
+}
+
+async function requestAutoTitle(docId, run) {
+  if (run !== autoTitleRun || !currentDoc || currentDoc.id !== docId || !autoTitleIsEligible(currentDoc)) return;
+  const version = currentDoc.version;
+  const controller = new AbortController();
+  autoTitleAbortController = controller;
+  try {
+    const result = await api('/api/ai/auto-title', 'POST', { docId, version }, { signal: controller.signal });
+    if (run !== autoTitleRun || !currentDoc || currentDoc.id !== docId) return;
+    if (result.status === 'below_minimum') return;
+    // The server has claimed the one permitted attempt before contacting the model.
+    currentDoc.auto_title_attempted_at = Date.now();
+    cacheDoc(currentDoc);
+    if (result.status !== 'ok' || !result.title || currentDoc.version !== version) return;
+    await applyAutoTitle(docId, version, result.title, run);
+  } catch (e) {
+    if (controller.signal.aborted) return;
+    // Another document may be using the sole server-side title slot. This is a
+    // harmless deferred retry, not another model invocation for this document.
+    if (String(e && e.message || '').includes('busy')) deferAutoTitleRun(docId, run, 30000);
+  } finally {
+    if (autoTitleAbortController === controller) autoTitleAbortController = null;
+  }
+}
+
+async function applyAutoTitle(docId, version, title, run) {
+  if (run !== autoTitleRun || !currentDoc || currentDoc.id !== docId || currentDoc.title_origin !== 'untitled' || currentDoc.version !== version) return;
+  if (document.activeElement === docTitleEl) return;
+  const controller = new AbortController();
+  autoTitleApplyAbortController = controller;
+  try {
+    const saved = await api('/api/documents/' + docId + '/auto-title', 'PUT', { title, version }, { signal: controller.signal });
+    if (run !== autoTitleRun || !currentDoc || currentDoc.id !== docId) return;
+    currentDoc.title = saved.title;
+    currentDoc.title_origin = saved.title_origin;
+    currentDoc.auto_title_attempted_at = saved.auto_title_attempted_at;
+    currentDoc.version = saved.version;
+    // Do not call saveCurrent or refresh the sidebar: this metadata update must
+    // preserve updated_at and the article's existing place in the document list.
+    setDocTitle(saved.title);
+    updateDocumentTitle(saved.title);
+    cacheDoc(currentDoc);
+    updateListItem(currentDoc, { reorder: false });
+  } catch (e) {
+    // A local edit or switch makes the expected version fail; that is intentional.
+  } finally {
+    if (autoTitleApplyAbortController === controller) autoTitleApplyAbortController = null;
+  }
+}
+
+document.addEventListener('pointerdown', noteAutoTitlePageActivity, true);
+document.addEventListener('keydown', noteAutoTitlePageActivity, true);
+document.addEventListener('selectionchange', noteAutoTitlePageActivity);
+document.addEventListener('scroll', noteAutoTitlePageActivity, true);
+
+
 /* ---------- 自动保存 ---------- */
-function scheduleAutoSave() {
+function scheduleAutoSave(delay) {
   if (switching || !currentDoc) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveStateEl.textContent = '编辑中…';
-  saveTimer = setTimeout(saveCurrent, 1000);
+  saveTimer = setTimeout(saveCurrent, Number.isFinite(delay) ? Math.max(0, delay) : 1000);
 }
 
 async function saveCurrent(opts) {
@@ -1455,8 +1695,9 @@ async function saveCurrent(opts) {
   stripAiFlashMarks(editorEl);
   const content = replaceUploadedSources(editor.getHTML(), currentDoc._assetReplacements);
   try {
-    const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content });
+    const res = await api('/api/documents/' + currentDoc.id, 'PUT', { title, content, title_origin: currentDoc.title_origin });
     currentDoc.title = title;
+    currentDoc.title_origin = title === DEFAULT_UNTITLED_TITLE ? 'untitled' : 'manual';
     currentDoc.content = content;
     const now = (res && res.updated_at) || Date.now();
     currentDoc.updated_at = now;
@@ -1487,8 +1728,9 @@ function saveDocInBackground(doc, title, html) {
     return;
   }
   html = replaceUploadedSources(html, doc._assetReplacements);
-  api('/api/documents/' + doc.id, 'PUT', { title, content: html }).then(res => {
+  api('/api/documents/' + doc.id, 'PUT', { title, content: html, title_origin: doc.title_origin }).then(res => {
     doc.title = title;
+    doc.title_origin = title === DEFAULT_UNTITLED_TITLE ? 'untitled' : 'manual';
     doc.content = html;
     doc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') doc.version = res.version;
@@ -1962,6 +2204,8 @@ function showMoveMenu(doc, anchor) {
 }
 
 async function newDocInFolder(folderId) {
+  cancelAutoTitleWork();
+  cancelManualTitleSuggestion();
   saveCurrentInBackground(); // 旧文档后台保存，不阻塞新建
   switching = true;
   // 关闭 AI 弹窗：预览属于旧文档，避免应用到新文档
@@ -1969,6 +2213,7 @@ async function newDocInFolder(folderId) {
   if (aiChatAbortController) { try { aiChatAbortController.abort(); } catch (_) {} aiChatAbortController = null; aiPanelThinking = false; setAiSendButtonMode('send'); }
   // 乐观创建：先在本地立即可写，后台再落库（第一铁律：新建 < 100ms）
   currentDoc = { id: 'local-' + Date.now(), title: '无标题', content: '', updated_at: Date.now(), folder_id: folderId, version: 1, _pending: true };
+  syncManualTitleButton();
   expandedFolders.add(folderId);
   persistExpanded();
   setDocTitle('');
@@ -1984,9 +2229,12 @@ async function newDocInFolder(folderId) {
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '', folder_id: folderId });
     currentDoc.id = res.id;
+    currentDoc.title_origin = 'untitled';
     currentDoc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') currentDoc.version = res.version;
     delete currentDoc._pending;
+    syncManualTitleButton();
+    scheduleAutoTitleForCurrentDoc();
     updateDocumentTitle('无标题');
     // 落库期间若用户已输入，flush 一次保存
     if (currentDoc._pendingSave) { delete currentDoc._pendingSave; saveCurrent(); }
@@ -2152,12 +2400,14 @@ async function deleteFolder(folder) {
 
 async function openDoc(id) {
   // 切换中又点了别的文档：记下最新意图，前序完成后切到它，避免并发 openDoc 互踩
-  if (switching) { pendingSwitchId = id; return; }
+  if (switching) { cancelAutoTitleWork(); cancelManualTitleSuggestion(); pendingSwitchId = id; return; }
   if (currentDoc && currentDoc.id === id) {
     // 已是当前文档：仅确保移动端切到编辑器视图
     enterMobileEditor();
     return;
   }
+  cancelAutoTitleWork();
+  cancelManualTitleSuggestion();
   // 旧文档快照后后台保存，不阻塞切换（第一铁律：切换 < 200ms）
   saveCurrentInBackground();
   switching = true;
@@ -2173,6 +2423,7 @@ async function openDoc(id) {
     const doc = readCachedDoc(id) || await api('/api/documents/' + id);
     currentDoc = doc;
     currentDoc._dirty = false;
+    syncManualTitleButton();
     setDocTitle(doc.title === '无标题' ? '' : doc.title);
     setEditorHTML(doc.content || '');
     // 兜底清理历史脏数据：旧版本可能把 AI 改写的 <mark class="ai-flash"> 存进了数据库
@@ -2182,6 +2433,7 @@ async function openDoc(id) {
     });
     saveStateEl.textContent = '已加载';
     cacheDoc(doc);
+    scheduleAutoTitleForCurrentDoc();
     refreshToolbar();
     updateDocumentTitle(doc.title);
     enterMobileEditor();
@@ -2222,10 +2474,13 @@ async function openDoc(id) {
 }
 
 async function newDoc() {
+  cancelAutoTitleWork();
+  cancelManualTitleSuggestion();
   saveCurrentInBackground(); // 旧文档后台保存，不阻塞新建
   switching = true;
   // 乐观创建：先在本地立即可写，后台再落库（第一铁律：新建 < 100ms）
   currentDoc = { id: 'local-' + Date.now(), title: '无标题', content: '', updated_at: Date.now(), version: 1, _pending: true };
+  syncManualTitleButton();
   setDocTitle('');
   editor.clear();
   saveStateEl.textContent = '新文档';
@@ -2239,9 +2494,12 @@ async function newDoc() {
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '' });
     currentDoc.id = res.id;
+    currentDoc.title_origin = 'untitled';
     currentDoc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') currentDoc.version = res.version;
     delete currentDoc._pending;
+    syncManualTitleButton();
+    scheduleAutoTitleForCurrentDoc();
     updateDocumentTitle('无标题');
     // 落库期间若用户已输入，flush 一次保存
     if (currentDoc._pendingSave) { delete currentDoc._pendingSave; saveCurrent(); }
@@ -2282,6 +2540,9 @@ async function confirmDelete(doc) {
 
 /* ---------- 标题 ---------- */
 docTitleEl.addEventListener('input', () => {
+  hideManualTitleSuggestion();
+  if (currentDoc) currentDoc.title_origin = 'manual';
+  cancelAutoTitleWork();
   // 防御：IME 组字、拖拽入栏、历史数据回填可能突破 maxlength，实时截断
   if (docTitleEl.value.length > TITLE_MAX) {
     docTitleEl.value = docTitleEl.value.slice(0, TITLE_MAX);
@@ -2385,6 +2646,8 @@ docTitleEl.addEventListener('paste', (e) => {
 
   // 设置标题
   setDocTitle(firstText);
+  if (currentDoc) currentDoc.title_origin = 'manual';
+  cancelAutoTitleWork();
   updateDocumentTitle(firstText);
   scheduleAutoSave();
 
@@ -2954,6 +3217,7 @@ function closeAiModal() {
   if (aiModal) aiModal.hidden = true;
   pendingAiLayoutHtml = '';
   pendingAiRewriteText = '';
+  pendingAiRewrite = null;
 }
 
 if (aiModalClose) aiModalClose.addEventListener('click', closeAiModal);
@@ -3332,14 +3596,77 @@ function saveAiSelection() {
   return sel.toString();
 }
 
-function restoreAiSelection() {
-  if (!savedAiRange) return false;
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(savedAiRange);
-  return true;
+function restoreAiSelection(range) {
+  const targetRange = range || savedAiRange;
+  if (!targetRange) return false;
+  try {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(targetRange);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
+function rangeToHtml(range) {
+  try {
+    const holder = document.createElement('div');
+    holder.appendChild(range.cloneContents());
+    return holder.innerHTML;
+  } catch (_) {
+    return null;
+  }
+}
+
+// AI 返回是异步的。目标 Range 必须独立保存，不能依赖会随新选区变化的 savedAiRange。
+function captureAiRewriteTarget(selectedText) {
+  if (!currentDoc || !currentDoc.id || !savedAiRange) return null;
+  const range = savedAiRange.cloneRange();
+  const sourceHtml = rangeToHtml(range);
+  if (sourceHtml == null) return null;
+  return {
+    docId: currentDoc.id,
+    range,
+    sourceHtml,
+    selectedText: selectedText || range.toString(),
+    contextText: getDocumentContextText(),
+    editorVersion: editorContentVersion,
+    replacement: ''
+  };
+}
+
+function aiRewriteTargetIsCurrent(transaction) {
+  if (!transaction || !transaction.range || !currentDoc || currentDoc.id !== transaction.docId) return false;
+  try {
+    if (!editorEl.contains(transaction.range.commonAncestorContainer)) return false;
+    return transaction.range.toString() === transaction.selectedText &&
+      rangeToHtml(transaction.range) === transaction.sourceHtml;
+  } catch (_) {
+    return false;
+  }
+}
+
+function applyAiRewriteTransaction(transaction) {
+  if (!transaction || !transaction.replacement) return false;
+  if (!aiRewriteTargetIsCurrent(transaction)) {
+    toast('原选区已改动，AI 建议未替换；请重新生成');
+    return false;
+  }
+  if (!restoreAiSelection(transaction.range)) {
+    toast('未能恢复原选区，请重新生成');
+    return false;
+  }
+  // 浏览器原生的单次“替换选区”操作，Ctrl/⌘+Z 会完整恢复原文并保持重做链。
+  const inserted = document.execCommand('insertHTML', false, textToEditorHtml(transaction.replacement));
+  if (!inserted) {
+    toast('未能应用 AI 建议，请重试');
+    return false;
+  }
+  markEditorChanged();
+  showAiUndoBubble();
+  return true;
+}
 /* AI 选区视觉保持：用 CSS Custom Highlight API 给 savedAiRange 加半透明高亮，
    这样点击 AI 输入框后虽然浏览器原生选区高亮消失，但视觉上仍能看到选区范围。
    不破坏 DOM，不影响编辑器内容。 */
@@ -3685,20 +4012,24 @@ function applyAiLayoutResult() {
 
 function openAiRewriteModal() {
   const selectedText = saveAiSelection();
-  if (!selectedText.trim()) { toast('\u8bf7\u5148\u9009\u4e2d\u8981\u5904\u7406\u7684\u6587\u5b57'); return; }
+  if (!selectedText.trim()) { toast('请先选中要处理的文字'); return; }
+  const transaction = captureAiRewriteTarget(selectedText);
+  if (!transaction) { toast('选区已变化，请重新选中'); return; }
+  pendingAiRewriteText = '';
+  pendingAiRewrite = null;
   const presetHtml = AI_REWRITE_PRESETS.map((p, i) =>
     '<button class="ai-preset" data-rewrite-preset="' + i + '">' + p.label + '</button>'
   ).join('');
-  openAiModal('AI \u6539\u9009\u533a',
+  openAiModal('AI 改选区',
     '<div class="ai-modal-panel" id="aiRewritePanel">' +
-      '<div class="ai-note">AI \u4f1a\u8bfb\u53d6\u5168\u6587\u4f5c\u4e3a\u80cc\u666f\uff0c\u4f46\u53ea\u66ff\u6362\u4f60\u9009\u4e2d\u7684\u8fd9\u6bb5\u3002</div>' +
+      '<div class="ai-note">AI 会读取全文作为背景，但只替换你选中的这段。等待期间继续写作也不会被自动覆盖。</div>' +
       '<div class="ai-preset-row">' + presetHtml + '</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
-      '<div class="ai-field"><label>\u6307\u4ee4</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="\u8f93\u5165\u5bf9\u9009\u4e2d\u6587\u5b57\u7684\u5904\u7406\u8981\u6c42\uff0c\u6216\u70b9\u4e0a\u65b9\u9884\u8bbe\u5957\u7528\u53c2\u8003\u6307\u4ee4"></textarea></div>' +
-      '<div class="ai-preview empty" id="aiRewritePreview">\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d\u5148\u770b\u6548\u679c\uff1b\u6216\u76f4\u63a5\u70b9\u300c\u5e94\u7528\u300d\u4e00\u952e\u751f\u6210\u5e76\u66ff\u6362\uff08\u53ef\u64a4\u9500\uff09</div>' +
+      '<div class="ai-field"><label>指令</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="输入对选中文字的处理要求，或点上方预设套用参考指令"></textarea></div>' +
+      '<div class="ai-preview empty" id="aiRewritePreview">先生成建议，确认后才会替换选区</div>' +
       '<div class="ai-actions">' +
-        '<button class="ai-action" id="aiRewriteRun" disabled>\u751f\u6210\u9884\u89c8</button>' +
-        '<button class="ai-action" id="aiRewriteApply">\u5e94\u7528</button>' +
+        '<button class="ai-action" id="aiRewriteRun" disabled>生成预览</button>' +
+        '<button class="ai-action" id="aiRewriteApply" disabled>应用改写</button>' +
       '</div>' +
     '</div>');
   const input = $('aiRewriteInstruction');
@@ -3707,7 +4038,6 @@ function openAiRewriteModal() {
   let aiReady = false;
   input.value = '';
   input.focus();
-  // 输入框为空时禁用「生成预览」，引导用户先写指令
   const updateRunBtn = () => { runBtn.disabled = !(aiReady && input.value.trim().length > 0); };
   input.addEventListener('input', updateRunBtn);
   aiModalBody.querySelectorAll('[data-rewrite-preset]').forEach(btn => {
@@ -3717,45 +4047,71 @@ function openAiRewriteModal() {
       updateRunBtn();
     });
   });
-  runBtn.addEventListener('click', () => runAiRewrite(selectedText));
-  applyBtn.addEventListener('click', () => applyAiRewriteResult(selectedText));
+  runBtn.addEventListener('click', () => runAiRewrite(transaction));
+  applyBtn.addEventListener('click', applyAiRewriteResult);
   runBtn.disabled = true;
   refreshAiStatus('aiRewriteRun').then(ok => { aiReady = ok; updateRunBtn(); });
 }
 
-let _aiRewriteRunning = false; // AI 改写重入守卫，防止"停止"按钮触发新请求
-async function runAiRewrite(selectedText) {
-  // "停止"按钮和"生成预览"共用同一 runBtn：处理中再点会同时触发 abort（旧请求）
-  // 和 runAiRewrite（新请求），导致用户点停止反而启动了新请求。重入守卫拦截此场景。
+let pendingAiRewrite = null;
+let _aiRewriteRunning = false; // 防止“停止”按钮在中止旧请求时又触发新请求
+async function runAiRewrite(transaction) {
   if (_aiRewriteRunning) return;
   _aiRewriteRunning = true;
   const runBtn = $('aiRewriteRun');
   const applyBtn = $('aiRewriteApply');
   const preview = $('aiRewritePreview');
-  const instruction = $('aiRewriteInstruction').value.trim();
+  const instructionEl = $('aiRewriteInstruction');
+  if (!runBtn || !applyBtn || !preview || !instructionEl) { _aiRewriteRunning = false; return; }
+  const instruction = instructionEl.value.trim();
+  if (!instruction) { toast('请输入指令'); _aiRewriteRunning = false; return; }
+  pendingAiRewriteText = '';
+  pendingAiRewrite = null;
+  const oldNote = $('aiRewriteChangedNote');
+  if (oldNote) oldNote.remove();
   preview.classList.add('empty');
   preview.textContent = '正在处理，稍等一下...';
-  // 重新生成预览时，应用按钮先回到弱色，生成成功后再变强调色
+  applyBtn.disabled = true;
   applyBtn.classList.remove('primary');
-  // 创建 AbortController 支持用户取消（AI 改写最长 70s）
   const ac = new AbortController();
   const origText = runBtn.textContent;
   runBtn.textContent = '停止';
   const onStop = () => ac.abort();
   runBtn.addEventListener('click', onStop);
   try {
-    const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id }, { signal: ac.signal });
-    pendingAiRewriteText = res.replacement || '';
+    const res = await api('/api/ai/rewrite-selection', 'POST', {
+      selectedText: transaction.selectedText,
+      instruction,
+      contextText: transaction.contextText,
+      docId: transaction.docId
+    }, { signal: ac.signal });
+    transaction.replacement = res.replacement || '';
+    if (!transaction.replacement) { throw new Error('AI 未返回内容'); }
+    // 切换文档或关闭弹窗时，旧请求的结果只能作废，绝不能落到新文档。
+    if (!currentDoc || currentDoc.id !== transaction.docId || !aiModal || aiModal.hidden) return;
+    const targetStillCurrent = aiRewriteTargetIsCurrent(transaction);
+    const changedWhileWaiting = editorContentVersion !== transaction.editorVersion;
     preview.classList.remove('empty');
-    preview.innerHTML = textToEditorHtml(pendingAiRewriteText);
-    if (pendingAiRewriteText) applyBtn.classList.add('primary');
-  } catch (e) {
-    preview.classList.add('empty');
-    if (e && e.name === 'AbortError') {
-      preview.textContent = '已取消';
-    } else {
-      preview.textContent = '生成失败：' + (e.message || e);
+    if (!targetStillCurrent) {
+      preview.classList.add('empty');
+      preview.textContent = '等待期间原选区已改动，建议不会覆盖新内容；请重新生成。';
+      return;
     }
+    pendingAiRewriteText = transaction.replacement;
+    pendingAiRewrite = transaction;
+    preview.innerHTML = textToEditorHtml(transaction.replacement);
+    if (changedWhileWaiting) {
+      preview.insertAdjacentHTML('afterend', '<div class="ai-note" id="aiRewriteChangedNote">等待期间你继续编辑了文档；建议尚未应用。确认后只会替换原选区。</div>');
+    }
+    applyBtn.classList.add('primary');
+    applyBtn.disabled = false;
+  } catch (e) {
+    if (!preview.isConnected) return;
+    preview.classList.add('empty');
+    if (e && e.name === 'AbortError') preview.textContent = '已取消';
+    else preview.textContent = '生成失败：' + (e.message || e);
+    pendingAiRewriteText = '';
+    pendingAiRewrite = null;
   } finally {
     runBtn.removeEventListener('click', onStop);
     runBtn.textContent = origText;
@@ -3763,58 +4119,29 @@ async function runAiRewrite(selectedText) {
   }
 }
 
-let _aiApplyRunning = false; // AI 改写直发模式重入守卫
-async function applyAiRewriteResult(selectedText) {
-  const applyBtn = $('aiRewriteApply');
-  // 1) 已生成预览：直接应用预览内容
-  if (pendingAiRewriteText) {
-    if (!restoreAiSelection()) return;
-    document.execCommand('insertHTML', false, textToEditorHtml(pendingAiRewriteText));
-    markEditorChanged();
-    hideFloatMenu();
-    closeAiModal();
-    toast('AI \u5df2\u66ff\u6362\u9009\u533a');
-    return;
-  }
-  // 2) 没有预览：直接调用 API 生成并替换，附悬浮撤销气泡
-  // 重入守卫：直发模式下 applyBtn 变为"停止"，点击会同时触发 abort（旧）和 applyAiRewriteResult（新）
-  if (_aiApplyRunning) return;
-  _aiApplyRunning = true;
-  try {
-    const instruction = $('aiRewriteInstruction').value.trim();
-    if (!instruction) { toast('\u8bf7\u5148\u8f93\u5165\u6307\u4ee4\u6216\u70b9\u300c\u751f\u6210\u9884\u89c8\u300d'); return; }
-    if (!restoreAiSelection()) return;
-    // 保存当前选区内容用于撤销
-    const undoRange = savedAiRange.cloneRange();
-    const undoFrag = undoRange.cloneContents();
-    const undoHolder = document.createElement('div');
-    undoHolder.appendChild(undoFrag);
-    const originalHtml = undoHolder.innerHTML;
-    // 禁用按钮 + 显示加载态；支持取消（直发模式也接 AbortController）
-    const prevText = applyBtn.textContent;
-    const ac = new AbortController();
-    applyBtn.textContent = '停止';
-    const onStop = () => ac.abort();
-    applyBtn.addEventListener('click', onStop);
-    try {
-      const res = await api('/api/ai/rewrite-selection', 'POST', { selectedText, instruction, contextText: getDocumentContextText(), docId: currentDoc && currentDoc.id }, { signal: ac.signal });
-      if (!res || !res.replacement) { toast('AI 未返回内容'); return; }
-      document.execCommand('insertHTML', false, textToEditorHtml(res.replacement));
-      markEditorChanged();
-      hideFloatMenu();
-      closeAiModal();
-      showAiUndoBubble(originalHtml);
-    } catch (e) {
-      if (e && e.name === 'AbortError') { toast('已取消'); }
-      else toast('AI 失败：' + (e.message || e));
-    } finally {
-      applyBtn.removeEventListener('click', onStop);
-      applyBtn.textContent = prevText;
-      applyBtn.disabled = false;
-    }
-  } finally {
-    _aiApplyRunning = false;
-  }
+function applyAiRewriteResult() {
+  if (!pendingAiRewrite) { toast('请先生成改写建议'); return; }
+  if (!applyAiRewriteTransaction(pendingAiRewrite)) return;
+  hideFloatMenu();
+  closeAiModal();
+  toast('AI 已替换选区；可按 Ctrl/⌘ + Z 撤销');
+}
+
+function openAiRewriteSuggestionModal(transaction, changedWhileWaiting) {
+  const canApply = aiRewriteTargetIsCurrent(transaction);
+  const note = canApply
+    ? (changedWhileWaiting ? '等待期间你继续编辑了文档。建议尚未自动应用；确认后只替换最初的选区。' : '这是 AI 生成的改写建议，确认后才会替换选区。')
+    : '等待期间原选区已改动。为保护你新写的内容，这条建议不能直接应用，请重新生成。';
+  pendingAiRewriteText = transaction.replacement;
+  pendingAiRewrite = canApply ? transaction : null;
+  openAiModal('AI 改写建议',
+    '<div class="ai-modal-panel">' +
+      '<div class="ai-note">' + note + '</div>' +
+      '<div class="ai-preview">' + textToEditorHtml(transaction.replacement) + '</div>' +
+      '<div class="ai-actions"><button class="ai-action primary" id="aiRewriteSuggestionApply"' + (canApply ? '' : ' disabled') + '>应用改写</button></div>' +
+    '</div>');
+  const applyBtn = $('aiRewriteSuggestionApply');
+  if (applyBtn) applyBtn.addEventListener('click', applyAiRewriteResult);
 }
 
 /* ---------- 快速 AI：浮动菜单内嵌输入框，回车直接改写选区 ---------- */
@@ -3910,60 +4237,54 @@ function hideAiPreview() {
 async function runQuickAi() {
   const instruction = fmAiQuick.value.trim();
   if (!instruction) { toast('请输入指令'); fmAiQuick.focus(); return; }
-  // 焦点已移到 input 内时 saveAiSelection 会返回空，
-  // 此时回退到 mousedown 时预先保存的 savedAiRange
+  // 焦点已移到 input 内时 saveAiSelection 会返回空，回退到之前保存的编辑器选区。
   let selectedText = saveAiSelection();
-  if (!selectedText && savedAiRange) {
-    selectedText = savedAiRange.toString();
-  }
+  if (!selectedText && savedAiRange) selectedText = savedAiRange.toString();
   if (!selectedText) { toast('请先选中要改写的文字'); return; }
+  const transaction = captureAiRewriteTarget(selectedText);
+  if (!transaction) { toast('选区已变化，请重新选中'); return; }
 
-  // 创建 AbortController 用于停止
   aiAbortController = new AbortController();
   setAiSubmitLoading(true);
-
-  // 调用期间不清空输入框（失败可重试，成功后才清空）
   fmAiQuick.placeholder = 'AI 思考中…';
   fmAiQuick.disabled = true;
   try {
     const res = await api('/api/ai/rewrite-selection', 'POST', {
-      selectedText,
+      selectedText: transaction.selectedText,
       instruction,
-      contextText: getDocumentContextText(),
-      docId: currentDoc && currentDoc.id
+      contextText: transaction.contextText,
+      docId: transaction.docId
     }, { signal: aiAbortController.signal });
-    if (!res || !res.replacement) { toast('AI 未返回内容'); return; }
-    // 恢复选区
-    restoreAiSelection();
-    // 用 mark 包裹改写内容插入，便于呼吸高亮动画；
-    // 同时 execCommand insertHTML 会进入原生 undo 栈，用户按 Ctrl+Z 可直接撤销。
-    const html = '<mark class="ai-flash">' + textToEditorHtml(res.replacement) + '</mark>';
-    document.execCommand('insertHTML', false, html);
-    markEditorChanged();
-    // 任务 4：呼吸高亮动画结束后 unwrap mark，避免影响排版
-    setTimeout(() => {
-      document.querySelectorAll('mark.ai-flash').forEach(m => {
-        const p = m.parentNode;
-        if (!p) return;
-        while (m.firstChild) p.insertBefore(m.firstChild, m);
-        p.removeChild(m);
-      });
-    }, 1700);
-    // 成功：清空输入和保留状态，下次重新开始
+    transaction.replacement = res && res.replacement || '';
+    if (!transaction.replacement) { toast('AI 未返回内容'); return; }
+    if (!currentDoc || currentDoc.id !== transaction.docId) return;
+
+    const changedWhileWaiting = editorContentVersion !== transaction.editorVersion;
+    const targetStillCurrent = aiRewriteTargetIsCurrent(transaction);
+    // 快速改写在用户没有继续编辑时保持“一键完成”；只要期间有编辑，
+    // 就退化成可确认的建议，不能让迟到的网络响应突然改正文。
+    if (changedWhileWaiting || !targetStillCurrent) {
+      fmAiQuick.value = '';
+      fmAiQuickLastInput = '';
+      fmAiQuickLastTime = 0;
+      hideAiPreview();
+      hideFloatMenu();
+      clearAiSelectionHighlight();
+      openAiRewriteSuggestionModal(transaction, changedWhileWaiting);
+      toast(targetStillCurrent ? 'AI 建议已生成，请确认后应用' : '原选区已改动，AI 建议未自动应用');
+      return;
+    }
+    if (!applyAiRewriteTransaction(transaction)) return;
     fmAiQuick.value = '';
     fmAiQuickLastInput = '';
     fmAiQuickLastTime = 0;
     hideAiPreview();
     hideFloatMenu();
     clearAiSelectionHighlight();
-    // 任务 5：撤销走原生 Ctrl+Z，不再显示撤销气泡
-    toast('已改写 · 按 Ctrl+Z 撤销');
+    toast('已改写 · 可按 Ctrl/⌘ + Z 撤销');
   } catch (e) {
-    if (e && e.name === 'AbortError') {
-      toast('已停止');
-    } else {
-      toast('AI 失败：' + (e.message || e));
-    }
+    if (e && e.name === 'AbortError') toast('已停止');
+    else toast('AI 失败：' + (e.message || e));
   } finally {
     aiAbortController = null;
     setAiSubmitLoading(false);
@@ -3972,38 +4293,25 @@ async function runQuickAi() {
   }
 }
 
-/* 悬浮撤销气泡：替换后显示，点击恢复原文 */
+/* 悬浮撤销气泡：与 Ctrl/⌘ + Z 使用同一条浏览器原生撤销链 */
 let aiUndoBubble = null;
 let aiUndoTimer = null;
-function showAiUndoBubble(originalHtml) {
-  if (aiUndoBubble) aiUndoBubble.remove();
-  if (aiUndoTimer) clearTimeout(aiUndoTimer);
+function showAiUndoBubble() {
+  hideAiUndoBubble();
   aiUndoBubble = document.createElement('div');
   aiUndoBubble.className = 'ai-undo-bubble';
   aiUndoBubble.innerHTML =
     '<span class="ai-undo-text">已用 AI 改写</span>' +
-    '<button type="button" class="ai-undo-btn" title="恢复原文">撤销</button>';
+    '<button type="button" class="ai-undo-btn" title="撤销本次 AI 改写">撤销</button>';
   document.body.appendChild(aiUndoBubble);
-  // 定位在编辑器顶部居中
   const er = editorEl.getBoundingClientRect();
   const bw = aiUndoBubble.offsetWidth;
   aiUndoBubble.style.left = (er.left + er.width / 2 - bw / 2) + 'px';
   aiUndoBubble.style.top = (er.top + 14) + 'px';
   aiUndoBubble.querySelector('.ai-undo-btn').addEventListener('click', () => {
-    // 当前光标位置回退为原文
-    try {
-      const sel = window.getSelection();
-      if (sel.rangeCount) {
-        const r = sel.getRangeAt(0);
-        r.deleteContents();
-        const tmp = document.createElement('div');
-        tmp.innerHTML = originalHtml;
-        const frag = document.createDocumentFragment();
-        while (tmp.firstChild) frag.appendChild(tmp.firstChild);
-        r.insertNode(frag);
-        markEditorChanged();
-      }
-    } catch (_) {}
+    // 绝不根据“当前光标”手工插回原文。直接撤销原生 insertHTML 事务，
+    // 才会准确把改写结果替换回原样，并保留正确的 redo 顺序。
+    if (editor.undo()) toast('已撤销 AI 改写');
     hideAiUndoBubble();
   });
   aiUndoTimer = setTimeout(hideAiUndoBubble, 8000);
@@ -4012,12 +4320,12 @@ function hideAiUndoBubble() {
   if (aiUndoBubble) { aiUndoBubble.remove(); aiUndoBubble = null; }
   if (aiUndoTimer) { clearTimeout(aiUndoTimer); aiUndoTimer = null; }
 }
-
 let shortcutHelpEl = null;
 const shortcutGroups = [
   ['AI', [
     ['Ctrl/\u2318 + Alt + A', '\u6574\u7bc7 AI \u6392\u7248'],
     ['Ctrl/\u2318 + Alt + I', '\u9009\u533a AI \u6539\u5199/\u6392\u7248'],
+    ['Ctrl/\u2318 + Alt + G', 'AI \u62df\u6807\u9898'],
     ['Ctrl/\u2318 + J', 'AI \u5bf9\u8bdd\u9762\u677f']
   ]],
   ['文档', [
@@ -4121,6 +4429,7 @@ document.addEventListener('keydown', (e) => {
   }
   else if (k === 'a' && e.altKey) { e.preventDefault(); openAiLayoutModal(); }
   else if (k === 'i' && e.altKey) { e.preventDefault(); openAiRewriteModal(); }
+  else if (k === 'g' && e.altKey) { e.preventDefault(); requestManualTitleSuggestion(); }
   else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
   else if (k === 'n' && !e.shiftKey) { e.preventDefault(); newDoc(); }
   else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
@@ -4174,6 +4483,14 @@ async function init() {
     if (!meRes.ok) { handleAuthFailure(); return; }
     const meBody = await meRes.json();
     currentUser = meBody.user;
+    syncManualTitleButton();
+    if (currentUser && currentUser.isAdmin) {
+      // Enhancement only: document listing and opening never wait for this read.
+      api('/api/admin/auto-title-settings').then(setting => {
+        autoTitleEnabled = !!setting.enabled;
+        scheduleAutoTitleForCurrentDoc();
+      }).catch(() => { autoTitleEnabled = false; });
+    }
     updateUserBadge();
     bindAvatarUpload();
     updateShareButton();
@@ -4919,10 +5236,39 @@ async function loadSettingsTab(tab) {
     else if (tab === 'invites') renderInviteList(await api('/api/invites'));
     else if (tab === 'review') await renderReviewPanel();
     else if (tab === 'sensitive') await renderSensitiveWords();
+    else if (tab === 'ai') await renderAiWritingSettings();
   } catch (e) {
     settingsModalBody.innerHTML = '<div class="share-error">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
+async function renderAiWritingSettings() {
+  const setting = await api('/api/admin/auto-title-settings');
+  autoTitleEnabled = !!setting.enabled;
+  settingsModalBody.innerHTML =
+    '<section class="auto-title-settings">' +
+      '<div class="auto-title-copy"><h3>AI &#20889;&#20316;&#36741;&#21161;</h3>' +
+      '<p>&#27491;&#25991;&#36798;&#21040; 40 &#23383;&#24182;&#20572;&#31508;&#19968;&#27573;&#26102;&#38388;&#21518;&#65292;&#20026;&#24403;&#21069;&#25991;&#26723;&#33258;&#21160;&#25311;&#23450;&#26631;&#39064;&#12290;</p>' +
+      '<small>&#20165;&#23545;&#31649;&#29702;&#21592;&#33258;&#24049;&#30340;&#26080;&#26631;&#39064;&#25991;&#26723;&#29983;&#25928;&#65292;&#27599;&#31687;&#26368;&#22810;&#35831;&#27714;&#19968;&#27425;&#12290;</small></div>' +
+      '<label class="auto-title-toggle"><input id="autoTitleEnabled" type="checkbox"' + (autoTitleEnabled ? ' checked' : '') + '><span aria-hidden="true"></span></label>' +
+    '</section>';
+  const toggle = $('autoTitleEnabled');
+  toggle.addEventListener('change', async () => {
+    const next = toggle.checked;
+    toggle.disabled = true;
+    try {
+      const saved = await api('/api/admin/auto-title-settings', 'PUT', { enabled: next });
+      autoTitleEnabled = !!saved.enabled;
+      toggle.checked = autoTitleEnabled;
+      if (autoTitleEnabled) scheduleAutoTitleForCurrentDoc();
+      else cancelAutoTitleWork();
+    } catch (e) {
+      toggle.checked = !next;
+    } finally {
+      toggle.disabled = false;
+    }
+  });
+}
+
 
 /* ---------- 用户管理 ---------- */
 async function renderUserManagement() {
@@ -5612,7 +5958,7 @@ let outlinePinnedIdx = null;
 let outlineProgrammaticScroll = false;
 let outlineProgrammaticTimer = null;
 
-function updateOutline(immediate) {
+function updateOutline(immediate, delay) {
   if (outlineTimer) clearTimeout(outlineTimer);
   const build = () => {
     if (readingMode) { docOutline.hidden = true; return; }
@@ -5638,7 +5984,7 @@ function updateOutline(immediate) {
   if (immediate) {
     build();
   } else {
-    outlineTimer = setTimeout(build, 300);
+    outlineTimer = setTimeout(build, Number.isFinite(delay) ? Math.max(0, delay) : 300);
   }
 }
 

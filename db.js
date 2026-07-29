@@ -137,6 +137,25 @@ try {
   if (!docCols.some(c => c.name === 'version')) {
     db.exec("ALTER TABLE documents ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
   }
+  // Automatic-title metadata deliberately does not touch updated_at.
+  if (!docCols.some(c => c.name === 'title_origin')) {
+    db.exec("ALTER TABLE documents ADD COLUMN title_origin TEXT NOT NULL DEFAULT 'manual'");
+    db.prepare("UPDATE documents SET title_origin = 'untitled' WHERE title IS NULL OR title = '' OR title = ?").run(String.fromCharCode(0x65e0, 0x6807, 0x9898));
+  }
+  if (!docCols.some(c => c.name === 'auto_title_attempted_at')) {
+    db.exec("ALTER TABLE documents ADD COLUMN auto_title_attempted_at INTEGER");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_documents_auto_title ON documents(user_id, title_origin, auto_title_attempted_at)");
+
+  // Administrator-scoped application settings, such as automatic AI titles.
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS app_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    setting_key TEXT NOT NULL UNIQUE,
+    setting_value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `);
 } catch (e) { console.warn('documents 迁移跳过：', e.message); }
 
 // 举报表

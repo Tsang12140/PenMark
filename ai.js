@@ -175,4 +175,39 @@ async function rewriteSelection(selectedText, instruction, contextText, options)
   ], { temperature: 0.35, maxTokens: Number(process.env.AI_REWRITE_MAX_TOKENS || 3000), timeoutMs: 70000, signal: options && options.signal }));
 }
 
-module.exports = { configured, chat, layoutHtml, rewriteSelection, PENMARK_KNOWLEDGE };
+function parseAutoTitleResult(raw) {
+  let parsed;
+  try { parsed = JSON.parse(String(raw || '').trim()); }
+  catch (_) { return { status: 'insufficient' }; }
+  if (!parsed || parsed.status !== 'ok') return { status: 'insufficient' };
+  const title = String(parsed.title || '').replace(/\s+/g, ' ').trim();
+  const hanCount = (title.match(/[\u3400-\u9fff]/g) || []).length;
+  if (!title || title.length > 30 || /[!?\r\n]/.test(title) || (hanCount && (hanCount < 8 || hanCount > 18))) {
+    return { status: 'insufficient' };
+  }
+  return { status: 'ok', title };
+}
+
+async function suggestTitle(context, options) {
+  const system = [
+    'You are a senior Chinese-language editor. Produce exactly one title for an article.',
+    'The title must be accurate, natural, and measured: clear at a glance, neither casual nor stiff.',
+    'Normally use 8 to 14 Chinese characters. It may be slightly longer only when needed for a complete expression.',
+    'Do not use clickbait, marketing hype, internet slang, or exclamation marks. Never invent facts not present in the excerpt.',
+    'Do not use academic or template phrasing such as shallow discussion, research, analysis, exploration, or thoughts on.',
+    'Match the genre: technical writing should be precise; narrative writing may use fitting imagery without becoming ornate.',
+    'Return strict JSON only: {"status":"ok","title":"..."} when reliable, otherwise {"status":"insufficient"}. No Markdown, code fences, or commentary.'
+  ].join('\n');
+  const raw = await chat([
+    { role: 'system', content: system },
+    { role: 'user', content: 'Article excerpt. Base the title only on this text:\n' + String(context || '') }
+  ], {
+    temperature: 0.35,
+    maxTokens: 64,
+    timeoutMs: 15000,
+    signal: options && options.signal
+  });
+  return parseAutoTitleResult(raw);
+}
+
+module.exports = { configured, chat, layoutHtml, rewriteSelection, suggestTitle, PENMARK_KNOWLEDGE };
