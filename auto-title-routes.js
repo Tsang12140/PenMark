@@ -1,6 +1,15 @@
 function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stripHtml, titleMaxLength }) {
   let inFlight = false;
 
+  // PostgreSQL binds $N by number. SQLite's compatibility adapter binds them
+  // in textual order; the SELECT slice appears before the WHERE owner check.
+  // Keep both backends pointed at the same document and user.
+  function sliceQueryParams(docId, userId) {
+    return db.isPostgres()
+      ? [docId, userId, 9000, 3500]
+      : [9000, 3500, docId, userId];
+  }
+
   function titleSuggestionError(err) {
     const message = String((err && err.message) || '');
     if (/timeout/i.test(message)) return 'AI 拟标题超时，请稍后重试';
@@ -9,6 +18,7 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
       if (status[1] === '401' || status[1] === '403') return 'AI 服务鉴权失败，请检查 AI_API_KEY';
       return 'AI 服务暂时不可用（HTTP ' + status[1] + '）';
     }
+    if (/网关返回了 HTML 页面/i.test(message)) return 'AI 网关返回了网页，请检查 AI_BASE_URL';
     if (/no message content|invalid json|无效 JSON/i.test(message)) return 'AI 服务返回内容无效，请重试';
     return 'AI 拟标题失败，请稍后重试';
   }
@@ -60,7 +70,7 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
     const slices = autoTitle.sliceSelectSql(db.isPostgres());
     const doc = await db.one(
       'SELECT id, version, ' + slices + ' FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
-      [docId, req.user.id, 9000, 3500]
+      sliceQueryParams(docId, req.user.id)
     );
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (doc.version !== expectedVersion) return res.status(409).json({ error: 'document changed' });
@@ -110,7 +120,7 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
     const doc = await db.one(
       'SELECT id, title, title_origin, auto_title_attempted_at, version, ' + slices +
       ' FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
-      [docId, req.user.id, 9000, 3500]
+      sliceQueryParams(docId, req.user.id)
     );
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!autoTitle.isEligible(doc)) return res.status(409).json({ error: 'automatic title is no longer eligible' });

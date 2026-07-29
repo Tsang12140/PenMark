@@ -80,6 +80,19 @@ async function main() {
   await handlers[2](failedReq, failedRes, err => { throw err; });
   assert.strictEqual(failedRes.statusCode, 502);
   assert.strictEqual(failedRes.body.error, 'AI 服务鉴权失败，请检查 AI_API_KEY');
+
+  ai.suggestTitle = async () => { throw new Error('AI 返回无效 JSON: 网关返回了 HTML 页面，请检查 AI_BASE_URL'); };
+  const htmlReq = new EventEmitter();
+  htmlReq.body = { docId: 7, version: 3 };
+  htmlReq.user = { id: 1, isAdmin: true };
+  const htmlRes = new EventEmitter();
+  htmlRes.writableEnded = false;
+  htmlRes.statusCode = 200;
+  htmlRes.status = code => { htmlRes.statusCode = code; return htmlRes; };
+  htmlRes.json = body => { htmlRes.writableEnded = true; htmlRes.body = body; return htmlRes; };
+  await handlers[2](htmlReq, htmlRes, err => { throw err; });
+  assert.strictEqual(htmlRes.statusCode, 502);
+  assert.strictEqual(htmlRes.body.error, 'AI 网关返回了网页，请检查 AI_BASE_URL');
   console.log('auto-title route abort and error regression: passed');
 }
 

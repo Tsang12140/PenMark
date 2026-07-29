@@ -40,6 +40,29 @@ function getEndpoint() {
   return base + '/chat/completions';
 }
 
+function parseProviderJson(text) {
+  const source = String(text || '').replace(/^\uFEFF/, '').trim();
+  if (!source) return { data: null, error: null, kind: 'empty' };
+  try {
+    return { data: JSON.parse(source), error: null, kind: 'json' };
+  } catch (error) {
+    // Some OpenAI-compatible gateways respond as SSE even when stream:false.
+    // Reassemble their delta payloads instead of treating a valid answer as an
+    // unusable HTML/text response.
+    const events = source.split(/\r?\n/)
+      .map(line => line.trim().replace(/^data:\s*/i, ''))
+      .filter(line => line && line !== '[DONE]')
+      .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
+      .filter(Boolean);
+    if (events.length) {
+      const message = events.map(event => event && event.choices && event.choices[0] && event.choices[0].delta && event.choices[0].delta.content || '').join('');
+      if (message) return { data: { choices: [{ message: { content: message } }] }, error: null, kind: 'sse' };
+      return { data: events[events.length - 1], error: null, kind: 'sse' };
+    }
+    return { data: null, error, kind: /^</.test(source) ? 'html' : 'text' };
+  }
+}
+
 function requestJson(url, payload, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
     // 已取消：立即拒绝，避免无谓的 HTTP 请求
@@ -58,6 +81,7 @@ function requestJson(url, payload, timeoutMs, signal) {
       headers: {
         'Authorization': 'Bearer ' + getApiKey(),
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         'Content-Length': Buffer.byteLength(body)
       },
       timeout: timeoutMs || 60000
@@ -66,9 +90,8 @@ function requestJson(url, payload, timeoutMs, signal) {
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
-        let data = null;
-        let parseErr = null;
-        try { data = text ? JSON.parse(text) : null; } catch (e) { parseErr = e; }
+        const parsed = parseProviderJson(text);
+        const data = parsed.data;
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const detail = data && data.error && (data.error.message || data.error.code || data.error.type);
           reject(new Error('AI HTTP ' + res.statusCode + (detail ? ': ' + detail : '')));
@@ -76,9 +99,11 @@ function requestJson(url, payload, timeoutMs, signal) {
         }
         if (!data) {
           // 保留原始 parse 错误信息，便于诊断 AI 返回非 JSON 的根因
-          const hint = parseErr
-            ? ('JSON 解析失败: ' + (parseErr.message || '').slice(0, 80))
-            : ('空响应，原文前 100 字: ' + text.slice(0, 100));
+          const hint = parsed.kind === 'html'
+            ? '网关返回了 HTML 页面，请检查 AI_BASE_URL'
+            : parsed.error
+              ? ('JSON 解析失败: ' + (parsed.error.message || '').slice(0, 80))
+              : '空响应';
           reject(new Error('AI 返回无效 JSON: ' + hint));
           return;
         }
@@ -104,12 +129,26 @@ async function chat(messages, options) {
   if (!getApiKey()) {
     throw new Error('AI is not configured. Set AI_API_KEY or DEEPSEEK_API_KEY on the server.');
   }
-  const data = await requestJson(getEndpoint(), {
+  const endpoint = getEndpoint();
+  const payload = {
     model: (options && options.model) || getModel(),
     messages,
     temperature: options && options.temperature !== undefined ? options.temperature : 0.2,
-    max_tokens: options && options.maxTokens ? options.maxTokens : 4096
-  }, options && options.timeoutMs, options && options.signal);
+    max_tokens: options && options.maxTokens ? options.maxTokens : 4096,
+    stream: false
+  };
+  // DeepSeek V4 enables thinking by default. For PenMark's one-shot editing
+  // actions, it only adds latency/cost and can exhaust a small output budget
+  // before the final `content` is produced. Keep other compatible providers
+  // untouched unless the caller explicitly asks for a thinking setting.
+  const isOfficialDeepSeek = /^api\.deepseek\.com$/i.test(new URL(endpoint).hostname);
+  const thinking = options && Object.prototype.hasOwnProperty.call(options, 'thinking')
+    ? options.thinking
+    : (isOfficialDeepSeek ? 'disabled' : null);
+  if (thinking) payload.thinking = { type: thinking };
+  if (options && options.responseFormat) payload.response_format = options.responseFormat;
+
+  const data = await requestJson(endpoint, payload, options && options.timeoutMs, options && options.signal);
   const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   if (!content) throw new Error('AI response has no message content');
   return String(content).trim();
@@ -205,9 +244,11 @@ async function suggestTitle(context, options) {
     temperature: 0.35,
     maxTokens: Number(process.env.AI_TITLE_MAX_TOKENS || 128),
     timeoutMs: Number(process.env.AI_TITLE_TIMEOUT_MS || 60000),
+    thinking: 'disabled',
+    responseFormat: { type: 'json_object' },
     signal: options && options.signal
   });
   return parseAutoTitleResult(raw);
 }
 
-module.exports = { configured, chat, layoutHtml, rewriteSelection, suggestTitle, PENMARK_KNOWLEDGE };
+module.exports = { configured, chat, layoutHtml, rewriteSelection, suggestTitle, PENMARK_KNOWLEDGE, parseProviderJson };
