@@ -629,11 +629,21 @@ async function verifyFolderOwnership(folderId, userId) {
 }
 
 app.get('/api/documents', wrap(async (req, res) => {
+  // The write-side list remains metadata-only. The home dashboard opts into a
+  // bounded preview so opening or switching documents never reads every body.
+  const withPreview = req.query.preview === '1';
+  const previewFields = !withPreview ? '' : (db.isPostgres()
+    ? ', SUBSTRING(content FROM 1 FOR 1200) AS content_preview, CHAR_LENGTH(content) AS content_length'
+    : ', SUBSTR(content, 1, 1200) AS content_preview, LENGTH(content) AS content_length');
   const rows = await db.query(
-    'SELECT id, title, folder_id, created_at, updated_at FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC',
+    'SELECT id, title, folder_id, created_at, updated_at' + previewFields + ' FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC',
     [req.user.id]
   );
-  res.json(rows);
+  if (!withPreview) return res.json(rows);
+  res.json(rows.map(({ content_preview, ...doc }) => Object.assign(doc, {
+    content_length: Number(doc.content_length) || 0,
+    snippet: stripHtml(content_preview || '').replace(/\s+/g, ' ').trim().slice(0, 180)
+  })));
 }));
 
 app.get('/api/documents/:id', wrap(async (req, res) => {

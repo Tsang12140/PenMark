@@ -65,7 +65,22 @@ async function main() {
   await pending;
   assert.strictEqual(res.statusCode, 200);
   assert.deepStrictEqual(res.body, { version: 3, status: 'ok', title: '稳定生成的标题' });
-  console.log('auto-title route abort regression: passed');
+
+  // A provider failure should reach the UI as a useful, safe diagnostic rather
+  // than the previous unhelpful "title suggestion failed" message.
+  ai.suggestTitle = async () => { throw new Error('AI HTTP 401: invalid API key'); };
+  const failedReq = new EventEmitter();
+  failedReq.body = { docId: 7, version: 3 };
+  failedReq.user = { id: 1, isAdmin: true };
+  const failedRes = new EventEmitter();
+  failedRes.writableEnded = false;
+  failedRes.statusCode = 200;
+  failedRes.status = code => { failedRes.statusCode = code; return failedRes; };
+  failedRes.json = body => { failedRes.writableEnded = true; failedRes.body = body; return failedRes; };
+  await handlers[2](failedReq, failedRes, err => { throw err; });
+  assert.strictEqual(failedRes.statusCode, 502);
+  assert.strictEqual(failedRes.body.error, 'AI 服务鉴权失败，请检查 AI_API_KEY');
+  console.log('auto-title route abort and error regression: passed');
 }
 
 main().catch(err => {

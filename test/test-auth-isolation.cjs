@@ -238,8 +238,11 @@ async function main() {
     check('Other users cannot read normal-user image', crossUserImage.status === 404);
 
     // A 查看文档列表，不应包含 B 的文档
-    const listA = await request(port, 'GET', '/api/documents', null, cookieA);
+    const listA = await request(port, 'GET', '/api/documents?preview=1', null, cookieA);
     check('A 文档列表只含自己的文档', listA.json && listA.json.length === 1 && listA.json[0].id === docIdA);
+    check('Document list includes a lightweight preview, not full content', listA.json && listA.json[0].snippet === '私有内容' && !Object.hasOwn(listA.json[0], 'content'));
+    const basicListA = await request(port, 'GET', '/api/documents', null, cookieA);
+    check('Normal document list stays metadata-only', basicListA.json && !Object.hasOwn(basicListA.json[0], 'snippet') && !Object.hasOwn(basicListA.json[0], 'content'));
 
     // B 试图读取 A 的文档
     const readBtoA = await request(port, 'GET', '/api/documents/' + docIdA, null, cookieB);

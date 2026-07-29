@@ -4546,7 +4546,7 @@ async function renderDashboard() {
     dashUserName.textContent = currentUser.nickname || currentUser.username || '朋友';
   }
   let docs = [];
-  try { docs = await api('/api/documents'); }
+  try { docs = await api('/api/documents?preview=1'); }
   catch (e) { /* 静默：仪表盘可重试 */ }
 
   const total = docs.length;
@@ -4554,8 +4554,7 @@ async function renderDashboard() {
   const weekUpdated = docs.filter(d => (d.updated_at || 0) > weekAgo).length;
   let totalWords = 0;
   docs.forEach(d => {
-    const text = (d.content || '').replace(/<[^>]+>/g, '');
-    totalWords += text.length;
+    totalWords += Number(d.content_length || 0);
   });
   $('statTotal').textContent = total;
   $('statWeek').textContent = weekUpdated;
@@ -4569,8 +4568,7 @@ async function renderDashboard() {
     return;
   }
   dashDocs.innerHTML = recent.map(d => {
-    const text = (d.content || '').replace(/<[^>]+>/g, '').trim();
-    const snippet = text.slice(0, 80) || '空文档';
+    const snippet = String(d.snippet || '').trim().slice(0, 80) || '空文档';
     const dateStr = formatDateShort(new Date(d.updated_at || Date.now()));
     return '<button class="dash-doc" data-id="' + d.id + '">' +
       '<div class="dash-doc-title">' + escapeHtml(d.title || '无标题') + '</div>' +

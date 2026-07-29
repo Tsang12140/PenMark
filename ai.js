@@ -203,8 +203,8 @@ async function suggestTitle(context, options) {
     { role: 'user', content: 'Article excerpt. Base the title only on this text:\n' + String(context || '') }
   ], {
     temperature: 0.35,
-    maxTokens: 64,
-    timeoutMs: 15000,
+    maxTokens: Number(process.env.AI_TITLE_MAX_TOKENS || 128),
+    timeoutMs: Number(process.env.AI_TITLE_TIMEOUT_MS || 60000),
     signal: options && options.signal
   });
   return parseAutoTitleResult(raw);

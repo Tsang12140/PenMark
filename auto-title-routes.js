@@ -1,6 +1,18 @@
 function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stripHtml, titleMaxLength }) {
   let inFlight = false;
 
+  function titleSuggestionError(err) {
+    const message = String((err && err.message) || '');
+    if (/timeout/i.test(message)) return 'AI 拟标题超时，请稍后重试';
+    const status = message.match(/AI HTTP\s+(\d{3})/i);
+    if (status) {
+      if (status[1] === '401' || status[1] === '403') return 'AI 服务鉴权失败，请检查 AI_API_KEY';
+      return 'AI 服务暂时不可用（HTTP ' + status[1] + '）';
+    }
+    if (/no message content|invalid json|无效 JSON/i.test(message)) return 'AI 服务返回内容无效，请重试';
+    return 'AI 拟标题失败，请稍后重试';
+  }
+
   async function isEnabled() {
     const row = await db.one(
       'SELECT setting_value FROM app_settings WHERE setting_key = $1',
@@ -76,7 +88,7 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
         return res.status(499).json({ error: 'cancelled' });
       }
       console.warn('[suggest-title] generation failed:', err && err.message);
-      res.status(502).json({ error: 'title suggestion failed' });
+      res.status(502).json({ error: titleSuggestionError(err) });
     } finally {
       inFlight = false;
       req.removeListener('aborted', onRequestAborted);
@@ -138,7 +150,7 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
         return res.status(499).json({ error: 'cancelled' });
       }
       console.warn('[auto-title] generation failed:', err && err.message);
-      res.status(502).json({ error: 'automatic title failed' });
+      res.status(502).json({ error: titleSuggestionError(err) });
     } finally {
       inFlight = false;
       req.removeListener('aborted', onRequestAborted);
