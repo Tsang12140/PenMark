@@ -29,6 +29,7 @@
         "test:security": "node desktop/test-security.cjs",
         "test:s4": "node test/test-s4-signing.cjs",
         "test:auth": "node test/test-auth-isolation.cjs",
+        "test:auto-title": "node test/test-auto-title-routes.cjs",
         "db:migrate": "node database/migrate.js",
         "db:status": "node database/migrate.js status",
         "assets:queue-s4-admin": "node scripts/queue-admin-s4-assets.js",

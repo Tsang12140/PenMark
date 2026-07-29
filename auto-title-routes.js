@@ -60,8 +60,14 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
 
     inFlight = true;
     const abortController = new AbortController();
-    const onClientClose = () => abortController.abort();
-    req.on('close', onClientClose);
+    // IncomingMessage `close` also fires after a normal completed request in
+    // modern Node, so it would abort title generation immediately. Only a real
+    // request abort or a response socket that closes before the reply is sent
+    // means the browser actually went away.
+    const onRequestAborted = () => abortController.abort();
+    const onResponseClose = () => { if (!res.writableEnded) abortController.abort(); };
+    req.on('aborted', onRequestAborted);
+    res.on('close', onResponseClose);
     try {
       const result = await ai.suggestTitle(excerpt.context, { signal: abortController.signal });
       res.json(Object.assign({ version: doc.version }, result));
@@ -73,7 +79,8 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
       res.status(502).json({ error: 'title suggestion failed' });
     } finally {
       inFlight = false;
-      req.removeListener('close', onClientClose);
+      req.removeListener('aborted', onRequestAborted);
+      res.removeListener('close', onResponseClose);
     }
   }));
 
@@ -113,8 +120,14 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
     }
 
     const abortController = new AbortController();
-    const onClientClose = () => abortController.abort();
-    req.on('close', onClientClose);
+    // IncomingMessage `close` also fires after a normal completed request in
+    // modern Node, so it would abort title generation immediately. Only a real
+    // request abort or a response socket that closes before the reply is sent
+    // means the browser actually went away.
+    const onRequestAborted = () => abortController.abort();
+    const onResponseClose = () => { if (!res.writableEnded) abortController.abort(); };
+    req.on('aborted', onRequestAborted);
+    res.on('close', onResponseClose);
     try {
       const result = await ai.suggestTitle(excerpt.context, { signal: abortController.signal });
       // This endpoint never persists a title. The browser must prove that its
@@ -128,7 +141,8 @@ function registerAutoTitleRoutes({ app, db, auth, ai, aiLimiter, autoTitle, stri
       res.status(502).json({ error: 'automatic title failed' });
     } finally {
       inFlight = false;
-      req.removeListener('close', onClientClose);
+      req.removeListener('aborted', onRequestAborted);
+      res.removeListener('close', onResponseClose);
     }
   }));
 
