@@ -98,6 +98,12 @@ function firstForwardedValue(value) {
 }
 
 function getPublicRequestOrigin(req) {
+  // 优先使用 APP_ORIGIN 环境变量：这是部署方显式声明的对外公开 URL，
+  // 比 X-Forwarded-Host 更可靠（反代可能未配置转发头，导致 origin 退化为 127.0.0.1）。
+  // 多个 origin 用逗号分隔时取第一个作为 canonical。
+  if (CONFIGURED_APP_ORIGINS.size > 0) {
+    return Array.from(CONFIGURED_APP_ORIGINS)[0];
+  }
   const trustProxy = app.enabled('trust proxy');
   const forwardedHost = trustProxy ? firstForwardedValue(req.headers['x-forwarded-host']) : '';
   const forwardedProto = trustProxy ? firstForwardedValue(req.headers['x-forwarded-proto']) : '';
@@ -1744,11 +1750,37 @@ function rewriteShareAssetUrls(html, token) {
   return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => quote + base + id + quote);
 }
 
-function rewriteShareAssetUrlsAbsolute(html, token, req) {
+function rewriteShareAssetUrlsAbsolute(html, token, req, publicUrls) {
   const origin = getPublicRequestOrigin(req);
-  if (!origin) return html;
-  const base = origin + '/api/public/share/' + encodeURIComponent(token) + '/assets/';
-  return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => quote + base + id + quote);
+  const fallbackBase = origin ? origin + '/api/public/share/' + encodeURIComponent(token) + '/assets/' : null;
+  const urlMap = publicUrls instanceof Map ? publicUrls : new Map();
+  return String(html || '').replace(/(["'])\/api\/assets\/([0-9a-f-]{36})\1/gi, (match, quote, id) => {
+    // S4 ready 的资源直接写公开 URL（访客浏览器直连 S4，不经 PenMark）；
+    // pending/local 的走 PenMark 兜底路由（访客访问时 waitReady 后再 302）。
+    const publicUrl = urlMap.get(id);
+    if (publicUrl) return quote + publicUrl + quote;
+    return fallbackBase ? quote + fallbackBase + id + quote : match;
+  });
+}
+
+// 预查文档中所有 asset 的 S4 公开 URL，供 rewriteShareAssetUrlsAbsolute 同步使用。
+// 必须在 rewriteShareAssetUrlsAbsolute 之前调用。
+async function preloadShareAssetPublicUrls(docId) {
+  const map = new Map();
+  if (!assetStore.s4Enabled) return map;
+  try {
+    const rows = await db.query(
+      "SELECT id, remote_provider, remote_status, remote_key FROM media_assets WHERE doc_id = $1 AND remote_provider = 's4' AND remote_status = 'ready'",
+      [docId]
+    );
+    for (const row of rows) {
+      const url = assetStore.publicRemoteUrl(row);
+      if (url) map.set(row.id, url);
+    }
+  } catch (err) {
+    console.warn('[share] preload asset public URLs failed:', err && err.message);
+  }
+  return map;
 }
 
 function restorePrivateAssetUrls(html, token) {
@@ -1814,8 +1846,10 @@ app.get('/api/public/share/:token/doc', wrap(async (req, res) => {
   }
   const doc = await db.one('SELECT id, title, content, updated_at, created_at, version FROM documents WHERE id = $1 AND deleted_at IS NULL', [share.doc_id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
+  // 预查本文档中已 ready 的 S4 资源公开 URL，分享 HTML 直接写公开 URL，访客直连 S4 不经 PenMark
+  const publicUrls = await preloadShareAssetPublicUrls(share.doc_id);
   // 读取侧也净化一次：防御历史存量数据中可能存在的恶意脚本（写入侧净化是新增的）
-  doc.content = rewriteShareAssetUrlsAbsolute(sanitizeShareContent(doc.content || ''), share.token, req);
+  doc.content = rewriteShareAssetUrlsAbsolute(sanitizeShareContent(doc.content || ''), share.token, req, publicUrls);
   res.json({ doc, permission: share.permission, can_edit: share.permission === 'edit', owner_nickname: share.owner_nickname || '' });
 }));
 

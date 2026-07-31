@@ -180,6 +180,7 @@ function createAssetStore(db) {
     checkQuota, recordBandwidth,
     waitRemoteReady: remoteMirror.waitReady,
     signedRemoteUrl: remoteMirror.signedUrl,
+    publicRemoteUrl: remoteMirror.publicUrl,
     startRemoteMirrorWorker: remoteMirror.start,
     s4Enabled: remoteMirror.enabled
   };

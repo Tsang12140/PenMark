@@ -100,7 +100,14 @@ function createS4AssetMirror(db, getLocalFilePath) {
     return s4.signGet(asset.remote_key);
   }
 
-  return { enabled: s4.enabled, keyFor, schedule, waitReady, start, flush, signedUrl };
+  // 公开读 URL（不带签名）：bucket 公开读策略下，分享 HTML 直接写这个 URL，
+  // 访客浏览器完全不经过 PenMark 服务器。仅当 S4 启用且资源 ready 时返回。
+  function publicUrl(asset) {
+    if (!s4.enabled || !asset || asset.remote_provider !== 's4' || asset.remote_status !== 'ready' || !asset.remote_key) return null;
+    return s4.publicUrl(asset.remote_key);
+  }
+
+  return { enabled: s4.enabled, keyFor, schedule, waitReady, start, flush, signedUrl, publicUrl };
 }
 
 module.exports = { createS4AssetMirror };

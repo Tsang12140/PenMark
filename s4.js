@@ -114,6 +114,15 @@ function createS4Client(overrides) {
     return target.toString();
   }
 
+  // 公开读 URL（不带签名）：bucket 改公开读策略后，分享 HTML 直接写这个 URL，
+  // 访客浏览器完全不经过 PenMark 服务器，图片流量由 S4/CDN 直出。
+  function publicUrl(key) {
+    if (!enabled) return null;
+    const target = makeUrl(key);
+    target.search = '';
+    return target.toString();
+  }
+
   async function putFile(key, filePath, mimeType) {
     if (!enabled) throw new Error('S4 is not configured');
     const payload = await fs.promises.readFile(filePath);
@@ -153,7 +162,7 @@ function createS4Client(overrides) {
     });
   }
 
-  return { enabled, bucket, region, ttlSeconds, signGet, putFile };
+  return { enabled, bucket, region, ttlSeconds, signGet, publicUrl, putFile };
 }
 
 module.exports = { createS4Client };
