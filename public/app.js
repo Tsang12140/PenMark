@@ -4941,7 +4941,12 @@ function bindAvatarUpload() {
   }
 }
 
-/* ---------- 图片剪裁弹窗（自由选区，4 角拖动调整） ---------- */
+/* ---------- 图片剪裁弹窗（自由选区，8 手柄调整） ----------
+   关键修复：
+   1. 用 fetch + blob + createObjectURL 加载图片，绕开 Canvas CORS 污染
+   2. 剪裁前备份原 src 到 data-crop-original，失败时还原
+   3. 选区覆盖在图片上（飞书式），4 角 + 4 边手柄
+*/
 const imageCropModal = $('imageCropModal');
 const imageCropStage = $('imageCropStage');
 const imageCropImage = $('imageCropImage');
@@ -4949,48 +4954,75 @@ const imageCropSelection = $('imageCropSelection');
 const imageCropConfirm = $('imageCropConfirm');
 const imageCropCancel = $('imageCropCancel');
 const imageCropClose = $('imageCropClose');
-let imageCropState = null; // { imgEl, container, sel: {x,y,w,h}, scale, naturalW, naturalH }
+let imageCropState = null; // { imgEl, container, image, blobUrl, sel, scale, naturalW, naturalH, displayW, displayH }
 
-function openImageCropper(container) {
+async function openImageCropper(container) {
   if (!container) return;
   const imgEl = container.querySelector('img') || (container.tagName === 'IMG' ? container : null);
   if (!imgEl) { toast('未找到图片'); return; }
   const src = imgEl.src;
   if (!src) { toast('图片源无效'); return; }
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = () => {
+  imageCropConfirm.disabled = true;
+  imageCropConfirm.textContent = '加载中...';
+  try {
+    // 用 fetch + blob 加载图片，绕开 Canvas CORS 污染
+    // data URL 直接用，http(s)/相对路径走 fetch
+    let blobUrl;
+    if (/^data:image\//i.test(src)) {
+      blobUrl = src;
+    } else {
+      const resp = await fetch(src, { credentials: 'same-origin' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const blob = await resp.blob();
+      blobUrl = URL.createObjectURL(blob);
+    }
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片解码失败'));
+      img.src = blobUrl;
+    });
     imageCropState = {
-      imgEl, container,
-      naturalW: img.naturalWidth,
-      naturalH: img.naturalHeight,
-      image: img,
+      imgEl, container, image, blobUrl,
+      naturalW: image.naturalWidth,
+      naturalH: image.naturalHeight,
       sel: null
     };
-    imageCropImage.src = src;
+    imageCropImage.src = blobUrl;
     imageCropModal.hidden = false;
     requestAnimationFrame(() => {
       layoutImageCrop();
       imageCropStage.focus();
+      imageCropConfirm.disabled = false;
+      imageCropConfirm.textContent = '确定剪裁';
     });
-  };
-  img.onerror = () => toast('图片加载失败，可能存在跨域限制');
-  img.src = src;
+  } catch (e) {
+    toast('图片加载失败：' + (e.message || e));
+  }
 }
 
 function layoutImageCrop() {
   const s = imageCropState;
   if (!s || !imageCropStage.clientWidth) return;
-  const stageW = imageCropStage.clientWidth;
-  const stageH = Math.min(imageCropImage.naturalHeight * (stageW / imageCropImage.naturalWidth), window.innerHeight * 0.6);
-  imageCropStage.style.height = stageH + 'px';
+  const stageMaxW = imageCropStage.clientWidth;
+  const stageMaxH = window.innerHeight * 0.6;
+  // 按比例缩放图片到 stage 内
+  const ratio = Math.min(stageMaxW / s.naturalW, stageMaxH / s.naturalH, 1);
+  const displayW = Math.round(s.naturalW * ratio);
+  const displayH = Math.round(s.naturalH * ratio);
+  s.displayW = displayW;
+  s.displayH = displayH;
+  s.scale = s.naturalW / displayW; // 显示像素 → 原图像素
+  imageCropImage.style.width = displayW + 'px';
+  imageCropImage.style.height = displayH + 'px';
+  imageCropStage.style.width = displayW + 'px';
+  imageCropStage.style.height = displayH + 'px';
   // 选区初始为图片中心 80% 区域
-  const selW = stageW * 0.8;
-  const selH = stageH * 0.8;
-  const selX = (stageW - selW) / 2;
-  const selY = (stageH - selH) / 2;
+  const selW = displayW * 0.8;
+  const selH = displayH * 0.8;
+  const selX = (displayW - selW) / 2;
+  const selY = (displayH - selH) / 2;
   s.sel = { x: selX, y: selY, w: selW, h: selH };
-  s.scale = s.naturalW / stageW; // 显示像素 → 原图像素 的缩放比
   drawImageCropSelection();
 }
 
@@ -5006,9 +5038,8 @@ function drawImageCropSelection() {
 function clampImageCropSel() {
   const s = imageCropState;
   if (!s || !s.sel) return;
-  const stageW = imageCropStage.clientWidth;
-  const stageH = imageCropStage.clientHeight;
-  // 最小尺寸 20px，防止选区缩没
+  const stageW = s.displayW;
+  const stageH = s.displayH;
   s.sel.w = Math.max(20, Math.min(s.sel.w, stageW));
   s.sel.h = Math.max(20, Math.min(s.sel.h, stageH));
   s.sel.x = Math.max(0, Math.min(s.sel.x, stageW - s.sel.w));
@@ -5016,7 +5047,7 @@ function clampImageCropSel() {
 }
 
 if (imageCropSelection) {
-  let drag = null; // { type: 'move'|'nw'|'ne'|'sw'|'se', startX, startY, sel }
+  let drag = null; // { type: 'move'|'n'|'s'|'e'|'w'|'nw'|'ne'|'sw'|'se', startX, startY, sel }
   imageCropSelection.addEventListener('pointerdown', (e) => {
     const s = imageCropState;
     if (!s || !s.sel) return;
@@ -5033,21 +5064,17 @@ if (imageCropSelection) {
     if (!s) return;
     const dx = e.clientX - drag.startX;
     const dy = e.clientY - drag.startY;
-    const stageW = imageCropStage.clientWidth;
-    const stageH = imageCropStage.clientHeight;
     if (drag.type === 'move') {
       s.sel.x = drag.sel.x + dx;
       s.sel.y = drag.sel.y + dy;
     } else {
-      // 4 角调整大小
+      // 8 手柄调整大小
       let nx = drag.sel.x, ny = drag.sel.y, nw = drag.sel.w, nh = drag.sel.h;
-      if (drag.type === 'nw') { nx = drag.sel.x + dx; ny = drag.sel.y + dy; nw = drag.sel.w - dx; nh = drag.sel.h - dy; }
-      else if (drag.type === 'ne') { ny = drag.sel.y + dy; nw = drag.sel.w + dx; nh = drag.sel.h - dy; }
-      else if (drag.type === 'sw') { nx = drag.sel.x + dx; nw = drag.sel.w - dx; nh = drag.sel.h + dy; }
-      else if (drag.type === 'se') { nw = drag.sel.w + dx; nh = drag.sel.h + dy; }
-      // 防止反转（宽高为负）
-      if (nw < 20) { nw = 20; if (drag.type === 'nw' || drag.type === 'sw') nx = drag.sel.x + drag.sel.w - 20; }
-      if (nh < 20) { nh = 20; if (drag.type === 'nw' || drag.type === 'ne') ny = drag.sel.y + drag.sel.h - 20; }
+      const minSize = 20;
+      if (drag.type.includes('n')) { ny = drag.sel.y + dy; nh = drag.sel.h - dy; if (nh < minSize) { ny = drag.sel.y + drag.sel.h - minSize; nh = minSize; } }
+      if (drag.type.includes('s')) { nh = drag.sel.h + dy; if (nh < minSize) nh = minSize; }
+      if (drag.type.includes('w')) { nx = drag.sel.x + dx; nw = drag.sel.w - dx; if (nw < minSize) { nx = drag.sel.x + drag.sel.w - minSize; nw = minSize; } }
+      if (drag.type.includes('e')) { nw = drag.sel.w + dx; if (nw < minSize) nw = minSize; }
       s.sel = { x: nx, y: ny, w: nw, h: nh };
     }
     clampImageCropSel();
@@ -5063,9 +5090,13 @@ if (imageCropSelection) {
 }
 
 function closeImageCropper() {
+  const s = imageCropState;
+  if (s && s.blobUrl && /^blob:/.test(s.blobUrl)) URL.revokeObjectURL(s.blobUrl);
   imageCropState = null;
   imageCropModal.hidden = true;
   imageCropImage.removeAttribute('src');
+  imageCropImage.style.width = '';
+  imageCropImage.style.height = '';
 }
 
 if (imageCropClose) imageCropClose.addEventListener('click', closeImageCropper);
@@ -5088,7 +5119,11 @@ if (imageCropConfirm) imageCropConfirm.addEventListener('click', () => {
   try {
     ctx.drawImage(s.image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL('image/png');
-    // 替换原图 src，保持容器和样式不变
+    // 备份原 src 便于撤回（首次剪裁时备份，多次剪裁不覆盖备份）
+    if (!s.imgEl.getAttribute('data-crop-original')) {
+      s.imgEl.setAttribute('data-crop-original', s.imgEl.src);
+    }
+    // 替换原图 src
     s.imgEl.src = dataUrl;
     // 触发保存
     if (typeof editor !== 'undefined' && editor._afterChange) editor._afterChange();

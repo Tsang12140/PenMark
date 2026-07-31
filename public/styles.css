@@ -2440,15 +2440,13 @@ body.reading-mode .block-handle{display:none;}
   .avatar-crop-stage,.avatar-crop-zoom{width:min(300px,70vw);}
 }
 
-/* ============ 图片剪裁（自由选区） ============ */
+/* ============ 图片剪裁（自由选区，8 手柄） ============ */
 .image-crop-modal{width:min(680px,92vw);}
 .image-crop-body{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px 20px;}
 .image-crop-desc{margin:0;font-family:var(--sans);font-size:13px;color:var(--ink-soft);}
 .image-crop-stage{
   position:relative;
-  width:100%;
-  max-width:600px;
-  max-height:60vh;
+  margin:0 auto;
   overflow:hidden;
   background:#000;
   border-radius:8px;
@@ -2457,14 +2455,6 @@ body.reading-mode .block-handle{display:none;}
 }
 .image-crop-stage img{
   display:block;
-  max-width:100%;
-  max-height:60vh;
-  pointer-events:none;
-}
-.image-crop-mask{
-  position:absolute;
-  inset:0;
-  background:rgba(0,0,0,.5);
   pointer-events:none;
 }
 .image-crop-selection{
@@ -2476,21 +2466,39 @@ body.reading-mode .block-handle{display:none;}
 }
 .image-crop-handle{
   position:absolute;
-  width:14px;height:14px;
   background:#fff;
   border:2px solid var(--accent);
-  border-radius:50%;
+  z-index:2;
+}
+/* 4 角手柄：正方形 14×14 */
+.image-crop-handle[data-handle="nw"],
+.image-crop-handle[data-handle="ne"],
+.image-crop-handle[data-handle="sw"],
+.image-crop-handle[data-handle="se"]{
+  width:14px;height:14px;border-radius:2px;
 }
 .image-crop-handle[data-handle="nw"]{left:-7px;top:-7px;cursor:nwse-resize;}
 .image-crop-handle[data-handle="ne"]{right:-7px;top:-7px;cursor:nesw-resize;}
 .image-crop-handle[data-handle="sw"]{left:-7px;bottom:-7px;cursor:nesw-resize;}
 .image-crop-handle[data-handle="se"]{right:-7px;bottom:-7px;cursor:nwse-resize;}
+/* 4 边手柄：长条，半透明视觉引导 */
+.image-crop-handle[data-handle="n"],
+.image-crop-handle[data-handle="s"]{
+  left:50%;width:30px;height:8px;margin-left:-15px;border-radius:2px;
+}
+.image-crop-handle[data-handle="n"]{top:-4px;cursor:ns-resize;}
+.image-crop-handle[data-handle="s"]{bottom:-4px;cursor:ns-resize;}
+.image-crop-handle[data-handle="e"],
+.image-crop-handle[data-handle="w"]{
+  top:50%;width:8px;height:30px;margin-top:-15px;border-radius:2px;
+}
+.image-crop-handle[data-handle="e"]{right:-4px;cursor:ew-resize;}
+.image-crop-handle[data-handle="w"]{left:-4px;cursor:ew-resize;}
 .image-crop-modal .modal-close svg{width:18px;height:18px;}
 
 @media (max-width:640px){
   .image-crop-modal{max-height:92vh;}
   .image-crop-stage{max-height:50vh;}
-  .image-crop-stage img{max-height:50vh;}
 }
 
 /* ============ AI 对话面板（右侧丝滑滑入，不虚化文档） ============ */
