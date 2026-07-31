@@ -294,6 +294,11 @@ body.pre-auth .app{visibility:hidden;}
   background:var(--highlight);
   box-shadow:inset 0 0 0 1px var(--accent-soft);
 }
+/* 文件夹排序拖动：在 head 上方/下方显示插入指示线 */
+.folder-head.sort-before{box-shadow:inset 0 2px 0 0 var(--accent);}
+.folder-head.sort-after{box-shadow:inset 0 -2px 0 0 var(--accent);}
+.folder-head[draggable="true"]{cursor:grab;}
+.folder-head[draggable="true"]:active{cursor:grabbing;}
 .doc-item.dragging{opacity:.4;}
 .doc-item.cutting{opacity:.48;}
 .folder-item.unfiled .folder-head{cursor:default;}
@@ -2433,6 +2438,59 @@ body.reading-mode .block-handle{display:none;}
 @media (max-width:640px){
   .avatar-crop-modal{max-height:92vh;}
   .avatar-crop-stage,.avatar-crop-zoom{width:min(300px,70vw);}
+}
+
+/* ============ 图片剪裁（自由选区） ============ */
+.image-crop-modal{width:min(680px,92vw);}
+.image-crop-body{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px 20px;}
+.image-crop-desc{margin:0;font-family:var(--sans);font-size:13px;color:var(--ink-soft);}
+.image-crop-stage{
+  position:relative;
+  width:100%;
+  max-width:600px;
+  max-height:60vh;
+  overflow:hidden;
+  background:#000;
+  border-radius:8px;
+  user-select:none;
+  touch-action:none;
+}
+.image-crop-stage img{
+  display:block;
+  max-width:100%;
+  max-height:60vh;
+  pointer-events:none;
+}
+.image-crop-mask{
+  position:absolute;
+  inset:0;
+  background:rgba(0,0,0,.5);
+  pointer-events:none;
+}
+.image-crop-selection{
+  position:absolute;
+  border:2px solid #fff;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.5);
+  cursor:move;
+  pointer-events:auto;
+}
+.image-crop-handle{
+  position:absolute;
+  width:14px;height:14px;
+  background:#fff;
+  border:2px solid var(--accent);
+  border-radius:50%;
+}
+.image-crop-handle[data-handle="nw"]{left:-7px;top:-7px;cursor:nwse-resize;}
+.image-crop-handle[data-handle="ne"]{right:-7px;top:-7px;cursor:nesw-resize;}
+.image-crop-handle[data-handle="sw"]{left:-7px;bottom:-7px;cursor:nesw-resize;}
+.image-crop-handle[data-handle="se"]{right:-7px;bottom:-7px;cursor:nwse-resize;}
+.image-crop-modal .modal-close svg{width:18px;height:18px;}
+
+@media (max-width:640px){
+  .image-crop-modal{max-height:92vh;}
+  .image-crop-stage{max-height:50vh;}
+  .image-crop-stage img{max-height:50vh;}
 }
 
 /* ============ AI 对话面板（右侧丝滑滑入，不虚化文档） ============ */

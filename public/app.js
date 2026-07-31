@@ -1059,6 +1059,7 @@ floatMenuImg.addEventListener('click', (e) => {
   switch (act) {
     case 'copy': editor.copyImage(c); break;
     case 'cut': editor.cutImage(c); floatMenuImg.hidden = true; break;
+    case 'crop': openImageCropper(c); floatMenuImg.hidden = true; break;
     case 'small': editor.smallImageSize(c); updateImageFloatMenu(c); break;
     case 'original': editor.resetImageSize(c); updateImageFloatMenu(c); break;
     case 'align-left': editor.alignImage(c, 'left'); break;
@@ -1882,6 +1883,7 @@ function translateApiError(msg) {
 
 /* ---------- 文档列表 + 文件夹 ---------- */
 let folders = [];
+let sidebarDocs = [];
 let expandedFolders = new Set(JSON.parse(localStorage.getItem('penmark_expanded_folders') || '[]'));
 let draggingDocId = null;
 let renamingFolderId = null;
@@ -1891,6 +1893,7 @@ async function loadSidebar() {
   try {
     const [fRes, dRes] = await Promise.all([api('/api/folders'), api('/api/documents')]);
     folders = fRes;
+    sidebarDocs = dRes;
     renderSidebar(dRes);
   } catch (e) {
     // 401 由 api() 内部处理；其他错误提示避免 unhandled rejection
@@ -1951,6 +1954,7 @@ function renderFolderItem(folder, docs) {
     showFolderMenu(folder, head.querySelector('.folder-menu'));
   });
   bindDropTarget(head, folder.id, wrap);
+  bindFolderSortDrag(head, folder.id);
 
   // 子文档容器（作为拖拽 drop target）
   const list = document.createElement('div');
@@ -2041,9 +2045,79 @@ function getDraggingDocId(e) {
   }
 }
 
+// 文件夹拖动排序：用全局变量记录当前拖动的文件夹 ID，区分"文件夹排序"和"文档移动"
+let _draggingFolderId = null;
+
+function bindFolderSortDrag(head, folderId) {
+  head.setAttribute('draggable', 'true');
+  head.addEventListener('dragstart', (e) => {
+    _draggingFolderId = folderId;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/penmark-folder', String(folderId));
+    }
+  });
+  head.addEventListener('dragend', () => {
+    _draggingFolderId = null;
+    // 清除所有插入指示线
+    document.querySelectorAll('.folder-head.sort-before, .folder-head.sort-after').forEach(el => {
+      el.classList.remove('sort-before', 'sort-after');
+    });
+  });
+  head.addEventListener('dragover', (e) => {
+    if (_draggingFolderId === null || _draggingFolderId === folderId) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    // 根据鼠标在 head 上的位置（上半/下半）决定插入到前面还是后面
+    const rect = head.getBoundingClientRect();
+    const isBefore = (e.clientY - rect.top) < rect.height / 2;
+    head.classList.toggle('sort-before', isBefore);
+    head.classList.toggle('sort-after', !isBefore);
+  });
+  head.addEventListener('dragleave', (e) => {
+    if (!head.contains(e.relatedTarget)) {
+      head.classList.remove('sort-before', 'sort-after');
+    }
+  });
+  head.addEventListener('drop', (e) => {
+    if (_draggingFolderId === null || _draggingFolderId === folderId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = head.getBoundingClientRect();
+    const isBefore = (e.clientY - rect.top) < rect.height / 2;
+    head.classList.remove('sort-before', 'sort-after');
+    reorderFolders(_draggingFolderId, folderId, isBefore);
+    _draggingFolderId = null;
+  });
+}
+
+async function reorderFolders(draggedId, targetId, isBefore) {
+  // 重新排序 folders 数组
+  const draggedIdx = folders.findIndex(f => String(f.id) === String(draggedId));
+  if (draggedIdx < 0) return;
+  const targetIdx = folders.findIndex(f => String(f.id) === String(targetId));
+  if (targetIdx < 0) return;
+  const [moved] = folders.splice(draggedIdx, 1);
+  let insertIdx = folders.findIndex(f => String(f.id) === String(targetId));
+  if (insertIdx < 0) insertIdx = folders.length;
+  if (!isBefore) insertIdx += 1;
+  folders.splice(insertIdx, 0, moved);
+  // 立即重新渲染，避免延迟感
+  renderSidebar(sidebarDocs);
+  // 持久化到后端
+  try {
+    await api('/api/folders/sort', 'PUT', { ids: folders.map(f => f.id) });
+  } catch (e) {
+    toast('文件夹排序失败：' + (e.message || e));
+    await loadSidebar();
+  }
+}
+
 function bindDropTarget(targetEl, folderId, highlightEl) {
   const hl = highlightEl || targetEl;
   targetEl.addEventListener('dragover', (e) => {
+    // 文件夹排序拖动时不在文档 drop target 上显示高亮
+    if (_draggingFolderId !== null) return;
     // dataTransfer.types 在旧 Chrome(<71)/某些 Safari 是 DOMStringList，没有 indexOf；
     // 用 Array.from 包装兼容所有浏览器，否则会抛 TypeError 导致 preventDefault 不执行、drop 永远不触发
     const types = e.dataTransfer && e.dataTransfer.types ? Array.from(e.dataTransfer.types) : [];
@@ -4867,6 +4941,170 @@ function bindAvatarUpload() {
   }
 }
 
+/* ---------- 图片剪裁弹窗（自由选区，4 角拖动调整） ---------- */
+const imageCropModal = $('imageCropModal');
+const imageCropStage = $('imageCropStage');
+const imageCropImage = $('imageCropImage');
+const imageCropSelection = $('imageCropSelection');
+const imageCropConfirm = $('imageCropConfirm');
+const imageCropCancel = $('imageCropCancel');
+const imageCropClose = $('imageCropClose');
+let imageCropState = null; // { imgEl, container, sel: {x,y,w,h}, scale, naturalW, naturalH }
+
+function openImageCropper(container) {
+  if (!container) return;
+  const imgEl = container.querySelector('img') || (container.tagName === 'IMG' ? container : null);
+  if (!imgEl) { toast('未找到图片'); return; }
+  const src = imgEl.src;
+  if (!src) { toast('图片源无效'); return; }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    imageCropState = {
+      imgEl, container,
+      naturalW: img.naturalWidth,
+      naturalH: img.naturalHeight,
+      image: img,
+      sel: null
+    };
+    imageCropImage.src = src;
+    imageCropModal.hidden = false;
+    requestAnimationFrame(() => {
+      layoutImageCrop();
+      imageCropStage.focus();
+    });
+  };
+  img.onerror = () => toast('图片加载失败，可能存在跨域限制');
+  img.src = src;
+}
+
+function layoutImageCrop() {
+  const s = imageCropState;
+  if (!s || !imageCropStage.clientWidth) return;
+  const stageW = imageCropStage.clientWidth;
+  const stageH = Math.min(imageCropImage.naturalHeight * (stageW / imageCropImage.naturalWidth), window.innerHeight * 0.6);
+  imageCropStage.style.height = stageH + 'px';
+  // 选区初始为图片中心 80% 区域
+  const selW = stageW * 0.8;
+  const selH = stageH * 0.8;
+  const selX = (stageW - selW) / 2;
+  const selY = (stageH - selH) / 2;
+  s.sel = { x: selX, y: selY, w: selW, h: selH };
+  s.scale = s.naturalW / stageW; // 显示像素 → 原图像素 的缩放比
+  drawImageCropSelection();
+}
+
+function drawImageCropSelection() {
+  const s = imageCropState;
+  if (!s || !s.sel) return;
+  imageCropSelection.style.left = s.sel.x + 'px';
+  imageCropSelection.style.top = s.sel.y + 'px';
+  imageCropSelection.style.width = s.sel.w + 'px';
+  imageCropSelection.style.height = s.sel.h + 'px';
+}
+
+function clampImageCropSel() {
+  const s = imageCropState;
+  if (!s || !s.sel) return;
+  const stageW = imageCropStage.clientWidth;
+  const stageH = imageCropStage.clientHeight;
+  // 最小尺寸 20px，防止选区缩没
+  s.sel.w = Math.max(20, Math.min(s.sel.w, stageW));
+  s.sel.h = Math.max(20, Math.min(s.sel.h, stageH));
+  s.sel.x = Math.max(0, Math.min(s.sel.x, stageW - s.sel.w));
+  s.sel.y = Math.max(0, Math.min(s.sel.y, stageH - s.sel.h));
+}
+
+if (imageCropSelection) {
+  let drag = null; // { type: 'move'|'nw'|'ne'|'sw'|'se', startX, startY, sel }
+  imageCropSelection.addEventListener('pointerdown', (e) => {
+    const s = imageCropState;
+    if (!s || !s.sel) return;
+    const handle = e.target.closest('.image-crop-handle');
+    const type = handle ? handle.getAttribute('data-handle') : 'move';
+    drag = { type, startX: e.clientX, startY: e.clientY, sel: { ...s.sel } };
+    imageCropSelection.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  imageCropSelection.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const s = imageCropState;
+    if (!s) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    const stageW = imageCropStage.clientWidth;
+    const stageH = imageCropStage.clientHeight;
+    if (drag.type === 'move') {
+      s.sel.x = drag.sel.x + dx;
+      s.sel.y = drag.sel.y + dy;
+    } else {
+      // 4 角调整大小
+      let nx = drag.sel.x, ny = drag.sel.y, nw = drag.sel.w, nh = drag.sel.h;
+      if (drag.type === 'nw') { nx = drag.sel.x + dx; ny = drag.sel.y + dy; nw = drag.sel.w - dx; nh = drag.sel.h - dy; }
+      else if (drag.type === 'ne') { ny = drag.sel.y + dy; nw = drag.sel.w + dx; nh = drag.sel.h - dy; }
+      else if (drag.type === 'sw') { nx = drag.sel.x + dx; nw = drag.sel.w - dx; nh = drag.sel.h + dy; }
+      else if (drag.type === 'se') { nw = drag.sel.w + dx; nh = drag.sel.h + dy; }
+      // 防止反转（宽高为负）
+      if (nw < 20) { nw = 20; if (drag.type === 'nw' || drag.type === 'sw') nx = drag.sel.x + drag.sel.w - 20; }
+      if (nh < 20) { nh = 20; if (drag.type === 'nw' || drag.type === 'ne') ny = drag.sel.y + drag.sel.h - 20; }
+      s.sel = { x: nx, y: ny, w: nw, h: nh };
+    }
+    clampImageCropSel();
+    drawImageCropSelection();
+  });
+  const endImageCropDrag = (e) => {
+    if (!drag) return;
+    if (imageCropSelection.hasPointerCapture(e.pointerId)) imageCropSelection.releasePointerCapture(e.pointerId);
+    drag = null;
+  };
+  imageCropSelection.addEventListener('pointerup', endImageCropDrag);
+  imageCropSelection.addEventListener('pointercancel', endImageCropDrag);
+}
+
+function closeImageCropper() {
+  imageCropState = null;
+  imageCropModal.hidden = true;
+  imageCropImage.removeAttribute('src');
+}
+
+if (imageCropClose) imageCropClose.addEventListener('click', closeImageCropper);
+if (imageCropCancel) imageCropCancel.addEventListener('click', closeImageCropper);
+if (imageCropModal) imageCropModal.addEventListener('pointerdown', (e) => { if (e.target === imageCropModal) closeImageCropper(); });
+if (imageCropConfirm) imageCropConfirm.addEventListener('click', () => {
+  const s = imageCropState;
+  if (!s || !s.sel) return;
+  // 选区显示像素 → 原图像素
+  const sx = s.sel.x * s.scale;
+  const sy = s.sel.y * s.scale;
+  const sw = s.sel.w * s.scale;
+  const sh = s.sel.h * s.scale;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sw);
+  canvas.height = Math.round(sh);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+  try {
+    ctx.drawImage(s.image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    // 替换原图 src，保持容器和样式不变
+    s.imgEl.src = dataUrl;
+    // 触发保存
+    if (typeof editor !== 'undefined' && editor._afterChange) editor._afterChange();
+    closeImageCropper();
+    toast('图片已剪裁');
+  } catch (e) {
+    toast('剪裁失败：' + (e.message || '图片可能存在跨域限制'));
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && imageCropModal && !imageCropModal.hidden) closeImageCropper();
+});
+window.addEventListener('resize', () => {
+  if (imageCropState) layoutImageCrop();
+});
+
 // 设置入口仅管理员可见；分享入口对管理员及被授权用户可见
 function updateShareButton() {
   const shareBtn = $('shareBtn');
@@ -5974,21 +6212,24 @@ function updateOutline(immediate, delay) {
     // 过滤 .toc 内的标题，和编辑器 _buildTOCHTML 保持一致
     const headings = Array.from(editorEl.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc'));
     if (headings.length < 2) { docOutline.hidden = true; return; }
+    // 跳过内容为空或仅含空白/不可见字符的标题，避免"空标题"进入目录
+    const visibleHeadings = headings.filter(h => h.textContent.trim().length > 0);
+    if (visibleHeadings.length < 2) { docOutline.hidden = true; return; }
     // 强制按文档顺序分配唯一 ID（消除导入文档中可能的重复 ID）
     const prefix = 'outline-' + (currentDoc ? currentDoc.id : 'draft') + '-';
-    headings.forEach((h, i) => { h.id = prefix + i; });
+    visibleHeadings.forEach((h, i) => { h.id = prefix + i; });
     let html = '<div class="outline-title">大纲</div><ol class="outline-list">';
-    headings.forEach((h, i) => {
+    visibleHeadings.forEach((h, i) => {
       const level = h.tagName.toLowerCase();
       const indent = level === 'h2' ? 'padding-left:1.2em;' : (level === 'h3' ? 'padding-left:2.4em;' : '');
-      const text = h.textContent.trim() || '空标题';
+      const text = h.textContent.trim();
       html += '<li style="' + indent + '"><a href="#' + h.id + '" data-outline-idx="' + i + '">' + escapeHtml(text) + '</a></li>';
     });
     html += '</ol>';
     docOutline.innerHTML = html;
     docOutline.hidden = false;
     positionOutline();
-    setupOutlineObserver(headings);
+    setupOutlineObserver(visibleHeadings);
   };
   if (immediate) {
     build();

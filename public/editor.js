@@ -2041,7 +2041,8 @@ export class Editor {
         { re: /^- $/, type: 'ul' }, { re: /^\* $/, type: 'ul' },
         { re: /^> $/, type: 'quote' }, { re: /^``` $/, type: 'code' },
         { re: /^1\. $/, type: 'ol' },
-        { re: /^\[\] $/, type: 'todo' }, { re: /^\[ \] $/, type: 'todo' }
+        { re: /^\[\] $/, type: 'todo' }, { re: /^\[ \] $/, type: 'todo' },
+        { re: /^---$/, type: 'hr' }
       ];
       for (const p of patterns) {
         if (p.re.test(before)) {
@@ -2058,6 +2059,7 @@ export class Editor {
           else if (p.type === 'ul') document.execCommand('insertUnorderedList');
           else if (p.type === 'ol') document.execCommand('insertOrderedList');
           else if (p.type === 'todo') this._insertTodoBlock();
+          else if (p.type === 'hr') this.insertHR();
           else document.execCommand('formatBlock', false, '<' + p.type.toUpperCase() + '>');
           this._afterChange();
           return;
@@ -2564,6 +2566,12 @@ export class Editor {
         e.preventDefault();
         const tags = { '0':'P', '1':'H1', '2':'H2', '3':'H3', '4':'H4', '5':'H5', '6':'H6' };
         this.formatBlock(tags[k]);
+      }
+      // 兜底：某些键盘布局下 e.key 不是数字（如 Digit1 键），用 e.code 识别
+      else if (e.altKey && /^Digit[0-6]$/.test(code)) {
+        e.preventDefault();
+        const tags = { 'Digit0':'P', 'Digit1':'H1', 'Digit2':'H2', 'Digit3':'H3', 'Digit4':'H4', 'Digit5':'H5', 'Digit6':'H6' };
+        this.formatBlock(tags[code]);
       }
       else if (e.altKey && k === 'q') { e.preventDefault(); this.formatBlock('BLOCKQUOTE'); }
       else if (e.altKey && k === '`') { e.preventDefault(); this.formatBlock('PRE'); }
