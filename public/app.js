@@ -120,6 +120,8 @@ function queueDataImageUpload({ image, src }) {
     }
   })().catch((err) => {
     console.warn('[assets] background image upload failed:', err && err.message);
+    // 配额超限 / 上传失败时提示用户：图片仍以 data: URL 显示，但未入库，刷新后会丢失
+    if (err && err.message) toast(err.message);
   }).finally(() => {
     doc._assetUploads = Math.max(0, (doc._assetUploads || 1) - 1);
     if (doc._assetUploads) return;
@@ -1678,7 +1680,16 @@ document.addEventListener('scroll', noteAutoTitlePageActivity, true);
 
 /* ---------- 自动保存 ---------- */
 function scheduleAutoSave(delay) {
-  if (switching || !currentDoc) return;
+  if (!currentDoc) return;
+  // 新建请求还在进行时，编辑器已经可用。只记录真实输入的保存意图，
+  // 等文档 ID 落地后由 newDoc/newDocInFolder 立即 flush，避免首笔粘贴丢失。
+  if (currentDoc._pending) {
+    const hasContent = (editorEl.textContent || '').trim() ||
+      editorEl.querySelector('img, table, hr, video, audio, iframe');
+    if (hasContent || docTitleEl.value.trim()) currentDoc._pendingSave = true;
+    return;
+  }
+  if (switching) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveStateEl.textContent = '编辑中…';
   saveTimer = setTimeout(saveCurrent, Number.isFinite(delay) ? Math.max(0, delay) : 1000);

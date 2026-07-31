@@ -654,11 +654,17 @@ app.get('/api/documents/:id', wrap(async (req, res) => {
 
 // Private image route: only the document owner can read a random UUID asset.
 app.get('/api/assets/:id', wrap(async (req, res) => {
-  const asset = await db.one(
+  let asset = await db.one(
     'SELECT a.* FROM media_assets a JOIN documents d ON d.id = a.doc_id WHERE a.id = $1 AND a.owner_id = $2 AND d.user_id = $3 AND d.deleted_at IS NULL',
     [req.params.id, req.user.id, req.user.id]
   );
   if (!asset) return res.status(404).json({ error: 'not found' });
+  // S4 启用但资源仍 pending 时，主动等待上传完成，避免 owner 看不到自己刚上传的图
+  if (asset.remote_provider === 's4' && asset.remote_status === 'pending') {
+    await assetStore.waitRemoteReady(asset.id, 5000);
+    const refreshed = await db.one('SELECT * FROM media_assets WHERE id = $1', [asset.id]);
+    if (refreshed) asset = refreshed;
+  }
   // The stable PenMark URL remains in document HTML. Only an authorized request
   // receives a fresh S4 redirect, so expiry/revocation checks still happen here.
   const remoteUrl = assetStore.signedRemoteUrl(asset);
@@ -683,8 +689,11 @@ app.post('/api/documents/:id/assets', wrap(async (req, res) => {
   const dataUrl = String(req.body && req.body.data_url || '');
   let asset;
   try {
-    asset = await assetStore.create({ docId: doc.id, ownerId: doc.user_id, dataUrl, mirrorToRemote: !!req.user.isAdmin });
+    asset = await assetStore.create({ docId: doc.id, ownerId: doc.user_id, isAdmin: !!req.user.isAdmin, dataUrl, mirrorToRemote: true });
   } catch (err) {
+    if (err && err.code === 'QUOTA_EXCEEDED') {
+      return res.status(413).json({ error: err.message, quota_reason: err.quotaReason });
+    }
     return res.status(400).json({ error: err && err.message ? err.message : '\u56fe\u7247\u4e0a\u4f20\u5931\u8d25' });
   }
   res.status(201).json(asset);
@@ -698,8 +707,8 @@ app.post('/api/documents/:id/optimize-images', wrap(async (req, res) => {
     [req.params.id, req.user.id]
   );
   if (!doc) return res.status(404).json({ error: 'not found' });
-  // Legacy inline images use the same admin-only mirror policy as new pastes.
-  const optimized = await assetStore.externalize(Object.assign(doc, { mirrorToRemote: !!req.user.isAdmin }));
+  // 旧版内联 base64 图片迁移：S4 启用时所有用户都镜像
+  const optimized = await assetStore.externalize(Object.assign(doc, { ownerIsAdmin: !!req.user.isAdmin, mirrorToRemote: true }));
   if (!optimized.optimized) return res.json({ optimized: 0, skipped: optimized.skipped || 0, version: doc.version });
   const now = Date.now();
   const info = await db.execute(
@@ -1756,13 +1765,24 @@ app.get('/api/public/share/:token/assets/:assetId', wrap(async (req, res) => {
     const session = auth.verifyShareSession(auth.readShareCookie(req));
     if (!session || !session.authed || session.token !== share.token) return res.status(401).json({ error: 'need_password' });
   }
-  const asset = await db.one(
+  let asset = await db.one(
     'SELECT * FROM media_assets WHERE id = $1 AND doc_id = $2',
     [req.params.assetId, share.doc_id]
   );
   if (!asset) return res.status(404).json({ error: 'not found' });
+  // 核心修复：管理员/用户上传后立即分享，访客打开时 S4 可能仍 pending。
+  // 此时主动等待 S4 上传完成（最多 5 秒），完成后再走 302 signedUrl。
+  // 这样保证"分享出去的图，哪怕访客是游客也能看到"，前提是 S4 已配置且上传最终会成功。
+  // S4 未启用 / 上传失败 / 超时 → 回退本地文件兜底。
+  if (asset.remote_provider === 's4' && asset.remote_status === 'pending') {
+    await assetStore.waitRemoteReady(asset.id, 5000);
+    const refreshed = await db.one('SELECT * FROM media_assets WHERE id = $1', [asset.id]);
+    if (refreshed) asset = refreshed;
+  }
   const remoteUrl = assetStore.signedRemoteUrl(asset);
   if (remoteUrl) {
+    // 302 到 S4 后流量由 S4 直出，无法在 PenMark 侧精确计量；按 asset 字节估算并累计到 owner
+    assetStore.recordBandwidth(asset.owner_id, asset.byte_size).catch(() => {});
     res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
     return res.redirect(302, remoteUrl);
   }
@@ -1772,6 +1792,12 @@ app.get('/api/public/share/:token/assets/:assetId', wrap(async (req, res) => {
     'Content-Type': asset.mime_type,
     'Cache-Control': 'private, max-age=31536000, immutable',
     'X-Content-Type-Options': 'nosniff'
+  });
+  // 本地直出按真实字节累计流量
+  res.on('finish', () => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      assetStore.recordBandwidth(asset.owner_id, asset.byte_size).catch(() => {});
+    }
   });
   res.sendFile(filePath);
 }));

@@ -13,6 +13,17 @@ const MIME_EXTENSIONS = {
   'image/avif': 'avif'
 };
 
+// 普通用户配额（管理员不限）：
+// - 单用户图片总存储量 2GB
+// - 单用户每月图片访问流量 500MB（仅统计成功响应的字节数）
+const QUOTA_STORAGE_BYTES = 2 * 1024 * 1024 * 1024;
+const QUOTA_BANDWIDTH_MONTHLY_BYTES = 500 * 1024 * 1024;
+
+function monthStart(now) {
+  const d = now instanceof Date ? now : new Date(now || Date.now());
+  return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+}
+
 function imageBufferMatchesMime(mimeType, buffer) {
   if (!buffer || buffer.length < 12) return false;
   if (mimeType === 'image/png') return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
@@ -49,11 +60,63 @@ function createAssetStore(db) {
 
   function url(id) { return '/api/assets/' + id; }
 
-  async function create({ docId, ownerId, dataUrl, mirrorToRemote }) {
+  // 配额检查：管理员不限；普通用户校验总存储量与本月流量
+  // 上传时按图片字节累加预判，避免写入后再回滚
+  async function checkQuota(ownerId, isAdmin, additionalBytes) {
+    if (isAdmin) return { ok: true };
+    const storageRow = await db.one(
+      'SELECT COALESCE(SUM(byte_size), 0) AS total FROM media_assets WHERE owner_id = $1',
+      [ownerId]
+    );
+    const totalStorage = Number(storageRow && storageRow.total || 0);
+    if (totalStorage + additionalBytes > QUOTA_STORAGE_BYTES) {
+      return { ok: false, reason: 'storage', used: totalStorage, quota: QUOTA_STORAGE_BYTES };
+    }
+    const ms = monthStart();
+    const bwRow = await db.one(
+      'SELECT bytes FROM user_asset_bandwidth WHERE user_id = $1 AND month_start = $2',
+      [ownerId, ms]
+    );
+    const usedBw = Number(bwRow && bwRow.bytes || 0);
+    if (usedBw + additionalBytes > QUOTA_BANDWIDTH_MONTHLY_BYTES) {
+      return { ok: false, reason: 'bandwidth', used: usedBw, quota: QUOTA_BANDWIDTH_MONTHLY_BYTES };
+    }
+    return { ok: true };
+  }
+
+  // 记录访问流量（仅成功响应时调用；管理员同样累计，便于观测）
+  // upsert 语法同时兼容 PostgreSQL 与 SQLite 3.24+
+  async function recordBandwidth(ownerId, bytes) {
+    if (!bytes || bytes <= 0) return;
+    const ms = monthStart();
+    try {
+      await db.execute(
+        'INSERT INTO user_asset_bandwidth (user_id, month_start, bytes) VALUES ($1, $2, $3) ' +
+        'ON CONFLICT (user_id, month_start) DO UPDATE SET bytes = user_asset_bandwidth.bytes + EXCLUDED.bytes',
+        [ownerId, ms, bytes]
+      );
+    } catch (err) {
+      // 流量统计失败不应阻断图片响应
+      console.warn('[assets] recordBandwidth failed:', err && err.message);
+    }
+  }
+
+  async function create({ docId, ownerId, isAdmin, dataUrl, mirrorToRemote }) {
     const image = decodeInlineImage(dataUrl);
+    // 配额预检：失败抛出带 code 的错误，路由层据此返回 413
+    const quota = await checkQuota(ownerId, !!isAdmin, image.buffer.length);
+    if (!quota.ok) {
+      const err = new Error(quota.reason === 'storage'
+        ? '图片存储总量超出 2GB 限制，请删除旧文档中的图片或联系管理员'
+        : '本月图片访问流量超出 500MB 限制，请下月再试或联系管理员');
+      err.code = 'QUOTA_EXCEEDED';
+      err.quotaReason = quota.reason;
+      throw err;
+    }
     const id = crypto.randomUUID();
     const storageName = id + '.' + MIME_EXTENSIONS[image.mimeType];
-    const shouldMirror = !!mirrorToRemote && remoteMirror.enabled;
+    // S4 启用时所有用户都镜像；管理员不限，普通用户也走 S4（解决访客看不到图片的核心问题）
+    const shouldMirror = mirrorToRemote !== false && remoteMirror.enabled;
     const remoteKey = shouldMirror ? remoteMirror.keyFor(id, MIME_EXTENSIONS[image.mimeType]) : null;
     const finalPath = path.join(root, storageName);
     const tempPath = finalPath + '.uploading-' + crypto.randomBytes(6).toString('hex');
@@ -91,8 +154,18 @@ function createAssetStore(db) {
     let skipped = 0;
     for (const source of sources) {
       if (replacements.has(source)) continue;
-      try { replacements.set(source, await create({ docId: doc.id, ownerId: doc.user_id, dataUrl: source, mirrorToRemote: doc.mirrorToRemote })); }
-      catch (err) { skipped++; console.warn('[assets] skipped an inline image:', err && err.message); }
+      try {
+        replacements.set(source, await create({
+          docId: doc.id,
+          ownerId: doc.user_id,
+          isAdmin: !!doc.ownerIsAdmin,
+          dataUrl: source,
+          mirrorToRemote: doc.mirrorToRemote !== false
+        }));
+      } catch (err) {
+        skipped++;
+        console.warn('[assets] skipped an inline image:', err && err.message);
+      }
     }
     if (!replacements.size) return { optimized: 0, skipped, content: doc.content };
     const content = String(doc.content || '').replace(/<img\b[^>]*?\bsrc\s*=\s*(["'])(data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/=]+)\1/gi, (tag, quote, source) => {
@@ -102,7 +175,14 @@ function createAssetStore(db) {
     return { optimized: replacements.size, skipped, content };
   }
 
-  return { create, externalize, filePath, url, signedRemoteUrl: remoteMirror.signedUrl, startRemoteMirrorWorker: remoteMirror.start, s4Enabled: remoteMirror.enabled };
+  return {
+    create, externalize, filePath, url,
+    checkQuota, recordBandwidth,
+    waitRemoteReady: remoteMirror.waitReady,
+    signedRemoteUrl: remoteMirror.signedUrl,
+    startRemoteMirrorWorker: remoteMirror.start,
+    s4Enabled: remoteMirror.enabled
+  };
 }
 
 module.exports = { createAssetStore };

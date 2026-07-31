@@ -682,7 +682,9 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   counter-reset:pm-ol;
   padding-left:2em;
 }
+/* 防御粘贴内容自带的内联 list-style 或 style 标签覆盖，确保 ::marker 不显示 */
 :where(.editor, .share-reader, .share-editor, .doc) ol > li{
+  list-style:none;
   position:relative;
   counter-increment:pm-ol;
 }
@@ -1492,7 +1494,6 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .fm-ai-submit .fm-ai-stop-icon{
   width:14px;
   height:14px;
-  display:block;
 }
 .fm-ai-submit.loading{color:#c44;}
 .fm-ai-submit.loading:hover{background:rgba(192,57,43,.12);color:#c44;}

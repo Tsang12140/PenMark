@@ -1837,6 +1837,7 @@ export class Editor {
       .filter(Boolean)
       .filter(s => !/expression\s*\(/i.test(s))
       .filter(s => !/url\s*\(\s*['"]?\s*javascript:/i.test(s))
+      .filter(s => !/^\s*list-style\b/i.test(s))  // 剥掉粘贴内容自带的列表编号样式，编辑器用 CSS counter 统一渲染
       .join('; ');
   }
 

@@ -12,13 +12,29 @@ function createS4AssetMirror(db, getLocalFilePath) {
   }
 
   function schedule(assetId) {
-    if (!s4.enabled || inFlight.has(assetId)) return inFlight.get(assetId) || null;
+    if (!s4.enabled) return null;
+    if (inFlight.has(assetId)) return inFlight.get(assetId);
     const task = Promise.resolve()
       .then(() => mirror(assetId))
       .catch(err => console.warn('[assets] S4 mirror failed:', err && err.message))
       .finally(() => inFlight.delete(assetId));
     inFlight.set(assetId, task);
     return task;
+  }
+
+  // 访客访问分享图片时使用：若 S4 启用但资源仍 pending，主动触发并等待上传完成。
+  // 这解决了"管理员刚上传图片就分享，访客打开时 S4 还没就绪"的核心问题。
+  // task 完成（成功或失败）后查一次状态：ready 返回 true，否则返回 false 让路由回退本地兜底。
+  // 不做无限轮询，因为 task 完成后状态不会再变。
+  async function waitReady(assetId, timeoutMs) {
+    if (!s4.enabled) return false;
+    const task = inFlight.get(assetId) || schedule(assetId);
+    if (task) {
+      const timeout = new Promise(resolve => setTimeout(resolve, Math.max(1000, Number(timeoutMs) || 5000), false));
+      try { await Promise.race([task, timeout]); } catch (_) { /* schedule 已吞错，此处仅等待 */ }
+    }
+    const row = await db.one('SELECT remote_status FROM media_assets WHERE id = $1', [assetId]);
+    return !!(row && row.remote_status === 'ready');
   }
 
   async function mirror(assetId) {
@@ -84,7 +100,7 @@ function createS4AssetMirror(db, getLocalFilePath) {
     return s4.signGet(asset.remote_key);
   }
 
-  return { enabled: s4.enabled, keyFor, schedule, start, flush, signedUrl };
+  return { enabled: s4.enabled, keyFor, schedule, waitReady, start, flush, signedUrl };
 }
 
 module.exports = { createS4AssetMirror };

@@ -333,4 +333,17 @@ for (const [name, definition] of mediaAssetAdditions) {
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_media_assets_remote_queue ON media_assets(remote_provider, remote_status, remote_attempted_at)');
 
+// 013: 普通用户图片存储配额与月度流量统计（管理员不限；普通用户 2GB 存储 / 500MB 月流量）
+// 配额常量在 assets.js 中维护，本表仅累计月度访问流量。
+db.exec(`
+CREATE TABLE IF NOT EXISTS user_asset_bandwidth (
+  user_id INTEGER NOT NULL,
+  month_start INTEGER NOT NULL,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, month_start),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_asset_bandwidth_month ON user_asset_bandwidth(month_start);
+`);
+
 module.exports = db;
