@@ -22,7 +22,6 @@ docTitleEl.setAttribute('aria-label', '\u6587\u6863\u6807\u9898');
 const charCountEl = $('charCount');
 const imgCountEl = $('imgCount');
 const saveStateEl = $('saveState');
-const importInput = $('importInput');
 const dropOverlay = $('dropOverlay');
 const toastStack = $('toastStack');
 const blockStyleSel = $('blockStyle');
@@ -733,7 +732,6 @@ function handleAction(action) {
     case 'undo': editor.undo(); break;
     case 'redo': editor.redo(); break;
     case 'paintFormat': activatePaintFormat(); break;
-    case 'importHtml': importInput.click(); break;
     case 'exportHTML': exportHTML(); break;
     case 'exportMD': exportMarkdown(); break;
     case 'exportTXT': exportTXT(); break;
@@ -2859,29 +2857,14 @@ async function mobileBack() {
 }
 $('mobileMenuBtn').addEventListener('click', mobileBack);
 
-/* ---------- 导入 HTML 文件 ---------- */
-importInput.addEventListener('change', () => {
-  const f = importInput.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = () => {
-    if (currentDoc && saveTimer) { clearTimeout(saveTimer); }
-    switching = true;
-    editor.loadFromHTMLString(r.result);
-    switching = false;
-    updateStats();
-    // 立即保存到当前文档
-    saveCurrent();
-    toast('已导入');
-  };
-  r.readAsText(f, 'UTF-8');
-  importInput.value = '';
-});
-
 /* ---------- 导出 ---------- */
 function suggestedFilename(ext) {
   const title = (docTitleEl.value.trim() || '知著文档').replace(/[\\/:*?"<>|]/g, '_').replace(/\.+$/, '');
-  return title + '.' + ext;
+  const d = new Date();
+  const date = d.getFullYear() +
+    String(d.getMonth() + 1).padStart(2, '0') +
+    String(d.getDate()).padStart(2, '0');
+  return title + '-' + date + '.' + ext;
 }
 
 function downloadBlob(blob, filename) {
@@ -2910,24 +2893,166 @@ function exportTXT() {
   downloadBlob(new Blob(['\ufeff', txt], { type: 'text/plain;charset=utf-8' }), suggestedFilename('txt'));
   toast('已导出纯文本');
 }
-// PDF 导出：用浏览器打印对话框，用户选「另存为 PDF」
-// 仅打印当前编辑器内容（保留排版、图片），隐藏侧栏/工具栏/AI 面板
-function exportPDF() {
+// PDF 导出：用 dom-to-image 截图 + 自建极简 PDF 容器，直接下载，不弹系统打印框
+async function exportPDF() {
   if (!currentDoc) { toast('请先打开一个文档'); return; }
-  const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
-  document.title = title; // 打印对话框默认文件名取 document.title
-  document.body.classList.add('printing-pdf');
-  const cleanup = () => {
-    document.body.classList.remove('printing-pdf');
-    updateDocumentTitle(docTitleEl.value); // 恢复原标题
-    window.removeEventListener('afterprint', cleanup);
-  };
-  window.addEventListener('afterprint', cleanup);
-  // 给用户一点时间看到提示
-  toast('在打印对话框中选择「另存为 PDF」');
-  setTimeout(() => window.print(), 200);
-  // 兜底：10 秒后自动清理（用户取消时 afterprint 仍会触发，这只是保险）
-  setTimeout(cleanup, 10000);
+  if (exportPDF._busy) { toast('正在导出，请稍候'); return; }
+  exportPDF._busy = true;
+  const exportToggle = $('exportToggle');
+  const spinner = exportToggle ? exportToggle.querySelector('.tb-spinner') : null;
+  if (exportToggle) exportToggle.classList.add('loading');
+  if (spinner) spinner.hidden = false;
+  toast('正在导出 PDF…');
+  try {
+    const width = 794; // A4 宽度 @96dpi
+    const content = sanitizeForImageExport(editor.getHTML());
+    const style = EXPORT_IMAGE_STYLES.default;
+    const html = buildExportImageHTML(content, style.css, width);
+    const container = document.createElement('div');
+    container.style.cssText = 'position:absolute;left:-99999px;top:0;width:' + width + 'px;';
+    container.innerHTML = html;
+    document.body.appendChild(container);
+    const node = container.querySelector('.export-doc');
+    // 等待图片 + 字体
+    const imgs = node.querySelectorAll('img');
+    await Promise.all(Array.from(imgs).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })));
+    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (_) {} }
+    void node.offsetHeight;
+    const scale = 2; // 2x 清晰度
+    const fullW = width * scale;
+    const fullH = node.scrollHeight * scale;
+    // 用 JPEG 便于 PDF DCTDecode 嵌入
+    const jpegDataUrl = await window.domtoimage.toJpeg(node, {
+      width: width,
+      height: node.scrollHeight,
+      style: { transform: 'scale(' + scale + ')', transformOrigin: 'top left' },
+      quality: 0.92
+    });
+    document.body.removeChild(container);
+    const pdfBlob = await buildImagePDF(jpegDataUrl, fullW, fullH);
+    downloadBlob(pdfBlob, suggestedFilename('pdf'));
+    toast('已导出 PDF');
+  } catch (e) {
+    toast('导出失败：' + (e.message || e));
+  } finally {
+    exportPDF._busy = false;
+    if (exportToggle) exportToggle.classList.remove('loading');
+    if (spinner) spinner.hidden = true;
+  }
+}
+
+// 极简图片型 PDF 构造器：JPEG + DCTDecode，支持自动分页
+// 不依赖任何库，离线可用；文字不可选（图片型 PDF）
+async function buildImagePDF(jpegDataUrl, pxW, pxH) {
+  // A4 portrait: 595x842 pt
+  const pageW = 595, pageH = 842;
+  // 图片按页宽等比缩放
+  const drawW = pageW;
+  const drawH = pageW * (pxH / pxW);
+  // 把整图切成多页：每页对应 drawH 的一段
+  // 先把 JPEG 解码到 Image，再用 canvas 切片重新编码为 JPEG（每页一张）
+  const srcImg = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = jpegDataUrl; });
+  const pages = [];
+  if (drawH <= pageH) {
+    pages.push({ dataUrl: jpegDataUrl, w: pageW, h: drawH });
+  } else {
+    // 按 pageH 对应的源像素高度切片
+    const sliceSrcH = Math.round(srcImg.height * (pageH / drawH));
+    let y = 0;
+    while (y < srcImg.height) {
+      const sh = Math.min(sliceSrcH, srcImg.height - y);
+      const canvas = document.createElement('canvas');
+      canvas.width = srcImg.width;
+      canvas.height = sh;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(srcImg, 0, y, srcImg.width, sh, 0, 0, srcImg.width, sh);
+      pages.push({ dataUrl: canvas.toDataURL('image/jpeg', 0.92), w: pageW, h: pageW * (sh / srcImg.width) });
+      y += sh;
+    }
+  }
+  // 构造 PDF bytes
+  const enc = (s) => unescape(encodeURIComponent(s));
+  const parts = [];
+  const offsets = [];
+  let pos = 0;
+  function write(str) { const b = enc(str); const bytes = new Uint8Array(b.length); for (let i=0;i<b.length;i++) bytes[i]=b.charCodeAt(i)&0xFF; parts.push(bytes); pos += bytes.length; }
+  function writeBin(bytes) { parts.push(bytes); pos += bytes.length; }
+  const objNums = [];
+  let nextObj = 1;
+  function allocObj() { const n = nextObj++; objNums.push(n); return n; }
+  const catalogId = allocObj();
+  const pagesId = allocObj();
+  const pageObjIds = [];
+  const contentObjIds = [];
+  const imgObjIds = [];
+  for (const p of pages) {
+    pageObjIds.push(allocObj());
+    contentObjIds.push(allocObj());
+    imgObjIds.push(allocObj());
+  }
+  // header（二进制标记）
+  write('%PDF-1.4\n');
+  writeBin(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
+  // 收集图片字节
+  const imgBinArr = [];
+  for (let i = 0; i < pages.length; i++) {
+    const b64 = pages[i].dataUrl.split(',')[1];
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    imgBinArr.push(bytes);
+  }
+  // 计算每页图片的像素尺寸
+  const pageImgPx = [];
+  if (pages.length === 1) {
+    pageImgPx.push({ w: srcImg.width, h: srcImg.height });
+  } else {
+    for (const p of pages) {
+      // 切片后的像素宽=源图宽，高=按绘制比例反推
+      const pxW = srcImg.width;
+      const pxH = Math.round(srcImg.width * (p.h / p.w));
+      pageImgPx.push({ w: pxW, h: pxH });
+    }
+  }
+  // 写 image XObject（DCTDecode JPEG）
+  for (let i = 0; i < pages.length; i++) {
+    const bytes = imgBinArr[i];
+    const px = pageImgPx[i];
+    offsets[imgObjIds[i]] = pos;
+    write(imgObjIds[i] + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + px.w + ' /Height ' + px.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + bytes.length + ' >>\nstream\n');
+    writeBin(bytes);
+    write('\nendstream\nendobj\n');
+  }
+  // 写 content stream
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    const stream = 'q\n' + p.w + ' 0 0 ' + p.h + ' 0 0 cm\n/Im' + i + ' Do\nQ\n';
+    const streamBytes = enc(stream);
+    offsets[contentObjIds[i]] = pos;
+    write(contentObjIds[i] + ' 0 obj\n<< /Length ' + streamBytes.length + ' >>\nstream\n' + stream + 'endstream\nendobj\n');
+  }
+  // 写 page 对象
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    offsets[pageObjIds[i]] = pos;
+    write(pageObjIds[i] + ' 0 obj\n<< /Type /Page /Parent ' + pagesId + ' 0 R /MediaBox [0 0 ' + pageW + ' ' + pageH + '] /Resources << /XObject << /Im' + i + ' ' + imgObjIds[i] + ' 0 R >> >> /Contents ' + contentObjIds[i] + ' 0 R >>\nendobj\n');
+  }
+  // Pages
+  offsets[pagesId] = pos;
+  const kids = pageObjIds.map(n => n + ' 0 R').join(' ');
+  write(pagesId + ' 0 obj\n<< /Type /Pages /Count ' + pages.length + ' /Kids [' + kids + '] >>\nendobj\n');
+  // Catalog
+  offsets[catalogId] = pos;
+  write(catalogId + ' 0 obj\n<< /Type /Catalog /Pages ' + pagesId + ' 0 R >>\nendobj\n');
+  // xref
+  const xrefPos = pos;
+  write('xref\n0 ' + (objNums.length + 1) + '\n0000000000 65535 f \n');
+  for (let i = 1; i <= objNums.length; i++) {
+    const off = offsets[i] || 0;
+    write(String(off).padStart(10, '0') + ' 00000 n \n');
+  }
+  write('trailer\n<< /Size ' + (objNums.length + 1) + ' /Root ' + catalogId + ' 0 R >>\nstartxref\n' + xrefPos + '\n%%EOF\n');
+  return new Blob(parts, { type: 'application/pdf' });
 }
 // 真 .docx 导出：服务端生成标准 OOXML，AI 文档解析器可读
 async function exportWord() {
@@ -2935,7 +3060,9 @@ async function exportWord() {
   if (exportWord._busy) { toast('正在导出，请稍候'); return; }
   exportWord._busy = true;
   const exportToggle = $('exportToggle');
+  const spinner = exportToggle ? exportToggle.querySelector('.tb-spinner') : null;
   if (exportToggle) exportToggle.classList.add('loading');
+  if (spinner) spinner.hidden = false;
   toast('正在导出 Word…');
   // 发送当前编辑器 HTML（含未保存改动），服务端解析为 docx
   const html = editor.getHTML();
@@ -2958,6 +3085,7 @@ async function exportWord() {
   } finally {
     exportWord._busy = false;
     if (exportToggle) exportToggle.classList.remove('loading');
+    if (spinner) spinner.hidden = true;
   }
 }
 
@@ -4682,8 +4810,6 @@ function formatDateShort(d) {
 // 仪表盘按钮
 const dashNewBtn = $('dashNewBtn');
 if (dashNewBtn) dashNewBtn.addEventListener('click', () => { newDoc(); });
-const dashImportBtn = $('dashImportBtn');
-if (dashImportBtn) dashImportBtn.addEventListener('click', () => { handleAction('importHtml'); });
 
 // 点击左上角品牌 logo：返回仪表盘（仅桌面端，且当前在编辑文档时）
 const brandLockup = document.querySelector('.brand-lockup');
@@ -5388,7 +5514,6 @@ function populateToolsSheet(body) {
       { label: '表格', action: () => editor.insertTable(3, 3), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>' },
       { label: '分隔线', action: () => editor.insertHR(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>' },
       { label: '目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="18" x2="14" y2="18"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg>' },
-      { label: '图片', action: () => importInput.click(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' },
     ]},
     { section: 'AI', children: [
       { label: 'AI 排版', action: () => openAiLayoutModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/></svg>' },
@@ -5834,16 +5959,20 @@ async function openTrash() {
 }
 
 function welcomeContent() {
-  return '<h1>欢迎使用 知著 PenMark</h1>' +
-    '<p>一个安静的写作空间，专注图文整理与排版。</p>' +
-    '<h2>快速上手</h2>' +
+  return '<h1>你好，知著在这里</h1>' +
+    '<p>知著 PenMark 是一个安静的写作空间——轻便、不臃肿，专注把一段想法、一组图文妥帖地安放下来。</p>' +
+    '<h2>它能帮你做什么</h2>' +
     '<ul>' +
-    '<li><b>拖入图片</b>：直接把图片拖到编辑区即可插入</li>' +
-    '<li><b>粘贴图文</b>：复制图片或文字，Ctrl+V 粘贴，格式和图片都会保留</li>' +
-    '<li><b>Markdown 快捷输入</b>：行首输入 <code>#</code> + 空格变标题，<code>-</code> + 空格变列表，<code>&gt;</code> + 空格变引用，<code>```</code> + 空格变代码块</li>' +
-    '<li><b>图片缩放</b>：点击图片选中，拖动四角圆点等比缩放</li>' +
-    '<li><b>多文档</b>：左侧新建、切换、搜索文档，可分文件夹存放</li>' +
-    '<li><b>导出</b>：右上角导出 HTML / Markdown / Word</li>' +
+    '<li><b>碎片记录</b>：随时新建一篇，写下此刻的想法。左侧列表随时切换，不必担心思绪被打断。</li>' +
+    '<li><b>更自然的版式</b>：粘贴公众号、微信的图文，格式和图片都能保留；拖入图片即可插入，点选后拖动四角等比缩放。</li>' +
+    '<li><b>分享给朋友</b>：一篇写完，点右上角分享，生成链接就能发给对方。可以设密码、定期限，也能让对方直接编辑。</li>' +
+    '<li><b>轻便不臃肿</b>：没有复杂的 block、没有臃肿的面板。打开就能写，关上就安静。</li>' +
+    '</ul>' +
+    '<h2>几个顺手的小习惯</h2>' +
+    '<ul>' +
+    '<li><b>粘贴即所得</b>：Ctrl+V 粘贴图文，先显示内容，再后台整理，不打断你写字。</li>' +
+    '<li><b>Markdown 快捷键</b>：行首输入 <code>#</code> + 空格变标题，<code>-</code> + 空格变列表，<code>&gt;</code> + 空格变引用。</li>' +
+    '<li><b>导出</b>：右上角可导出 HTML / Markdown / Word，方便存档或二次使用。</li>' +
     '</ul>' +
     '<blockquote>「见微知著」——一图一文，安心写作。</blockquote>';
 }
@@ -5870,12 +5999,22 @@ function shareThemeOption(theme, active) {
   '</button>';
 }
 
-function shareCopyText(url) {
+function shareCopyText(url, share) {
   const author = String((currentUser && (currentUser.nickname || currentUser.username)) || '\u77e5\u8457\u7528\u6237')
     .replace(/\s+/g, ' ').trim().slice(0, 50) || '\u77e5\u8457\u7528\u6237';
   const title = String(docTitleEl.value || (currentDoc && currentDoc.title) || '\u65e0\u6807\u9898')
     .replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX) || '\u65e0\u6807\u9898';
-  return author + ' \u7ed9\u4f60\u5206\u4eab\u4e86\u6587\u6863\u201c' + title + '\u201d\n' + url;
+  let text = author + ' \u7ed9\u4f60\u5206\u4eab\u4e86\u6587\u6863\u201c' + title + '\u201d\n' + url;
+  // 有密码保护时，把明文密码一并带上，方便对方直接打开
+  if (share && share.has_password) {
+    const pinInputs = document.querySelectorAll('#sharePin .pin-input');
+    let pwd = '';
+    if (pinInputs.length) {
+      pwd = Array.prototype.map.call(pinInputs, inp => inp.value).join('');
+    }
+    if (pwd) text += '\n\u8bbf\u95ee\u5bc6\u7801\uff1a' + pwd;
+  }
+  return text;
 }
 
 function writeShareText(text) {
@@ -5945,7 +6084,7 @@ function renderShareForm(share) {
   }
 
   const permission = share.permission;
-  const hasPassword = share.has_password;
+  const hasPassword = !!share.has_password;
   const expireAt = share.expire_at;
   const editorTheme = currentEditorTheme();
   const selectedTheme = SHARE_THEME_ORDER.includes(share.theme) ? share.theme : editorTheme;
@@ -6097,7 +6236,7 @@ function renderShareForm(share) {
   }
 
   $('shareCopy').addEventListener('click', () => {
-    writeShareText(shareCopyText(url)).then(
+    writeShareText(shareCopyText(url, share)).then(
       () => toast('\u5206\u4eab\u6587\u6848\u5df2\u590d\u5236'),
       () => toast('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236\u94fe\u63a5')
     );

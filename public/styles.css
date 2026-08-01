@@ -582,8 +582,16 @@ body.pre-auth .app{visibility:hidden;}
 .tb-btn:hover{background:var(--highlight);color:var(--ink);}
 .tb-btn:active{background:var(--bg-hover);}
 .tb-btn.active{background:var(--bg-active);color:var(--ink);border-color:var(--line);}
-.tb-btn.loading{pointer-events:none;color:var(--ink-faint);}
-.tb-btn.loading svg{animation:tb-spin 1s linear infinite;}
+.tb-btn.loading{pointer-events:none;color:var(--ink-faint);position:relative;}
+.tb-btn.loading > svg:not(.tb-spinner){visibility:hidden;}
+.tb-btn.loading > svg:not(.tb-spinner) ~ .caret{visibility:hidden;}
+.tb-spinner{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:16px;height:16px;
+  animation:tb-spin .8s linear infinite;
+  pointer-events:none;
+}
+.tb-spinner circle{stroke:currentColor;stroke-width:2.5;fill:none;stroke-linecap:round;}
 @keyframes tb-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .tb-select{
   height:32px;border:1px solid var(--line);
@@ -972,10 +980,12 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   border-top:1px solid var(--line);
   font-size:12px;color:var(--ink-soft);
   height:30px;
+  -webkit-user-select:none;user-select:none;
 }
 .statusbar .stat{display:inline-flex;align-items:center;gap:4px;}
 .statusbar .dot{color:var(--ink-faint);}
-.statusbar .right{margin-left:auto;}
+/* 主页（仪表盘）下状态栏无文档信息可展示，整条隐藏 */
+body.dashboard-active .statusbar{display:none;}
 
 /* ============ Toast ============ */
 .toast-stack{
@@ -4978,59 +4988,4 @@ body.dashboard-active .editor-wrap{display:none;}
   .stat-label{font-size:11px;}
   .dashboard-docs{grid-template-columns:1fr;gap:10px;}
   .dash-doc{padding:14px 16px;}
-}
-
-/* ============ 打印 / 导出 PDF ============ */
-/* body.printing-pdf 触发；@media print 仅在打印时生效，确保只打印编辑器内容 */
-@media print{
-  body.printing-pdf .sidebar,
-  body.printing-pdf .toolbar,
-  body.printing-pdf .statusbar,
-  body.printing-pdf .doc-title-bar,
-  body.printing-pdf .mobile-toolbar,
-  body.printing-pdf .ai-panel,
-  body.printing-pdf .ai-panel-overlay,
-  body.printing-pdf .float-menu,
-  body.printing-pdf .block-handle,
-  body.printing-pdf .ctx-menu,
-  body.printing-pdf .toast-stack,
-  body.printing-pdf .modal-overlay,
-  body.printing-pdf .shortcut-overlay,
-  body.printing-pdf .ms-sheet,
-  body.printing-pdf .ms-overlay{display:none !important;}
-  body.printing-pdf,
-  body.printing-pdf .app{display:block !important;height:auto !important;overflow:visible !important;background:#fff !important;}
-  body.printing-pdf .main{display:block !important;background:#fff !important;}
-  body.printing-pdf .editor-wrap{
-    padding:0 !important;
-    margin:0 !important;
-    overflow:visible !important;
-    background:#fff !important;
-    height:auto !important;
-  }
-  body.printing-pdf .document-shell{
-    max-width:none !important;
-    margin:0 !important;
-    border:none !important;
-    box-shadow:none !important;
-    border-radius:0 !important;
-    min-height:0 !important;
-    background:#fff !important;
-  }
-  body.printing-pdf .editor{
-    padding:24px 32px !important;
-    color:#000 !important;
-    background:#fff !important;
-  }
-  /* 打印时强制走深色字、白底，确保 PDF 可读 */
-  body.printing-pdf .editor *{color:#000 !important;background:transparent !important;border-color:#ccc !important;}
-  body.printing-pdf .editor img,
-  body.printing-pdf .editor .img-container{break-inside:avoid;page-break-inside:avoid;}
-  body.printing-pdf .editor h1,
-  body.printing-pdf .editor h2,
-  body.printing-pdf .editor h3{break-after:avoid;page-break-after:avoid;}
-  /* img-container 的尺寸手柄、尺寸标签在打印时不显示 */
-  body.printing-pdf .editor .img-container .rs-handle,
-  body.printing-pdf .editor .img-container .img-size-label{display:none !important;}
-  @page{margin:18mm;}
 }

@@ -1601,7 +1601,7 @@ app.post('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
   if (req.body.password !== undefined) {
     const pwd = String(req.body.password);
     if (pwd) {
-      if (!/^[A-Za-z0-9]{6,}$/.test(pwd)) return res.status(400).json({ error: '密码须为6位或以上字母或数字' });
+      if (!/^[A-Za-z0-9]{4,}$/.test(pwd)) return res.status(400).json({ error: '密码须为4位或以上字母或数字' });
       passwordSalt = crypto.randomBytes(16).toString('hex');
       passwordHash = auth.hashPassword(pwd, passwordSalt);
     } else {

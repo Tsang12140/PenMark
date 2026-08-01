@@ -147,17 +147,14 @@
         <button class="tb-btn ai-chat-btn" id="aiChatBtn" data-action="aiChat" title="AI 对话 Ctrl+J"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
       </div>
 
-      <div class="tb-group">
-        <button class="tb-btn" data-action="importHtml" data-overflow-priority="2" data-label="导入 HTML" title="导入 HTML 文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
-      </div>
       <div class="tb-dropdown" id="exportDropdown">
-        <button class="tb-btn" id="exportToggle" title="导出文档"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+        <button class="tb-btn" id="exportToggle" title="导出文档"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg><svg class="tb-spinner" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="9" stroke-dasharray="40 20"/></svg></button>
         <div class="dropdown-menu" id="exportMenu" hidden>
           <button class="dropdown-item" data-action="exportDoc" title="导出为 Word .docx 文档，AI 可读"><span>Word 文档</span><span class="dropdown-tag">.docx</span></button>
           <button class="dropdown-item" data-action="exportHTML" title="导出为独立 HTML 网页，包含所有样式和图片"><span>HTML 网页</span><span class="dropdown-tag">.html</span></button>
           <button class="dropdown-item" data-action="exportMD" title="导出为 Markdown，图片占位，AI 友好"><span>Markdown</span><span class="dropdown-tag">.md</span></button>
           <button class="dropdown-item" data-action="exportTXT" title="导出为纯文本，最适合喂给 AI"><span>纯文本 TXT</span><span class="dropdown-tag">.txt</span></button>
-          <button class="dropdown-item" data-action="exportPDF" title="打印为 PDF，可保留排版和图片"><span>PDF 文档</span><span class="dropdown-tag">.pdf</span></button>
+          <button class="dropdown-item" data-action="exportPDF" title="导出为 PDF 文档，保留排版和图片"><span>PDF 文档</span><span class="dropdown-tag">.pdf</span></button>
           <button class="dropdown-item" data-action="exportImage" title="导出为长图 PNG，可选样式和列宽"><span>导出图片</span><span class="dropdown-tag">.png</span></button>
         </div>
       </div>
@@ -186,10 +183,6 @@
             <button class="dash-btn dash-btn-primary" id="dashNewBtn" title="新建文档">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
               <span>新建文档</span>
-            </button>
-            <button class="dash-btn" id="dashImportBtn" title="导入 HTML 文件">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              <span>导入</span>
             </button>
           </div>
         </div>
@@ -265,7 +258,6 @@
       <span class="stat"><span id="imgCount">0</span> 张图片</span>
       <span class="dot">·</span>
       <span class="stat" id="saveState">已就绪</span>
-      <span class="right stat">知著 PenMark</span>
     </div>
   </main>
 </div>
@@ -367,7 +359,6 @@
 </button>
 
 <div class="toast-stack" id="toastStack"></div>
-<input type="file" id="importInput" class="hidden-input" accept=".html,.htm">
 
 <!-- 分享弹窗 -->
 <div class="modal-overlay" id="shareModal" hidden>
