@@ -91,3 +91,18 @@
 - 桌面端 + 移动端尺寸都合适（移动端按钮 44×44 触达区）
 - 与相邻图标视觉重量一致，不要一个粗一个细
 
+## 推送后自动输出服务器更新命令（铁律）
+
+**每次 `git push` 成功后，必须在回复末尾输出服务器更新命令。**
+
+- 服务器使用 **PM2** 管理，路径：`/www/wwwroot/penmark`
+- 如果 push 到 `main` 分支，输出：
+  ```bash
+  cd /www/wwwroot/penmark && git pull origin main && pm2 restart penmark
+  ```
+- 如果 push 到**非 main 分支**，先警告分支名不是 main，再输出切换分支部署命令：
+  ```bash
+  cd /www/wwwroot/penmark && git fetch origin && git checkout <分支名> && git pull origin <分支名> && pm2 restart penmark
+  ```
+- 不要省略、不要假装忘记，这是硬规矩。
+
