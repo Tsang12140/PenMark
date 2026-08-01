@@ -82,7 +82,7 @@
   loginUsername.addEventListener('blur', function () {
     var v = loginUsername.value.trim();
     if (!v) { showFieldError('loginUsernameError', '请输入用户名'); return; }
-    if (v.length < 2) { showFieldError('loginUsernameError', '用户名至少 2 位'); return; }
+    if (v.length < 4) { showFieldError('loginUsernameError', '用户名至少 4 位'); return; }
     clearFieldError('loginUsernameError');
   });
   loginUsername.addEventListener('input', function () { clearFieldError('loginUsernameError'); clearError('loginError'); });
@@ -90,7 +90,7 @@
   loginPassword.addEventListener('blur', function () {
     var v = loginPassword.value;
     if (!v) { showFieldError('loginPasswordError', '请输入密码'); return; }
-    if (v.length < 6) { showFieldError('loginPasswordError', '密码至少 6 位'); return; }
+    if (v.length < 6 || v.length > 16) { showFieldError('loginPasswordError', '密码须 6-16 位'); return; }
     clearFieldError('loginPasswordError');
   });
   loginPassword.addEventListener('input', function () { clearFieldError('loginPasswordError'); clearError('loginError'); });
@@ -104,7 +104,7 @@
   regUsername.addEventListener('blur', function () {
     var v = regUsername.value.trim();
     if (!v) { showFieldError('regUsernameError', '请输入用户名'); return; }
-    if (v.length < 2) { showFieldError('regUsernameError', '用户名至少 2 位'); return; }
+    if (v.length < 4 || v.length > 20) { showFieldError('regUsernameError', '用户名须 4-20 位'); return; }
     if (!/^[a-zA-Z0-9_]+$/.test(v)) { showFieldError('regUsernameError', '仅限字母、数字、下划线'); return; }
     clearFieldError('regUsernameError');
   });
@@ -113,7 +113,7 @@
   regNickname.addEventListener('blur', function () {
     var v = regNickname.value.trim();
     if (!v) { showFieldError('regNicknameError', '请输入昵称'); return; }
-    if (v.length < 2) { showFieldError('regNicknameError', '昵称至少 2 位'); return; }
+    if (v.length < 2 || v.length > 20) { showFieldError('regNicknameError', '昵称须 2-20 个字符'); return; }
     clearFieldError('regNicknameError');
   });
   regNickname.addEventListener('input', function () { clearFieldError('regNicknameError'); clearError('regError'); });
@@ -121,7 +121,7 @@
   regPassword.addEventListener('blur', function () {
     var v = regPassword.value;
     if (!v) { showFieldError('regPasswordError', '请输入密码'); return; }
-    if (v.length < 6) { showFieldError('regPasswordError', '密码至少 6 位'); return; }
+    if (v.length < 6 || v.length > 16) { showFieldError('regPasswordError', '密码须 6-16 位'); return; }
     clearFieldError('regPasswordError');
   });
   regPassword.addEventListener('input', function () { clearFieldError('regPasswordError'); clearError('regError'); });
@@ -144,9 +144,9 @@
     var password = loginPassword.value;
     var ok = true;
     if (!username) { showFieldError('loginUsernameError', '请输入用户名'); ok = false; }
-    else if (username.length < 2) { showFieldError('loginUsernameError', '用户名至少 2 位'); ok = false; }
+    else if (username.length < 4) { showFieldError('loginUsernameError', '用户名至少 4 位'); ok = false; }
     if (!password) { showFieldError('loginPasswordError', '请输入密码'); ok = false; }
-    else if (password.length < 6) { showFieldError('loginPasswordError', '密码至少 6 位'); ok = false; }
+    else if (password.length < 6 || password.length > 16) { showFieldError('loginPasswordError', '密码须 6-16 位'); ok = false; }
     if (!ok) return;
 
     loginSubmit.disabled = true;
@@ -184,12 +184,12 @@
     var invite = regInvite.value.trim();
     var ok = true;
     if (!username) { showFieldError('regUsernameError', '请输入用户名'); ok = false; }
-    else if (username.length < 2) { showFieldError('regUsernameError', '用户名至少 2 位'); ok = false; }
+    else if (username.length < 4 || username.length > 20) { showFieldError('regUsernameError', '用户名须 4-20 位'); ok = false; }
     else if (!/^[a-zA-Z0-9_]+$/.test(username)) { showFieldError('regUsernameError', '仅限字母、数字、下划线'); ok = false; }
     if (!nickname) { showFieldError('regNicknameError', '请输入昵称'); ok = false; }
-    else if (nickname.length < 2) { showFieldError('regNicknameError', '昵称至少 2 位'); ok = false; }
+    else if (nickname.length < 2 || nickname.length > 20) { showFieldError('regNicknameError', '昵称须 2-20 个字符'); ok = false; }
     if (!password) { showFieldError('regPasswordError', '请输入密码'); ok = false; }
-    else if (password.length < 6) { showFieldError('regPasswordError', '密码至少 6 位'); ok = false; }
+    else if (password.length < 6 || password.length > 16) { showFieldError('regPasswordError', '密码须 6-16 位'); ok = false; }
     if (!invite) { showFieldError('regInviteError', '请输入邀请码'); ok = false; }
     else if (invite.length !== 8) { showFieldError('regInviteError', '邀请码为 8 位'); ok = false; }
     if (!ok) return;

@@ -1223,6 +1223,17 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .login-pane{display:none;flex-direction:column;gap:14px;}
 .login-pane.active{display:flex;}
 .login-field{display:flex;flex-direction:column;gap:4px;}
+.login-field-row{display:flex;align-items:center;gap:10px;}
+.login-label{
+  flex:0 0 48px;
+  font-family:var(--sans);
+  font-size:13px;
+  font-weight:500;
+  color:var(--ink-soft);
+  white-space:nowrap;
+  user-select:none;
+}
+.login-field-row input{flex:1;min-width:0;}
 .login-field input{
   height:44px;
   background:var(--bg);
@@ -1235,6 +1246,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   transition:border-color .15s;
 }
 .login-field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--highlight);}
+.login-field input::placeholder{color:var(--ink-faint);opacity:.55;}
 .field-error{
   color:#c0392b;
   font-size:12px;
@@ -1242,7 +1254,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   min-height:0;
 }
 [data-theme="dark"] .field-error{color:#ff7a6b;}
-.pwd-wrap{position:relative;display:flex;align-items:center;}
+.pwd-wrap{position:relative;display:flex;align-items:center;flex:1;min-width:0;}
 .pwd-wrap input{flex:1;padding-right:38px;}
 .pwd-toggle{
   position:absolute;right:8px;top:50%;transform:translateY(-50%);

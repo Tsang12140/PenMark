@@ -42,16 +42,22 @@
   <!-- 登录 -->
   <form id="loginForm" class="login-pane active" autocomplete="on">
     <div class="login-field">
-      <input type="text" id="loginUsername" name="username" autocomplete="username" placeholder="用户名" maxlength="20" required>
+      <div class="login-field-row">
+        <label class="login-label" for="loginUsername">用户名</label>
+        <input type="text" id="loginUsername" name="username" autocomplete="username" placeholder="4-20 位字母、数字、下划线" maxlength="20" required>
+      </div>
       <div class="field-error" id="loginUsernameError" hidden></div>
     </div>
     <div class="login-field">
-      <div class="pwd-wrap">
-        <input type="password" id="loginPassword" name="password" autocomplete="current-password" placeholder="密码" maxlength="32" required>
-        <button type="button" class="pwd-toggle" data-target="loginPassword" tabindex="-1" title="显示/隐藏密码">
-          <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-          <svg class="eye-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.94 18.94 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-        </button>
+      <div class="login-field-row">
+        <label class="login-label" for="loginPassword">密码</label>
+        <div class="pwd-wrap">
+          <input type="password" id="loginPassword" name="password" autocomplete="current-password" placeholder="6-16 位" maxlength="16" required>
+          <button type="button" class="pwd-toggle" data-target="loginPassword" tabindex="-1" title="显示/隐藏密码">
+            <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.94 18.94 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
       </div>
       <div class="field-error" id="loginPasswordError" hidden></div>
     </div>
@@ -62,25 +68,37 @@
   <!-- 注册 -->
   <form id="registerForm" class="login-pane" autocomplete="on">
     <div class="login-field">
-      <input type="text" id="regUsername" name="username" autocomplete="username" placeholder="用户名" maxlength="20" required>
+      <div class="login-field-row">
+        <label class="login-label" for="regUsername">用户名</label>
+        <input type="text" id="regUsername" name="username" autocomplete="username" placeholder="4-20 位字母、数字、下划线" maxlength="20" required>
+      </div>
       <div class="field-error" id="regUsernameError" hidden></div>
     </div>
     <div class="login-field">
-      <input type="text" id="regNickname" name="nickname" autocomplete="nickname" placeholder="昵称" maxlength="20" required>
+      <div class="login-field-row">
+        <label class="login-label" for="regNickname">昵称</label>
+        <input type="text" id="regNickname" name="nickname" autocomplete="nickname" placeholder="2-20 个字符" maxlength="20" required>
+      </div>
       <div class="field-error" id="regNicknameError" hidden></div>
     </div>
     <div class="login-field">
-      <div class="pwd-wrap">
-        <input type="password" id="regPassword" name="password" autocomplete="new-password" placeholder="密码" maxlength="32" required>
-        <button type="button" class="pwd-toggle" data-target="regPassword" tabindex="-1" title="显示/隐藏密码">
-          <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-          <svg class="eye-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.94 18.94 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-        </button>
+      <div class="login-field-row">
+        <label class="login-label" for="regPassword">密码</label>
+        <div class="pwd-wrap">
+          <input type="password" id="regPassword" name="password" autocomplete="new-password" placeholder="6-16 位" maxlength="16" required>
+          <button type="button" class="pwd-toggle" data-target="regPassword" tabindex="-1" title="显示/隐藏密码">
+            <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" hidden><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-10-7-10-7a18.94 18.94 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
       </div>
       <div class="field-error" id="regPasswordError" hidden></div>
     </div>
     <div class="login-field">
-      <input type="text" id="regInvite" name="invite_code" placeholder="邀请码" maxlength="8" required>
+      <div class="login-field-row">
+        <label class="login-label" for="regInvite">邀请码</label>
+        <input type="text" id="regInvite" name="invite_code" placeholder="8 位" maxlength="8" required>
+      </div>
       <div class="field-error" id="regInviteError" hidden></div>
     </div>
     <div id="regError" class="login-error" hidden></div>
