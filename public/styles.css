@@ -1225,7 +1225,7 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 .login-field{display:flex;flex-direction:column;gap:4px;}
 .login-field-row{display:flex;align-items:center;gap:10px;}
 .login-label{
-  flex:0 0 48px;
+  flex:0 0 56px;
   font-family:var(--sans);
   font-size:13px;
   font-weight:500;
