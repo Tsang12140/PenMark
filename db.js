@@ -147,6 +147,15 @@ try {
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_auto_title ON documents(user_id, title_origin, auto_title_attempted_at)");
 
+  // documents 表增量迁移：星标 + 置顶（星标=收藏标记，置顶=列表排序优先）
+  if (!docCols.some(c => c.name === 'starred')) {
+    db.exec("ALTER TABLE documents ADD COLUMN starred INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!docCols.some(c => c.name === 'pinned')) {
+    db.exec("ALTER TABLE documents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_documents_pinned ON documents(user_id, pinned, updated_at DESC)");
+  }
+
   // Administrator-scoped application settings, such as automatic AI titles.
   db.exec(`
   CREATE TABLE IF NOT EXISTS app_settings (

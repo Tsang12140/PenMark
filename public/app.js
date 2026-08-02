@@ -1906,6 +1906,7 @@ function translateApiError(msg) {
 /* ---------- 文档列表 + 文件夹 ---------- */
 let folders = [];
 let sidebarDocs = [];
+let starFilter = false;
 let expandedFolders = new Set(JSON.parse(localStorage.getItem('penmark_expanded_folders') || '[]'));
 let draggingDocId = null;
 let renamingFolderId = null;
@@ -1931,16 +1932,32 @@ function persistExpanded() {
 
 function renderSidebar(docs) {
   docListEl.innerHTML = '';
+  // 排序：置顶优先，其次按更新时间倒序（与后端 ORDER BY pinned DESC, updated_at DESC 一致）
+  const sorted = [...docs].sort((a, b) => {
+    const pa = a.pinned ? 1 : 0, pb = b.pinned ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    return new Date(b.updated_at) - new Date(a.updated_at);
+  });
+  // 星标筛选视图：平铺显示所有星标文档，不按文件夹分组
+  if (starFilter) {
+    const starredDocs = sorted.filter(d => d.starred);
+    if (!starredDocs.length) {
+      docListEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--ink-faint);font-size:12px;">暂无星标文档，点击文档上的星标按钮收藏</div>';
+      return;
+    }
+    starredDocs.forEach(d => docListEl.appendChild(buildDocItem(d)));
+    return;
+  }
   const hasShared = isMobile() && sharedDocuments.length > 0;
-  if (!docs.length && !folders.length && !hasShared) {
+  if (!sorted.length && !folders.length && !hasShared) {
     docListEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--ink-faint);font-size:12px;">&#26242;&#26080;&#25991;&#26723;&#65292;&#28857;&#20987;&#19978;&#26041;&#26032;&#24314;&#24320;&#22987;</div>';
     return;
   }
   if (hasShared) renderSharedSidebarSection();
-  if (!docs.length && !folders.length) return;
+  if (!sorted.length && !folders.length) return;
   const grouped = {};
   const unfiled = [];
-  docs.forEach(d => {
+  sorted.forEach(d => {
     if (d.folder_id) (grouped[d.folder_id] = grouped[d.folder_id] || []).push(d);
     else unfiled.push(d);
   });
@@ -2000,10 +2017,11 @@ function renderFolderItem(folder, docs) {
     '<span class="folder-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>' +
     '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4a2 2 0 0 1 2-2h5l2 3h5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z"/></svg></span>' +
     '<span class="folder-name" title="' + escapeHtml(folder.name) + '">' + escapeHtml(folder.name) + '</span>' +
-    '<span class="folder-count">' + (folder.doc_count || 0) + '</span>' +
+    '<button class="folder-count" data-act="new" title="在此文件夹新建文档"><span class="fc-num">' + (folder.doc_count || 0) + '</span><span class="fc-add" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></button>' +
     '<button class="folder-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>';
   head.addEventListener('click', (e) => {
     if (e.target.closest('.folder-menu') || e.target.closest('.folder-name-input')) return;
+    if (e.target.closest('.folder-count')) { e.stopPropagation(); newDocInFolder(folder.id); return; }
     wrap.classList.toggle('expanded');
     if (wrap.classList.contains('expanded')) expandedFolders.add(folder.id);
     else expandedFolders.delete(folder.id);
@@ -2044,9 +2062,13 @@ function renderUnfiledSection(docs) {
     '<div class="folder-head"><span class="folder-arrow" style="visibility:hidden"><svg width="12" height="12" viewBox="0 0 24 24"></svg></span>' +
     '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4a2 2 0 0 1 2-2h5l2 3h5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z"/></svg></span>' +
     '<span class="folder-name">未分类</span>' +
-    '<span class="folder-count">' + docs.length + '</span>' +
+    '<button class="folder-count" data-act="new" title="新建文档"><span class="fc-num">' + docs.length + '</span><span class="fc-add" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></button>' +
     '<button class="folder-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button></div>';
   const head = wrap.querySelector('.folder-head');
+  head.querySelector('.folder-count').addEventListener('click', (e) => {
+    e.stopPropagation();
+    newDocInFolder(null);
+  });
   head.querySelector('.folder-menu').addEventListener('click', (e) => {
     e.stopPropagation();
     showFolderMenu({ id: null, name: '未分类', unfiled: true }, head.querySelector('.folder-menu'));
@@ -2065,10 +2087,17 @@ function renderUnfiledSection(docs) {
 function buildDocItem(doc) {
   const item = document.createElement('div');
   item.className = 'doc-item' + (currentDoc && currentDoc.id === doc.id ? ' active' : '');
+  if (doc.starred) item.classList.add('starred');
   item.setAttribute('data-id', doc.id);
   item.setAttribute('draggable', 'true');
+  const starred = !!doc.starred;
+  const pinned = !!doc.pinned;
   item.innerHTML =
-    '<div class="doc-title">' + escapeHtml(doc.title || '无标题') + '</div>' +
+    '<div class="doc-title">' +
+      (pinned ? '<span class="doc-pin" title="已置顶"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v4.76a2 2 0 0 1-1.11 1.55l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></span>' : '') +
+      '<span class="doc-title-text">' + escapeHtml(doc.title || '无标题') + '</span>' +
+      '<button class="doc-star' + (starred ? ' active' : '') + '" title="' + (starred ? '取消星标' : '星标') + '" aria-label="星标"><svg width="13" height="13" viewBox="0 0 24 24" fill="' + (starred ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>' +
+    '</div>' +
     '<div class="doc-meta">' + relativeTime(doc.updated_at) + '</div>' +
     (doc.snippet ? '<div class="doc-snippet">' + escapeHtml(doc.snippet) + '</div>' : '') +
     '<button class="doc-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>' +
@@ -2079,6 +2108,7 @@ function buildDocItem(doc) {
   item.addEventListener('click', (e) => {
     if (e.target.classList.contains('doc-del')) { e.stopPropagation(); confirmDelete(doc); }
     else if (e.target.closest('.doc-menu')) { e.stopPropagation(); showDocMenu(doc, item.querySelector('.doc-menu')); }
+    else if (e.target.closest('.doc-star')) { e.stopPropagation(); toggleDocStar(doc, item); }
     else openDoc(doc.id);
   });
   item.addEventListener('contextmenu', (e) => {
@@ -2097,6 +2127,60 @@ function buildDocItem(doc) {
     docListEl.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
   });
   return item;
+}
+
+// 星标切换：乐观更新 UI，失败回滚
+async function toggleDocStar(doc, item) {
+  const next = doc.starred ? 0 : 1;
+  const prev = doc.starred;
+  doc.starred = next;
+  const btn = item && item.querySelector && item.querySelector('.doc-star');
+  const svg = btn && btn.querySelector('svg');
+  if (btn) {
+    btn.classList.toggle('active', !!next);
+    btn.title = next ? '取消星标' : '星标';
+    if (svg) svg.setAttribute('fill', next ? 'currentColor' : 'none');
+  }
+  if (item && item.classList) item.classList.toggle('starred', !!next);
+  const cached = sidebarDocs.find(x => x.id === doc.id);
+  if (cached) cached.starred = next;
+  if (currentDoc && currentDoc.id === doc.id) currentDoc.starred = next;
+  try {
+    await api('/api/documents/' + doc.id + '/star', 'POST', { starred: next });
+    // 星标筛选视图下，取消星标后该文档应从列表消失
+    if (starFilter && !next) renderSidebar(sidebarDocs);
+  } catch (e) {
+    doc.starred = prev;
+    if (cached) cached.starred = prev;
+    if (currentDoc && currentDoc.id === doc.id) currentDoc.starred = prev;
+    if (btn) {
+      btn.classList.toggle('active', !!prev);
+      btn.title = prev ? '取消星标' : '星标';
+      if (svg) svg.setAttribute('fill', prev ? 'currentColor' : 'none');
+    }
+    if (item && item.classList) item.classList.toggle('starred', !!prev);
+    toast('操作失败：' + (e.message || e));
+  }
+}
+
+// 置顶切换：乐观更新 UI + 重新排序列表（pinned 优先）
+async function toggleDocPin(doc, item) {
+  const next = doc.pinned ? 0 : 1;
+  const prev = doc.pinned;
+  doc.pinned = next;
+  const cached = sidebarDocs.find(x => x.id === doc.id);
+  if (cached) cached.pinned = next;
+  if (currentDoc && currentDoc.id === doc.id) currentDoc.pinned = next;
+  try {
+    await api('/api/documents/' + doc.id + '/pin', 'POST', { pinned: next });
+    // 置顶改变后重新渲染列表（排序变化）
+    renderSidebar(sidebarDocs);
+  } catch (e) {
+    doc.pinned = prev;
+    if (cached) cached.pinned = prev;
+    if (currentDoc && currentDoc.id === doc.id) currentDoc.pinned = prev;
+    toast('操作失败：' + (e.message || e));
+  }
 }
 
 function getDraggingDocId(e) {
@@ -2276,7 +2360,11 @@ function showFolderMenu(folder, anchor) {
 
 function showDocMenu(doc, anchor, point) {
   closeContextMenus();
+  const starLabel = doc.starred ? '取消星标' : '星标';
+  const pinLabel = doc.pinned ? '取消置顶' : '置顶';
   docContextMenu.innerHTML =
+    '<div class="fcm-item" data-act="star">' + starLabel + '</div>' +
+    '<div class="fcm-item" data-act="pin">' + pinLabel + '</div>' +
     '<div class="fcm-item" data-act="move">移动到…</div>' +
     '<div class="fcm-item" data-act="duplicate">创建副本</div>' +
     '<div class="fcm-item" data-act="copy">复制</div>' +
@@ -2303,7 +2391,15 @@ function showDocMenu(doc, anchor, point) {
       return;
     }
     closeContextMenus();
-    if (act === 'duplicate') duplicateDoc(doc);
+    if (act === 'star') {
+      const item = docListEl.querySelector('.doc-item[data-id="' + doc.id + '"]');
+      toggleDocStar(doc, item);
+    }
+    else if (act === 'pin') {
+      const item = docListEl.querySelector('.doc-item[data-id="' + doc.id + '"]');
+      toggleDocPin(doc, item);
+    }
+    else if (act === 'duplicate') duplicateDoc(doc);
     else if (act === 'copy') copyDoc(doc);
     else if (act === 'cut') cutDoc(doc);
     else if (act === 'delete') confirmDelete(doc);
@@ -6073,6 +6169,16 @@ async function generateInvites(count) {
 const trashModal = $('trashModal');
 const trashModalBody = $('trashModalBody');
 $('trashBtn').addEventListener('click', openTrash);
+
+/* ---------- 星标筛选 ---------- */
+const starBtn = $('starBtn');
+if (starBtn) {
+  starBtn.addEventListener('click', () => {
+    starFilter = !starFilter;
+    starBtn.classList.toggle('active', starFilter);
+    renderSidebar(sidebarDocs);
+  });
+}
 $('trashModalClose').addEventListener('click', () => trashModal.hidden = true);
 trashModal.addEventListener('click', (e) => { if (e.target === trashModal) trashModal.hidden = true; });
 

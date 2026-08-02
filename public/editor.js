@@ -103,7 +103,35 @@ export class Editor {
     document.execCommand(cmd, false, val);
     this._afterChange();
   }
-  _afterChange(change) { this.onUpdate(change); }
+  _afterChange(change) {
+    this._ensureLeadingParagraph();
+    this.onUpdate(change);
+  }
+
+  // 确保编辑器第一个子节点是可编辑段落。
+  // 文档开头是图片/表格/分割线等 contenteditable=false 或非文本块时，
+  // 光标无法定位到它们前面，在开头自动插一个空 <p>。
+  _ensureLeadingParagraph() {
+    const first = this.editor.firstElementChild;
+    if (!first) {
+      // 编辑器空：插一个空 p
+      const p = document.createElement('p');
+      p.innerHTML = '<br>';
+      this.editor.appendChild(p);
+      return;
+    }
+    const tag = first.tagName;
+    // 这些块前面需要有可编辑段落兜底
+    const needsPadding = first.classList.contains('img-container') ||
+      first.classList.contains('img-grid') ||
+      first.classList.contains('toc') ||
+      tag === 'HR' || tag === 'TABLE' || tag === 'PRE';
+    if (needsPadding) {
+      const p = document.createElement('p');
+      p.innerHTML = '<br>';
+      this.editor.insertBefore(p, first);
+    }
+  }
 
   /* ---------- Input handling ---------- */
   _bindInput() {
@@ -2042,7 +2070,7 @@ export class Editor {
         { re: /^> $/, type: 'quote' }, { re: /^``` $/, type: 'code' },
         { re: /^1\. $/, type: 'ol' },
         { re: /^\[\] $/, type: 'todo' }, { re: /^\[ \] $/, type: 'todo' },
-        { re: /^---$/, type: 'hr' }
+        { re: /^-{3,}$/, type: 'hr' }
       ];
       for (const p of patterns) {
         if (p.re.test(before)) {
@@ -2541,8 +2569,34 @@ export class Editor {
           this._restoreCaretInBlock(cells[idx]);
           return;
         }
+        // 代码块内：插入空格代替 Tab
+        const block = this._currentBlock();
+        if (block && block.tagName === 'PRE') {
+          e.preventDefault();
+          document.execCommand('insertText', false, '  ');
+          this._afterChange();
+          return;
+        }
+        // 列表内：保持原生缩进层级
+        if (block && block.tagName === 'LI') {
+          e.preventDefault();
+          document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+          this._afterChange();
+          return;
+        }
+        // 普通段落/标题：首行缩进（text-indent），Shift+Tab 取消
+        if (block && /^(P|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|DIV)$/.test(block.tagName)) {
+          e.preventDefault();
+          const cur = parseFloat(block.style.textIndent) || 0;
+          const step = 2; // 2em
+          let next = e.shiftKey ? cur - step : cur + step;
+          if (next < 0) next = 0;
+          if (next === 0) block.style.textIndent = '';
+          else block.style.textIndent = next + 'em';
+          this._afterChange();
+          return;
+        }
         e.preventDefault();
-        document.execCommand(e.shiftKey ? 'outdent' : 'indent');
         this._afterChange();
         return;
       }

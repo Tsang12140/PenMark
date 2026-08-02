@@ -238,15 +238,39 @@ body.pre-auth .app{visibility:hidden;}
   outline:none;
 }
 .folder-count{
-  font-size:11px;
-  color:var(--ink-faint);
-  background:var(--bg-editor);
-  border:1px solid var(--line-soft);
-  border-radius:10px;
-  padding:0 7px;
+  position:relative;
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  height:18px;
   min-width:18px;
+  padding:0 6px;
+  border:none;
+  border-radius:6px;
+  background:transparent;
+  color:var(--ink-faint);
+  font-family:var(--sans);
+  font-size:11px;
+  line-height:18px;
   text-align:center;
-  line-height:16px;
+  cursor:pointer;
+  overflow:hidden;
+  transition:background .12s, color .12s;
+}
+.folder-count .fc-num{ transition:opacity .1s; }
+.folder-count .fc-add{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  opacity:0; transition:opacity .1s;
+}
+.folder-count .fc-add svg{display:block;}
+.folder-count:hover{background:var(--accent-soft);color:var(--accent);}
+@media(hover:hover){
+  .folder-head:hover .folder-count{background:var(--bg-active);color:var(--ink);}
+  .folder-head:hover .folder-count .fc-num{opacity:0;}
+  .folder-head:hover .folder-count .fc-add{opacity:1;}
+  .folder-head:hover .folder-count:hover{background:var(--accent-soft);color:var(--accent);}
 }
 .folder-menu{
   flex:0 0 auto;
@@ -282,7 +306,6 @@ body.pre-auth .app{visibility:hidden;}
   padding:6px 12px;
   font-size:11px;
   color:var(--ink-faint);
-  font-style:italic;
 }
 .folder-docs.drag-over{
   background:var(--highlight);
@@ -467,17 +490,49 @@ body.pre-auth .app{visibility:hidden;}
 .doc-item:hover{background:var(--bg-hover);}
 .doc-item.active{background:var(--bg-active);}
 .doc-item .doc-title{
-  display:block;
+  display:flex;
+  align-items:center;
+  gap:4px;
   min-width:0;
   max-width:100%;
   font-size:13px;
   color:var(--ink);
+  font-weight:500;
+  padding-right:74px;
+}
+.doc-item .doc-title-text{
+  flex:1 1 auto;
+  min-width:0;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
-  font-weight:500;
-  padding-right:48px;
 }
+.doc-item .doc-pin{
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  color:var(--accent);
+  opacity:.85;
+}
+.doc-item .doc-star{
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:18px;height:18px;
+  padding:0;
+  border:none;
+  background:transparent;
+  color:var(--ink-faint);
+  border-radius:4px;
+  cursor:pointer;
+  opacity:0;
+  transition:opacity .12s, color .12s, background .12s;
+}
+.doc-item:hover .doc-star{opacity:1;}
+.doc-item .doc-star:hover{color:var(--accent);background:var(--accent-soft);}
+.doc-item .doc-star.active{opacity:1;color:#e8a317;}
+.doc-item .doc-star.active svg{fill:currentColor;}
 .doc-item .doc-meta{
   font-size:11px;
   color:var(--ink-faint);
@@ -1868,7 +1923,7 @@ body.reading-mode .block-handle{display:none;}
   /* 文档列表：R角 12px、加大触摸区 */
   .doc-list{padding:6px 10px 12px;}
   .doc-item{padding:14px 12px;border-radius:12px;margin-bottom:6px;}
-  .doc-item .doc-title{font-size:14px;font-weight:500;padding-right:32px;}
+  .doc-item .doc-title{font-size:14px;font-weight:500;padding-right:76px;}
   .doc-item .doc-meta{font-size:11.5px;margin-top:4px;}
   .doc-item .doc-del,.doc-item .doc-menu{
     width:32px;height:32px;border-radius:12px;font-size:16px;
@@ -1877,6 +1932,7 @@ body.reading-mode .block-handle{display:none;}
   .doc-item .doc-menu{right:42px;}
   .doc-item .doc-del{right:8px;}
   .doc-item:hover .doc-del,.doc-item:hover .doc-menu{opacity:1;pointer-events:auto;}
+  .doc-item .doc-star{opacity:1;width:24px;height:24px;}
 
   /* 文件夹：R角 12px */
   .folder-head{padding:10px 10px;border-radius:12px;}
@@ -2846,6 +2902,8 @@ body.reading-mode .block-handle{display:none;}
   transition:background .12s,color .12s;
 }
 .sidebar-link:hover{background:var(--bg-hover);color:var(--ink);}
+.sidebar-link.active{background:var(--bg-active);color:var(--accent);}
+.sidebar-link.active svg{fill:currentColor;}
 
 /* 设置面板 */
 .settings-modal{width:720px;}
@@ -4046,6 +4104,51 @@ body.image-preview-open{overflow:hidden!important;}
   animation:imagePreviewFadeIn .16s ease;
 }
 .image-preview-overlay[hidden]{display:none;}
+/* 左右切换箭头：固定在屏幕两侧中部 */
+.image-preview-nav{
+  position:fixed;
+  top:50%;
+  transform:translateY(-50%);
+  z-index:3;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:44px;
+  height:44px;
+  padding:0;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:50%;
+  background:rgba(29,34,37,.6);
+  color:rgba(255,255,255,.85);
+  cursor:pointer;
+  transition:background .12s, color .12s, opacity .12s;
+  backdrop-filter:blur(4px);
+}
+.image-preview-nav:hover{background:rgba(255,255,255,.16);color:#fff;}
+.image-preview-nav[hidden]{display:none;}
+.image-preview-nav svg{width:22px;height:22px;display:block;}
+.image-preview-prev{left:max(16px,env(safe-area-inset-left));}
+.image-preview-next{right:max(16px,env(safe-area-inset-right));}
+/* 图片计数：底部居中（1 / 3） */
+.image-preview-counter{
+  position:fixed;
+  bottom:max(20px,env(safe-area-inset-bottom));
+  left:50%;
+  transform:translateX(-50%);
+  z-index:3;
+  padding:4px 12px;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:999px;
+  background:rgba(29,34,37,.7);
+  color:rgba(255,255,255,.88);
+  font-family:var(--sans);
+  font-size:12px;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:.04em;
+  backdrop-filter:blur(4px);
+  pointer-events:none;
+}
+.image-preview-counter[hidden]{display:none;}
 @keyframes imagePreviewFadeIn{from{opacity:0;}to{opacity:1;}}
 .image-preview-stage{
   position:absolute;
@@ -4054,6 +4157,7 @@ body.image-preview-open{overflow:hidden!important;}
   align-items:center;
   justify-content:center;
   overflow:hidden;
+  touch-action:none;
 }
 .image-preview-image{
   display:block;
@@ -4068,6 +4172,12 @@ body.image-preview-open{overflow:hidden!important;}
   will-change:transform;
   transition:transform .16s ease;
   filter:drop-shadow(0 18px 48px rgba(0,0,0,.34));
+}
+/* natural 模式：大图填满网页但上下左右留 8% 空隙，超出可拖动查看 */
+.image-preview-image.natural{
+  max-width:84vw;
+  max-height:84vh;
+  cursor:grab;
 }
 .image-preview-overlay.is-zoomed .image-preview-image{cursor:grab;}
 .image-preview-overlay.is-dragging .image-preview-image{
@@ -4140,6 +4250,14 @@ body.image-preview-open{overflow:hidden!important;}
   .image-preview-image{
     max-width:calc(100vw - 24px);
     max-height:calc(100vh - 104px);
+  }
+  .image-preview-image.natural{
+    max-width:90vw;
+    max-height:80vh;
+  }
+  .image-preview-counter{
+    top:max(16px,env(safe-area-inset-top));
+    bottom:auto;
   }
 }
 .share-footer-line{opacity:.7;}

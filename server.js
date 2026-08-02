@@ -647,7 +647,7 @@ app.get('/api/documents', wrap(async (req, res) => {
     ? ', SUBSTRING(content FROM 1 FOR 1200) AS content_preview, CHAR_LENGTH(content) AS content_length'
     : ', SUBSTR(content, 1, 1200) AS content_preview, LENGTH(content) AS content_length');
   const rows = await db.query(
-    'SELECT id, title, folder_id, created_at, updated_at' + previewFields + ' FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC',
+    'SELECT id, title, folder_id, created_at, updated_at, starred, pinned' + previewFields + ' FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY pinned DESC, updated_at DESC',
     [req.user.id]
   );
   if (!withPreview) return res.json(rows);
@@ -901,6 +901,22 @@ app.post('/api/documents/:id/move', wrap(async (req, res) => {
   const info = await db.execute('UPDATE documents SET folder_id = $1 WHERE id = $2 AND user_id = $3', [fid, req.params.id, req.user.id]);
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
   res.json({ updated: info.changes });
+}));
+
+// 星标：收藏标记，不改变排序
+app.post('/api/documents/:id/star', wrap(async (req, res) => {
+  const starred = req.body.starred ? 1 : 0;
+  const info = await db.execute('UPDATE documents SET starred = $1 WHERE id = $2 AND user_id = $3', [starred, req.params.id, req.user.id]);
+  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ starred });
+}));
+
+// 置顶：列表排序优先（pinned DESC, updated_at DESC）
+app.post('/api/documents/:id/pin', wrap(async (req, res) => {
+  const pinned = req.body.pinned ? 1 : 0;
+  const info = await db.execute('UPDATE documents SET pinned = $1 WHERE id = $2 AND user_id = $3', [pinned, req.params.id, req.user.id]);
+  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ pinned });
 }));
 
 /* ---------- 文件夹 ---------- */
