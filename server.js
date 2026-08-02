@@ -76,6 +76,11 @@ app.get('/login.html', async (req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Document URLs share the editor shell; the browser loads the requested document on demand.
+app.get(/^\/d\/[1-9]\d*\/?$/, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 /* ---------- async 路由包装器 ---------- */
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -1601,7 +1606,7 @@ app.post('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
   if (req.body.password !== undefined) {
     const pwd = String(req.body.password);
     if (pwd) {
-      if (!/^[A-Za-z0-9]{4,}$/.test(pwd)) return res.status(400).json({ error: '密码须为4位或以上字母或数字' });
+      if (!/^\d{4}$/.test(pwd)) return res.status(400).json({ error: '访问码须为4位数字' });
       passwordSalt = crypto.randomBytes(16).toString('hex');
       passwordHash = auth.hashPassword(pwd, passwordSalt);
     } else {

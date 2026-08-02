@@ -353,6 +353,29 @@ function updateDocumentTitle(title) {
 }
 let switching = false; // 切换文档时屏蔽自动保存
 let pendingSwitchId = null; // 切换中又点了别的文档时，记录最新意图，前序完成后切过去
+let pendingSwitchOptions = null;
+
+const DOCUMENT_ROUTE_RE = /^\/d\/([1-9]\d*)\/?$/;
+function getRoutedDocumentId() {
+  if (isDesktopMode()) return null;
+  const match = window.location.pathname.match(DOCUMENT_ROUTE_RE);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+function setDocumentRoute(id, options = {}) {
+  if (isDesktopMode()) return;
+  const numericId = Number(id);
+  if (!Number.isSafeInteger(numericId) || numericId < 1) return;
+  const target = '/d/' + numericId;
+  if (window.location.pathname === target && !window.location.search && !window.location.hash) return;
+  window.history[options.replace ? 'replaceState' : 'pushState']({ documentId: numericId }, '', target);
+}
+function clearDocumentRoute(options = {}) {
+  if (isDesktopMode()) return;
+  if (window.location.pathname === '/' && !window.location.search && !window.location.hash) return;
+  window.history[options.replace ? 'replaceState' : 'pushState']({}, '', '/');
+}
 
 /* ---------- Toast ---------- */
 function toast(msg) {
@@ -1841,7 +1864,8 @@ function handleAuthFailure() {
       '</div>';
     return;
   }
-  window.location.href = '/login.html';
+  const redirect = window.location.pathname + window.location.search + window.location.hash;
+  window.location.href = '/login.html?redirect=' + encodeURIComponent(redirect);
 }
 async function api(url, method, body, opts = {}) {
   const opt = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' };
@@ -2312,6 +2336,7 @@ async function newDocInFolder(folderId) {
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '', folder_id: folderId });
     currentDoc.id = res.id;
+    setDocumentRoute(res.id);
     currentDoc.title_origin = 'untitled';
     currentDoc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') currentDoc.version = res.version;
@@ -2338,8 +2363,10 @@ async function newDocInFolder(folderId) {
     // 与 openDoc/newDoc 的 finally 对齐：用户若在新建期间点了别的文档，切过去
     if (pendingSwitchId != null) {
       const next = pendingSwitchId;
+      const nextOptions = pendingSwitchOptions || {};
       pendingSwitchId = null;
-      if (currentDoc && currentDoc.id !== next) openDoc(next);
+      pendingSwitchOptions = null;
+      if (currentDoc && currentDoc.id !== next) openDoc(next, nextOptions);
     }
   }
 }
@@ -2481,13 +2508,15 @@ async function deleteFolder(folder) {
   } catch (e) { toast('删除失败：' + (e.message || e)); }
 }
 
-async function openDoc(id) {
+async function openDoc(id, options = {}) {
+  const historyMode = options.historyMode || 'push';
   // 切换中又点了别的文档：记下最新意图，前序完成后切到它，避免并发 openDoc 互踩
-  if (switching) { cancelAutoTitleWork(); cancelManualTitleSuggestion(); pendingSwitchId = id; return; }
-  if (currentDoc && currentDoc.id === id) {
+  if (switching) { cancelAutoTitleWork(); cancelManualTitleSuggestion(); pendingSwitchId = id; pendingSwitchOptions = options; return false; }
+  if (currentDoc && String(currentDoc.id) === String(id)) {
     // 已是当前文档：仅确保移动端切到编辑器视图
     enterMobileEditor();
-    return;
+    if (historyMode !== 'none') setDocumentRoute(id, { replace: historyMode === 'replace' });
+    return true;
   }
   cancelAutoTitleWork();
   cancelManualTitleSuggestion();
@@ -2533,6 +2562,7 @@ async function openDoc(id) {
     startVersionPolling();
     startShareStatsPolling();
     hideDashboard();
+    if (historyMode !== 'none') setDocumentRoute(doc.id, { replace: historyMode === 'replace' });
     // 若 AI 面板已打开，切换文档时刷新对话历史与上下文提示
     if (aiPanel && !aiPanel.hidden) {
       refreshAiPanelContext();
@@ -2548,12 +2578,15 @@ async function openDoc(id) {
     // 切换中若用户又点了别的文档，递归切到最新意图
     if (pendingSwitchId != null) {
       const next = pendingSwitchId;
+      const nextOptions = pendingSwitchOptions || {};
       pendingSwitchId = null;
+      pendingSwitchOptions = null;
       // 仅在 targetId 成功打开时才跳过对同一文档的重复切换；
       // 若 targetId 打开失败，用户在加载期间对 targetId 的再次点击应视为重试，应放行
-      if (!openSucceeded || next !== targetId) openDoc(next);
+      if (!openSucceeded || next !== targetId) openDoc(next, nextOptions);
     }
   }
+  return openSucceeded;
 }
 
 async function newDoc() {
@@ -2577,6 +2610,7 @@ async function newDoc() {
   try {
     const res = await api('/api/documents', 'POST', { title: '无标题', content: '' });
     currentDoc.id = res.id;
+    setDocumentRoute(res.id);
     currentDoc.title_origin = 'untitled';
     currentDoc.updated_at = (res && res.updated_at) || Date.now();
     if (res && typeof res.version === 'number') currentDoc.version = res.version;
@@ -2598,7 +2632,16 @@ async function newDoc() {
     toast('新建失败：' + (e.message || e));
     saveStateEl.textContent = '新建失败';
   }
-  finally { switching = false; }
+  finally {
+    switching = false;
+    if (pendingSwitchId != null) {
+      const next = pendingSwitchId;
+      const nextOptions = pendingSwitchOptions || {};
+      pendingSwitchId = null;
+      pendingSwitchOptions = null;
+      if (!currentDoc || String(currentDoc.id) !== String(next)) openDoc(next, nextOptions);
+    }
+  }
 }
 
 $('newDocBtn').addEventListener('click', newDoc);
@@ -2841,7 +2884,7 @@ function enterMobileEditor() {
   hideVersionBanner();
 }
 // 返回主页视图（移动端）：保存当前文档，切回主页
-async function mobileBack() {
+async function mobileBack(options = {}) {
   if (!isMobile()) return;
   // 先保存未保存的草稿，避免丢失
   if (currentDoc && saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
@@ -2854,6 +2897,7 @@ async function mobileBack() {
   document.querySelectorAll('.mbn-item').forEach(el => el.classList.remove('active'));
   const docsTab = document.getElementById('mbnDocs');
   if (docsTab) docsTab.classList.add('active');
+  if (options.updateRoute !== false) clearDocumentRoute({ replace: true });
 }
 $('mobileMenuBtn').addEventListener('click', mobileBack);
 
@@ -2867,6 +2911,18 @@ function suggestedFilename(ext) {
   return title + '-' + date + '.' + ext;
 }
 
+function showExportLoading() {
+  const button = $('exportToggle');
+  const spinner = button && button.querySelector('.tb-spinner');
+  if (button) button.classList.add('loading');
+  if (spinner) spinner.hidden = false;
+}
+function hideExportLoading() {
+  const button = $('exportToggle');
+  const spinner = button && button.querySelector('.tb-spinner');
+  if (button) button.classList.remove('loading');
+  if (spinner) spinner.hidden = true;
+}
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2898,11 +2954,7 @@ async function exportPDF() {
   if (!currentDoc) { toast('请先打开一个文档'); return; }
   if (exportPDF._busy) { toast('正在导出，请稍候'); return; }
   exportPDF._busy = true;
-  const exportToggle = $('exportToggle');
-  const spinner = exportToggle ? exportToggle.querySelector('.tb-spinner') : null;
-  if (exportToggle) exportToggle.classList.add('loading');
-  if (spinner) spinner.hidden = false;
-  toast('正在导出 PDF…');
+  showExportLoading('正在导出 PDF…');
   try {
     const width = 794; // A4 宽度 @96dpi
     const content = sanitizeForImageExport(editor.getHTML());
@@ -2936,8 +2988,7 @@ async function exportPDF() {
     toast('导出失败：' + (e.message || e));
   } finally {
     exportPDF._busy = false;
-    if (exportToggle) exportToggle.classList.remove('loading');
-    if (spinner) spinner.hidden = true;
+    hideExportLoading();
   }
 }
 
@@ -3059,11 +3110,7 @@ async function exportWord() {
   if (!currentDoc) return;
   if (exportWord._busy) { toast('正在导出，请稍候'); return; }
   exportWord._busy = true;
-  const exportToggle = $('exportToggle');
-  const spinner = exportToggle ? exportToggle.querySelector('.tb-spinner') : null;
-  if (exportToggle) exportToggle.classList.add('loading');
-  if (spinner) spinner.hidden = false;
-  toast('正在导出 Word…');
+  showExportLoading('正在导出 Word…');
   // 发送当前编辑器 HTML（含未保存改动），服务端解析为 docx
   const html = editor.getHTML();
   const title = (docTitleEl.value.trim() || '无标题').slice(0, TITLE_MAX);
@@ -3084,8 +3131,7 @@ async function exportWord() {
     toast('导出失败：' + (e.message || e));
   } finally {
     exportWord._busy = false;
-    if (exportToggle) exportToggle.classList.remove('loading');
-    if (spinner) spinner.hidden = true;
+    hideExportLoading();
   }
 }
 
@@ -3254,10 +3300,10 @@ function buildExportImageHTML(content, styleCss, width) {
 }
 
 async function downloadExportImage() {
-  const downloadBtn = $('expimgDownload');
+  if (downloadExportImage._busy) { toast('正在导出，请稍候'); return; }
+  downloadExportImage._busy = true;
+  showExportLoading('正在导出图片…');
   const container = $('exportRenderContainer');
-  downloadBtn.disabled = true;
-  downloadBtn.textContent = '生成中…';
 
   try {
     const width = parseInt($('expimgWidth').value, 10);
@@ -3284,8 +3330,8 @@ async function downloadExportImage() {
   } catch (e) {
     toast('导出失败：' + (e.message || e));
   } finally {
-    downloadBtn.disabled = false;
-    downloadBtn.textContent = '下载 PNG';
+    downloadExportImage._busy = false;
+    hideExportLoading();
   }
 }
 
@@ -4546,6 +4592,7 @@ const shortcutGroups = [
     ['Ctrl/⌘ + S', '保存当前文章'],
     ['Ctrl/⌘ + F', '搜索文章'],
     ['Ctrl/⌘ + /', '打开快捷键面板'],
+    ['Ctrl/⌘ + Shift + O', '打开章节'],
     ['Ctrl/⌘ + Alt + R', '切换阅读模式']
   ]],
   ['文字', [
@@ -4615,6 +4662,7 @@ document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape') {
     hideShortcutHelp();
+    if (!responsiveOutline.hidden) { closeResponsiveOutline(); return; }
     if (aiModal && !aiModal.hidden) { closeAiModal(); return; }
     if (aiPanel && !aiPanel.hidden) { closeAiPanel(); return; }
   }
@@ -4646,6 +4694,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
   else if (k === 'n' && !e.shiftKey) { e.preventDefault(); newDoc(); }
   else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  else if (k === 'o' && e.shiftKey && !e.altKey) { e.preventDefault(); openResponsiveOutline(); }
   else if (k === 'r' && e.altKey) { e.preventDefault(); toggleReadingMode(); }
   else if (k === 'h' && e.shiftKey && !e.altKey) { e.preventDefault(); exportHTML(); }
   else if (k === 'd' && e.altKey && !e.shiftKey) { e.preventDefault(); exportMarkdown(); }
@@ -4711,6 +4760,13 @@ async function init() {
     // 鉴权通过，显示正文（移除 pre-auth 隐藏类）
     document.body.classList.remove('pre-auth');
 
+    const routedDocumentId = getRoutedDocumentId();
+    if (routedDocumentId) {
+      loadSidebar();
+      const opened = await openDoc(routedDocumentId, { historyMode: 'none' });
+      if (opened) return;
+      clearDocumentRoute({ replace: true });
+    }
     const docs = await api('/api/documents');
     if (isMobile()) {
       // 移动端：默认停在主页，不自动打开文档
@@ -4827,10 +4883,37 @@ if (brandLockup) {
     hideVersionBanner();
     stopVersionPolling();
   stopShareStatsPolling();
+    clearDocumentRoute({ replace: true });
     showDashboard();
   });
 }
 
+window.addEventListener('popstate', () => {
+  const routedDocumentId = getRoutedDocumentId();
+  if (routedDocumentId) {
+    openDoc(routedDocumentId, { historyMode: 'none' });
+    return;
+  }
+  if (isMobile()) {
+    mobileBack({ updateRoute: false });
+    return;
+  }
+  if (!currentDoc) {
+    showDashboard();
+    return;
+  }
+  cancelAutoTitleWork();
+  cancelManualTitleSuggestion();
+  saveCurrentInBackground();
+  currentDoc = null;
+  setDocTitle('');
+  editor.clear();
+  if (saveStateEl) saveStateEl.textContent = '';
+  hideVersionBanner();
+  stopVersionPolling();
+  stopShareStatsPolling();
+  showDashboard();
+});
 function updateUserBadge() {
   const badge = $('userBadge');
   if (!badge || !currentUser) return;
@@ -5513,7 +5596,7 @@ function populateToolsSheet(body) {
     { section: '插入', children: [
       { label: '表格', action: () => editor.insertTable(3, 3), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>' },
       { label: '分隔线', action: () => editor.insertHR(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/></svg>' },
-      { label: '目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="18" x2="14" y2="18"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg>' },
+      { label: '插入目录', action: () => editor.insertTOC(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="18" x2="14" y2="18"/><circle cx="3.5" cy="6" r="1.2" fill="currentColor"/><circle cx="3.5" cy="12" r="1.2" fill="currentColor"/><circle cx="3.5" cy="18" r="1.2" fill="currentColor"/></svg>' },
     ]},
     { section: 'AI', children: [
       { label: 'AI 排版', action: () => openAiLayoutModal(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M8.5 14.5c-1.2-1-2-2.6-2-4.3A5.5 5.5 0 0 1 12 4.7a5.5 5.5 0 0 1 5.5 5.5c0 1.7-.8 3.3-2 4.3-.8.7-1.1 1.3-1.2 2h-4.6c-.1-.7-.4-1.3-1.2-2Z"/></svg>' },
@@ -5531,6 +5614,11 @@ function populateToolsSheet(body) {
       { label: '阅读模式', action: () => toggleReadingMode(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>' },
     ]},
   ];
+  if (getDocumentOutlineHeadings().length) {
+    items.splice(3, 0, { section: '文档', children: [
+      { label: '章节', action: () => openResponsiveOutline(), svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>' }
+    ]});
+  }
 
   body.innerHTML = '';
   items.forEach(sec => {
@@ -6110,12 +6198,12 @@ function renderShareForm(share) {
       '</div>' +
       '<div class="share-pin-row" id="sharePinRow"' + (hasPassword?'':' style="display:none"') + '>' +
         '<div class="share-pin" id="sharePin">' +
-          '<input type="text" maxlength="1" class="pin-input" inputmode="text" autocomplete="off">' +
-          '<input type="text" maxlength="1" class="pin-input" inputmode="text" autocomplete="off">' +
-          '<input type="text" maxlength="1" class="pin-input" inputmode="text" autocomplete="off">' +
-          '<input type="text" maxlength="1" class="pin-input" inputmode="text" autocomplete="off">' +
+          '<input type="text" maxlength="1" class="pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 1 位">' +
+          '<input type="text" maxlength="1" class="pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 2 位">' +
+          '<input type="text" maxlength="1" class="pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 3 位">' +
+          '<input type="text" maxlength="1" class="pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 4 位">' +
         '</div>' +
-        '<span class="share-pin-hint">4位字母或数字，输完自动保存</span>' +
+        '<span class="share-pin-hint">4 位数字，输完自动保存</span>' +
       '</div>' +
     '</div>' +
     '<div class="share-section">' +
@@ -6323,7 +6411,7 @@ function setupPinInputs() {
   const inputs = pinRow.querySelectorAll('.pin-input');
   inputs.forEach((input, i) => {
     input.addEventListener('input', () => {
-      input.value = input.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      input.value = input.value.replace(/\D/g, '').slice(0, 1);
       if (input.value && i < inputs.length - 1) inputs[i + 1].focus();
       if (Array.prototype.every.call(inputs, inp => inp.value)) {
         const pwd = Array.prototype.map.call(inputs, inp => inp.value).join('');
@@ -6331,6 +6419,14 @@ function setupPinInputs() {
         // 这里 .catch 仅吞掉 re-throw 避免 unhandled rejection，不再二次提示
         updateShare({ password: pwd }).then(() => toast('密码已保存')).catch(() => { /* updateShare 已 toast */ });
       }
+    });
+    input.addEventListener('paste', (e) => {
+      const digits = (e.clipboardData && e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, inputs.length);
+      if (!digits) return;
+      e.preventDefault();
+      inputs.forEach((inp, index) => { inp.value = digits[index] || ''; });
+      inputs[Math.min(digits.length, inputs.length - 1)].focus();
+      if (digits.length === inputs.length) updateShare({ password: digits }).then(() => toast('密码已保存')).catch(() => { /* updateShare 已 toast */ });
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Backspace' && !input.value && i > 0) inputs[i - 1].focus();
@@ -6378,17 +6474,154 @@ let outlineScrollFrame = null;
 let outlinePinnedIdx = null;
 let outlineProgrammaticScroll = false;
 let outlineProgrammaticTimer = null;
+const OUTLINE_MIN_TEXT_LENGTH = 600;
+
+const responsiveOutlineLauncher = document.createElement('button');
+responsiveOutlineLauncher.className = 'responsive-outline-launcher';
+responsiveOutlineLauncher.type = 'button';
+responsiveOutlineLauncher.hidden = true;
+responsiveOutlineLauncher.title = '打开章节（Ctrl/⌘ + Shift + O）';
+responsiveOutlineLauncher.setAttribute('aria-label', '打开章节');
+responsiveOutlineLauncher.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg><span>章节</span>';
+document.body.appendChild(responsiveOutlineLauncher);
+
+const responsiveOutlineOverlay = document.createElement('div');
+responsiveOutlineOverlay.className = 'responsive-outline-overlay';
+responsiveOutlineOverlay.hidden = true;
+const responsiveOutline = document.createElement('section');
+responsiveOutline.className = 'responsive-outline';
+responsiveOutline.hidden = true;
+responsiveOutline.setAttribute('role', 'dialog');
+responsiveOutline.setAttribute('aria-modal', 'true');
+responsiveOutline.setAttribute('aria-label', '章节');
+responsiveOutline.innerHTML = '<div class="responsive-outline-head"><strong>章节</strong><button class="responsive-outline-close" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><ol class="responsive-outline-list"></ol>';
+document.body.append(responsiveOutlineOverlay, responsiveOutline);
+
+let responsiveOutlineHeadings = [];
+let responsiveOutlineScrollRoot = null;
+let responsiveOutlineScrollHandler = null;
+let responsiveOutlineScrollFrame = null;
+let responsiveOutlineRestoreFocus = null;
+
+function getDocumentOutlineHeadings() {
+  const compactText = (editorEl.innerText || '').replace(/\s/g, '');
+  if (compactText.length < OUTLINE_MIN_TEXT_LENGTH) return [];
+  const headings = Array.from(editorEl.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc') && h.textContent.trim());
+  if (headings.length < 2) return [];
+  const prefix = 'outline-' + (currentDoc ? currentDoc.id : 'draft') + '-';
+  headings.forEach((h, i) => { h.id = prefix + i; });
+  return headings;
+}
+
+function setOutlineLauncherVisible(isAvailable) {
+  const useDrawer = isAvailable && (readingMode || window.innerWidth <= 1340 || docOutline.hidden);
+  responsiveOutlineLauncher.hidden = !useDrawer;
+}
+
+function getResponsiveOutlineActiveIndex() {
+  if (!responsiveOutlineHeadings.length) return -1;
+  const wrap = document.querySelector('.editor-wrap');
+  const marker = readingMode ? 88 : (wrap ? wrap.getBoundingClientRect().top + 32 : 32);
+  let active = 0;
+  responsiveOutlineHeadings.forEach((heading, index) => {
+    if (heading.getBoundingClientRect().top <= marker) active = index;
+  });
+  return active;
+}
+
+function updateResponsiveOutlineActive() {
+  const active = getResponsiveOutlineActiveIndex();
+  responsiveOutline.querySelectorAll('[data-responsive-outline-index]').forEach((button, index) => {
+    const isActive = index === active;
+    button.classList.toggle('active', isActive);
+    if (isActive) button.setAttribute('aria-current', 'location');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function startResponsiveOutlineTracking() {
+  if (responsiveOutlineScrollRoot && responsiveOutlineScrollHandler) responsiveOutlineScrollRoot.removeEventListener('scroll', responsiveOutlineScrollHandler);
+  if (responsiveOutlineScrollFrame) cancelAnimationFrame(responsiveOutlineScrollFrame);
+  responsiveOutlineScrollRoot = readingMode ? window : document.querySelector('.editor-wrap');
+  responsiveOutlineScrollHandler = () => {
+    if (responsiveOutlineScrollFrame) return;
+    responsiveOutlineScrollFrame = requestAnimationFrame(() => {
+      responsiveOutlineScrollFrame = null;
+      updateResponsiveOutlineActive();
+    });
+  };
+  if (responsiveOutlineScrollRoot) responsiveOutlineScrollRoot.addEventListener('scroll', responsiveOutlineScrollHandler, { passive: true });
+  updateResponsiveOutlineActive();
+}
+
+function closeResponsiveOutline(restoreFocus) {
+  if (responsiveOutline.hidden) return;
+  if (responsiveOutlineScrollRoot && responsiveOutlineScrollHandler) responsiveOutlineScrollRoot.removeEventListener('scroll', responsiveOutlineScrollHandler);
+  if (responsiveOutlineScrollFrame) cancelAnimationFrame(responsiveOutlineScrollFrame);
+  responsiveOutlineScrollRoot = null;
+  responsiveOutlineScrollHandler = null;
+  responsiveOutlineScrollFrame = null;
+  responsiveOutline.hidden = true;
+  responsiveOutlineOverlay.hidden = true;
+  if (restoreFocus !== false && responsiveOutlineRestoreFocus && document.contains(responsiveOutlineRestoreFocus)) responsiveOutlineRestoreFocus.focus();
+  responsiveOutlineRestoreFocus = null;
+}
+
+function scrollToDocumentHeading(heading) {
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  if (readingMode) {
+    window.scrollTo({ top: Math.max(0, window.scrollY + heading.getBoundingClientRect().top - 64), behavior });
+    return;
+  }
+  const wrap = document.querySelector('.editor-wrap');
+  if (!wrap) return;
+  const top = heading.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop - 24;
+  wrap.scrollTo({ top: Math.max(0, top), behavior });
+}
+
+function openResponsiveOutline() {
+  const headings = getDocumentOutlineHeadings();
+  if (!headings.length) { toast('正文较短或还没有足够的标题，暂不显示章节'); return; }
+  responsiveOutlineHeadings = headings;
+  const list = responsiveOutline.querySelector('.responsive-outline-list');
+  list.innerHTML = headings.map((heading, index) => {
+    const level = heading.tagName.toLowerCase();
+    return '<li class="level-' + level + '"><button type="button" data-responsive-outline-index="' + index + '">' + escapeHtml(heading.textContent.trim()) + '</button></li>';
+  }).join('');
+  list.querySelectorAll('[data-responsive-outline-index]').forEach(button => {
+    button.addEventListener('click', () => {
+      const target = headings[parseInt(button.getAttribute('data-responsive-outline-index'), 10)];
+      closeResponsiveOutline(false);
+      if (target) scrollToDocumentHeading(target);
+    });
+  });
+  responsiveOutlineRestoreFocus = document.activeElement;
+  responsiveOutline.hidden = false;
+  responsiveOutlineOverlay.hidden = false;
+  startResponsiveOutlineTracking();
+  const firstItem = list.querySelector('button');
+  if (firstItem) firstItem.focus();
+}
+
+responsiveOutlineLauncher.addEventListener('click', openResponsiveOutline);
+responsiveOutlineOverlay.addEventListener('click', () => closeResponsiveOutline());
+responsiveOutline.querySelector('.responsive-outline-close').addEventListener('click', () => closeResponsiveOutline());
 
 function updateOutline(immediate, delay) {
   if (outlineTimer) clearTimeout(outlineTimer);
   const build = () => {
-    if (readingMode) { docOutline.hidden = true; return; }
-    // 过滤 .toc 内的标题，和编辑器 _buildTOCHTML 保持一致
-    const headings = Array.from(editorEl.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc'));
-    if (headings.length < 2) { docOutline.hidden = true; return; }
-    // 跳过内容为空或仅含空白/不可见字符的标题，避免"空标题"进入目录
-    const visibleHeadings = headings.filter(h => h.textContent.trim().length > 0);
-    if (visibleHeadings.length < 2) { docOutline.hidden = true; return; }
+    const visibleHeadings = getDocumentOutlineHeadings();
+    if (!visibleHeadings.length) {
+      docOutline.hidden = true;
+      setOutlineLauncherVisible(false);
+      closeResponsiveOutline(false);
+      return;
+    }
+    if (readingMode || window.innerWidth <= 1340) {
+      docOutline.hidden = true;
+      setOutlineLauncherVisible(true);
+      return;
+    }
     // 强制按文档顺序分配唯一 ID（消除导入文档中可能的重复 ID）
     const prefix = 'outline-' + (currentDoc ? currentDoc.id : 'draft') + '-';
     visibleHeadings.forEach((h, i) => { h.id = prefix + i; });
@@ -6403,6 +6636,7 @@ function updateOutline(immediate, delay) {
     docOutline.innerHTML = html;
     docOutline.hidden = false;
     positionOutline();
+    setOutlineLauncherVisible(docOutline.hidden);
     setupOutlineObserver(visibleHeadings);
   };
   if (immediate) {
@@ -6501,8 +6735,11 @@ function positionOutline() {
 }
 
 window.addEventListener('resize', () => {
-  if (!docOutline.hidden) positionOutline();
-  else updateOutline();
+  if (readingMode || window.innerWidth <= 1340) updateOutline(true);
+  else if (!docOutline.hidden) {
+    positionOutline();
+    setOutlineLauncherVisible(docOutline.hidden);
+  } else updateOutline();
 });
 
 /* 监听 .document-shell 尺寸变化（滚动条出现/消失、侧边栏展开收起等），
@@ -6545,6 +6782,7 @@ function toggleReadingMode() {
   } else {
     editorEl.contentEditable = 'true';
   }
+  updateOutline(true);
 }
 
 readingExitBtn.addEventListener('click', toggleReadingMode);

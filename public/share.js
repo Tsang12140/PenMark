@@ -6,6 +6,21 @@ const $ = id => document.getElementById(id);
 const container = $('shareContainer');
 const toastStack = $('toastStack');
 const tocEl = $('shareToc');
+const tocToggle = $('shareTocToggle');
+const tocOverlay = $('shareTocOverlay');
+const tocSheet = $('shareTocSheet');
+const tocSheetList = $('shareTocSheetList');
+const tocSheetClose = $('shareTocSheetClose');
+const chapterDock = $('shareChapterDock');
+const chapterDockLabel = $('shareChapterDockLabel');
+const chapterDockProgress = $('shareChapterDockProgress');
+const readingDock = $('shareReadingDock');
+const progressScrubber = $('readingProgressScrubber');
+let shareTocHeadings = [];
+let shareTocObserver = null;
+let shareTocKeepClickedUntil = 0;
+let shareTocRestoreFocus = null;
+let shareProgressBound = false;
 setupImagePreview(container, '.share-reader img, .share-editor img');
 
 const token = (function() {
@@ -138,25 +153,34 @@ async function init() {
 }
 
 function renderPasswordForm() {
+  container.classList.add('share-access-gate');
   container.innerHTML =
     '<div class="share-pwd-card">' +
-      '<div class="share-pwd-icon">🔒</div>' +
+      '<div class="share-pwd-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L21 4l-3-3z"/></svg></div>' +
       '<div class="share-pwd-title">需要密码访问</div>' +
-      '<div class="share-pwd-desc">请输入4位密码</div>' +
+      '<div class="share-pwd-desc">请输入 4 位访问码</div>' +
       '<div class="share-pin" id="pwdPin">' +
-        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="text" autocomplete="off">' +
-        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="text" autocomplete="off">' +
-        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="text" autocomplete="off">' +
-        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="text" autocomplete="off">' +
+        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 1 位">' +
+        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 2 位">' +
+        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 3 位">' +
+        '<input type="text" maxlength="1" class="pin-input pwd-pin" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-label="访问码第 4 位">' +
       '</div>' +
       '<div class="share-pwd-error" id="pwdError"></div>' +
     '</div>';
   const inputs = container.querySelectorAll('.pwd-pin');
   inputs.forEach((input, i) => {
     input.addEventListener('input', () => {
-      input.value = input.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      input.value = input.value.replace(/\D/g, '').slice(0, 1);
       if (input.value && i < inputs.length - 1) inputs[i + 1].focus();
       if (Array.prototype.every.call(inputs, inp => inp.value)) submitPassword();
+    });
+    input.addEventListener('paste', (e) => {
+      const digits = (e.clipboardData && e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, inputs.length);
+      if (!digits) return;
+      e.preventDefault();
+      inputs.forEach((inp, index) => { inp.value = digits[index] || ''; });
+      inputs[Math.min(digits.length, inputs.length - 1)].focus();
+      if (digits.length === inputs.length) submitPassword();
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Backspace' && !input.value && i > 0) inputs[i - 1].focus();
@@ -169,7 +193,7 @@ async function submitPassword() {
   const inputs = container.querySelectorAll('.pwd-pin');
   const pwd = Array.prototype.map.call(inputs, inp => inp.value).join('');
   const errEl = $('pwdError');
-  if (pwd.length !== 4) { errEl.textContent = '请输入完整4位密码'; return; }
+  if (pwd.length !== 4) { errEl.textContent = '请输入完整 4 位访问码'; return; }
   errEl.textContent = '';
   // 清空输入以便重试
   try {
@@ -197,6 +221,7 @@ async function submitPassword() {
 }
 
 function renderDoc(data) {
+  container.classList.remove('share-access-gate');
   const doc = data.doc;
   const canEdit = data.can_edit;
   document.title = (doc.title || '分享文档') + ' · 知著 PenMark';
@@ -412,69 +437,164 @@ function extractTitle(editorEl) {
 function setupProgress() {
   const bar = $('readingProgress');
   if (!bar) return;
-  const update = () => {
-    const h = document.documentElement;
-    const total = h.scrollHeight - h.clientHeight;
-    const scrolled = total > 0 ? h.scrollTop / total : 0;
+  if (!shareProgressBound) {
+    window.addEventListener('scroll', updateReadingProgress, { passive: true });
+    if (progressScrubber) progressScrubber.addEventListener('input', seekReadingProgress);
+    shareProgressBound = true;
+  }
+  updateReadingProgress();
+}
+
+function updateReadingProgress() {
+  const bar = $('readingProgress');
+  const h = document.scrollingElement || document.documentElement;
+  const total = h.scrollHeight - h.clientHeight;
+  const scrolled = total > 0 ? Math.min(1, Math.max(0, h.scrollTop / total)) : 0;
+  const percent = Math.round(scrolled * 100);
+  if (bar) {
     bar.style.width = (scrolled * 100) + '%';
     bar.style.opacity = scrolled > 0.01 ? '1' : '0';
-  };
-  window.addEventListener('scroll', update, { passive: true });
-  update();
+  }
+  if (chapterDockProgress) chapterDockProgress.textContent = percent + '%';
+  if (progressScrubber) {
+    progressScrubber.value = String(percent);
+    progressScrubber.style.setProperty('--share-progress', percent + '%');
+    progressScrubber.setAttribute('aria-valuetext', percent + '%');
+  }
+}
+
+function seekReadingProgress() {
+  if (!progressScrubber) return;
+  const root = document.scrollingElement || document.documentElement;
+  const total = root.scrollHeight - root.clientHeight;
+  const percent = Math.min(100, Math.max(0, Number(progressScrubber.value) || 0));
+  progressScrubber.style.setProperty('--share-progress', percent + '%');
+  window.scrollTo({ top: total * percent / 100, behavior: 'auto' });
+}
+function setShareTocExpanded(expanded) {
+  [tocToggle, chapterDock].forEach(control => {
+    if (control) control.setAttribute('aria-expanded', String(expanded));
+  });
+}
+function closeShareTocSheet(restoreFocus) {
+  if (!tocSheet || tocSheet.hidden) return;
+  tocSheet.hidden = true;
+  if (tocOverlay) tocOverlay.hidden = true;
+  setShareTocExpanded(false);
+  if (restoreFocus !== false && shareTocRestoreFocus && document.contains(shareTocRestoreFocus)) shareTocRestoreFocus.focus();
+  shareTocRestoreFocus = null;
+}
+
+function openShareTocSheet() {
+  if (!tocSheet || !shareTocHeadings.length) return;
+  shareTocRestoreFocus = document.activeElement;
+  tocSheet.hidden = false;
+  if (tocOverlay) tocOverlay.hidden = false;
+  setShareTocExpanded(true);
+  const first = tocSheetList && tocSheetList.querySelector('button');
+  if (first) first.focus();
+}
+
+function setShareTocActive(id) {
+  tocEl.querySelectorAll('a[data-target]').forEach(link => link.classList.toggle('active', link.getAttribute('data-target') === id));
+  if (tocSheetList) tocSheetList.querySelectorAll('button[data-target]').forEach(button => {
+    const isActive = button.getAttribute('data-target') === id;
+    button.classList.toggle('active', isActive);
+    if (isActive) button.setAttribute('aria-current', 'location');
+    else button.removeAttribute('aria-current');
+  });
+  const activeHeading = shareTocHeadings.find(heading => heading.id === id);
+  if (activeHeading && chapterDockLabel) {
+    const label = activeHeading.textContent.trim();
+    chapterDockLabel.textContent = label;
+    chapterDock.setAttribute('aria-label', '\u6253\u5f00\u7ae0\u8282\uff0c\u5f53\u524d\uff1a' + label);
+  }
+}
+
+function jumpToShareHeading(id, closeSheet) {
+  const heading = id && document.getElementById(id);
+  if (!heading) return;
+  setShareTocActive(id);
+  shareTocKeepClickedUntil = Date.now() + 700;
+  history.replaceState(null, '', '#' + encodeURIComponent(id));
+  const top = Math.max(0, window.scrollY + heading.getBoundingClientRect().top - 88);
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  if (closeSheet) closeShareTocSheet(false);
+  window.scrollTo({ top, behavior });
 }
 
 function setupTOC() {
   const root = $('shareReader') || $('shareEditor');
   if (!root) return;
-  const headings = root.querySelectorAll('h1, h2, h3');
-  if (headings.length < 3) { tocEl.hidden = true; return; }
+  const headings = Array.from(root.querySelectorAll('h1, h2, h3')).filter(h => h.textContent.trim());
+  const compactText = (root.innerText || '').replace(/\s/g, '');
+  if (headings.length < 2 || compactText.length < 600) {
+    tocEl.innerHTML = '';
+    tocEl.hidden = true;
+    shareTocHeadings = [];
+    if (tocToggle) tocToggle.hidden = true;
+    if (readingDock) readingDock.hidden = true;
+    closeShareTocSheet(false);
+    if (shareTocObserver) shareTocObserver.disconnect();
+    return;
+  }
 
+  shareTocHeadings = headings;
   let html = '<div class="share-toc-title">目录</div><ol class="share-toc-list">';
+  let sheetHtml = '';
   headings.forEach((h, i) => {
     const id = h.id || (h.id = 'sh-' + i);
     const level = h.tagName.toLowerCase();
     const indent = level === 'h2' ? 'padding-left:1em;' : (level === 'h3' ? 'padding-left:2em;' : '');
-    html += '<li style="' + indent + '"><a href="#' + id + '" data-target="' + id + '">' + escapeHtml(h.textContent) + '</a></li>';
+    const text = escapeHtml(h.textContent.trim());
+    html += '<li style="' + indent + '"><a href="#' + id + '" data-target="' + id + '">' + text + '</a></li>';
+    sheetHtml += '<li class="level-' + level + '"><button type="button" data-target="' + id + '">' + text + '</button></li>';
   });
   html += '</ol>';
   tocEl.innerHTML = html;
   tocEl.hidden = false;
+  if (tocSheetList) tocSheetList.innerHTML = sheetHtml;
+  if (tocToggle) tocToggle.hidden = false;
+  if (readingDock) readingDock.hidden = false;
 
-  // Activate the clicked item immediately. An in-view heading may not trigger
-  // a fresh observer entry, which previously left the old TOC item active.
-  const links = tocEl.querySelectorAll('a');
-  const setActiveLink = (id) => {
-    links.forEach(link => link.classList.toggle('active', link.getAttribute('data-target') === id));
-  };
-  let keepClickedLinkActiveUntil = 0;
-  links.forEach(link => {
+  tocEl.querySelectorAll('a[data-target]').forEach(link => {
     link.addEventListener('click', (event) => {
-      const id = link.getAttribute('data-target');
-      const heading = id && document.getElementById(id);
-      if (!heading) return;
       event.preventDefault();
-      setActiveLink(id);
-      // Do not let an old heading observed during the smooth scroll overwrite
-      // the item the reader just selected.
-      keepClickedLinkActiveUntil = Date.now() + 700;
-      history.replaceState(null, '', '#' + encodeURIComponent(id));
-      const top = Math.max(0, window.scrollY + heading.getBoundingClientRect().top - 88);
-      const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-      window.scrollTo({ top, behavior });
+      jumpToShareHeading(link.getAttribute('data-target'), false);
     });
   });
+  if (tocSheetList) tocSheetList.querySelectorAll('button[data-target]').forEach(button => {
+    button.addEventListener('click', () => jumpToShareHeading(button.getAttribute('data-target'), true));
+  });
 
-  // Keep the current chapter highlighted while readers scroll.
-  const observer = new IntersectionObserver((entries) => {
-    if (Date.now() < keepClickedLinkActiveUntil) return;
+  if (shareTocObserver) shareTocObserver.disconnect();
+  shareTocObserver = new IntersectionObserver((entries) => {
+    if (Date.now() < shareTocKeepClickedUntil) return;
     entries.forEach(entry => {
-      if (entry.isIntersecting) setActiveLink(entry.target.id);
+      if (entry.isIntersecting) setShareTocActive(entry.target.id);
     });
   }, { rootMargin: '-80px 0px -70% 0px' });
-  headings.forEach(h => observer.observe(h));
+  headings.forEach(h => shareTocObserver.observe(h));
+  setShareTocActive(headings[0].id);
+  updateReadingProgress();
 }
 
+if (tocToggle) tocToggle.addEventListener('click', () => {
+  if (tocSheet && !tocSheet.hidden) closeShareTocSheet();
+  else openShareTocSheet();
+});
+if (chapterDock) chapterDock.addEventListener('click', () => {
+  if (tocSheet && !tocSheet.hidden) closeShareTocSheet();
+  else openShareTocSheet();
+});
+if (tocOverlay) tocOverlay.addEventListener('click', () => closeShareTocSheet());
+if (tocSheetClose) tocSheetClose.addEventListener('click', () => closeShareTocSheet());
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && tocSheet && !tocSheet.hidden) closeShareTocSheet();
+});
+
 function renderError(msg) {
+  container.classList.remove('share-access-gate');
   container.innerHTML =
     '<div class="share-error-card">' +
       '<div class="share-error-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>' +

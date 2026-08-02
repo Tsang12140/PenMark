@@ -26,6 +26,7 @@
     <img src="/PenMark_Brand_Assets/penmark-logo-horizontal-dark.svg" alt="" class="share-brand-logo brand-logo-dark">
   </a>
   <div class="share-tools">
+    <button class="share-toc-toggle" id="shareTocToggle" type="button" title="章节" aria-label="打开章节" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg><span>章节</span></button>
     <button class="share-theme-toggle" id="themeToggle" title="切换主题" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg></button>
     <div class="share-visitors-slot" id="shareVisitorsSlot"></div>
     <a class="share-login-btn" id="shareLoginBtn" href="/login.html" title="登录 / 注册 知著">
@@ -39,7 +40,20 @@
   <div class="share-loading-card">加载中…</div>
 </div>
 
+<div class="share-reading-dock" id="shareReadingDock" hidden>
+  <button class="share-chapter-dock" id="shareChapterDock" type="button" aria-label="&#25171;&#24320;&#31456;&#33410;" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>
+    <span class="share-chapter-dock-label" id="shareChapterDockLabel">&#31456;&#33410;</span>
+    <span class="share-chapter-dock-progress" id="shareChapterDockProgress">0%</span>
+  </button>
+  <input class="share-progress-scrubber" id="readingProgressScrubber" type="range" min="0" max="100" value="0" step="1" aria-label="&#38405;&#35835;&#36827;&#24230;&#65292;&#25302;&#21160;&#36339;&#36716;">
+</div>
 <div class="share-toc" id="shareToc" hidden></div>
+<div class="share-toc-overlay" id="shareTocOverlay" hidden></div>
+<section class="share-toc-sheet" id="shareTocSheet" role="dialog" aria-modal="true" aria-labelledby="shareTocSheetTitle" hidden>
+  <div class="share-toc-sheet-head"><strong id="shareTocSheetTitle">章节</strong><button class="share-toc-sheet-close" id="shareTocSheetClose" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+  <ol class="share-toc-sheet-list" id="shareTocSheetList"></ol>
+</section>
 
 <div class="toast-stack" id="toastStack"></div>
 
