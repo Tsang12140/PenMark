@@ -586,11 +586,13 @@ body.pre-auth .app{visibility:hidden;}
 .tb-btn.loading > svg:not(.tb-spinner){visibility:hidden;}
 .tb-btn.loading > svg:not(.tb-spinner) ~ .caret{visibility:hidden;}
 .tb-spinner{
+  display:none;
   position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
   width:16px;height:16px;
   animation:tb-spin .8s linear infinite;
   pointer-events:none;
 }
+.tb-btn.loading .tb-spinner{display:block;}
 .tb-spinner circle{stroke:currentColor;stroke-width:2.5;fill:none;stroke-linecap:round;}
 @keyframes tb-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 .tb-select{
