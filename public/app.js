@@ -748,6 +748,7 @@ function handleAction(action) {
     case 'quote': editor.insertQuote(); break;
     case 'todo': editor.insertTodo(); break;
     case 'link': editor.insertLink(); break;
+    case 'image': openMobileImagePicker(); break;
     case 'code': editor.insertCodeInline(); break;
     case 'codeblock': editor.insertCodeBlock(); break;
     case 'table': editor.insertTable(3, 3); break;
@@ -779,6 +780,52 @@ function selectAllEditorContent() {
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
+}
+
+// 移动端工具栏按钮按下时缓存的光标 Range（mousedown 阶段保存，click 阶段使用）
+let _mobileSavedRange = null;
+
+// 移动端图片选择：用缓存光标 → 调起系统选图 → 读为 data URL → 恢复光标 → 插入
+// 桌面端靠拖拽/粘贴即可，移动端没有这两个入口，所以工具栏给一个独立按钮
+function openMobileImagePicker() {
+  // 优先用 mousedown 阶段缓存的光标；没有就再尝试读一次当前选区
+  let savedRange = _mobileSavedRange;
+  if (!savedRange) {
+    try {
+      const sel = window.getSelection();
+      if (sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0);
+        if (editorEl.contains(r.commonAncestorContainer)) savedRange = r.cloneRange();
+      }
+    } catch (_) {}
+  }
+  _mobileSavedRange = null;
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { toast('请选择图片文件'); return; }
+    if (file.size > 12 * 1024 * 1024) { toast('图片过大，请小于 12MB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = reader.result;
+      if (savedRange) {
+        try {
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(savedRange);
+        } catch (_) {}
+      }
+      editor.insertImage(src, savedRange);
+      toast('图片已插入');
+    };
+    reader.onerror = () => toast('图片读取失败');
+    reader.readAsDataURL(file);
+  };
+  input.click();
 }
 
 function refreshToolbar() {
@@ -3006,10 +3053,20 @@ const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
 // 只有真正的手机/平板（iPhone/Android/iPad）才走移动版
 // viewport meta 的改写在 index.html / login.html 的 head 内联脚本中提前执行
 const IS_DESKTOP_APP = !!(window.desktop && window.desktop.isDesktop);
-const MOBILE_UA = /Android|iPhone|iPod|Windows Phone|Mobile|BB10|PlayBook/i.test(navigator.userAgent)
+// 允许通过 URL 强制移动版（如 ?mobile=1 / ?mobile=true 或仅 ?mobile），方便 Chrome DevTools 模拟时调试
+// 注：location.search 的正则结果只保留一次，故先取捕获组到局部变量再做布尔运算
+(function () {
+  const m = /[?&]mobile(?:=([^&]*))?/i.exec(location.search);
+  const FORCE_MOBILE_RAW = m ? (typeof m[1] === 'undefined' ? '1' : m[1]) : null;
+  window.__FORCE_MOBILE__ = FORCE_MOBILE_RAW !== null &&
+    FORCE_MOBILE_RAW !== '0' && FORCE_MOBILE_RAW !== 'false';
+})();
+const FORCE_MOBILE = !!window.__FORCE_MOBILE__;
+const MOBILE_UA_BASE = /Android|iPhone|iPod|Windows Phone|Mobile|BB10|PlayBook/i.test(navigator.userAgent)
   && !/iPad/i.test(navigator.userAgent); // iPad 屏幕大，走桌面布局更合理
+const MOBILE_UA = FORCE_MOBILE || MOBILE_UA_BASE;
 function isMobile() {
-  if (IS_DESKTOP_APP) return false;
+  if (IS_DESKTOP_APP) return FORCE_MOBILE ? MOBILE_MQ.matches : false;
   if (!MOBILE_UA) return false;
   return MOBILE_MQ.matches;
 }
@@ -5107,11 +5164,11 @@ function updateUserBadge() {
       avatarEl.style.background = pickAvatarColor(currentUser.username || currentUser.nickname || '');
     }
   }
-  // 移动端"我的"标签也展示昵称
+  // 移动端"我的"标签固定显示"我的"，避免长用户名撑变形
   const meTab = document.getElementById('mbnMe');
   if (meTab) {
     const label = meTab.querySelector('span');
-    if (label) label.textContent = (currentUser.nickname || currentUser.username || '').slice(0, 6) || '我的';
+    if (label) label.textContent = '我的';
   }
 }
 
@@ -5537,7 +5594,7 @@ function updateShareButton() {
     mobileShareBtn.hidden = !(currentUser && (currentUser.isAdmin || currentUser.can_share));
   }
   const mbnSettings = document.getElementById('mbnSettings');
-  if (mbnSettings) mbnSettings.hidden = !(currentUser && currentUser.isAdmin);
+  if (mbnSettings) mbnSettings.hidden = true;
 }
 
 // 初始化移动端 chrome（底部导航、迷你工具栏）
@@ -5545,6 +5602,17 @@ function updateMobileChrome() {
   // 迷你工具栏按钮：转发到既有 handleAction / editor.exec
   const mobileToolbar = document.getElementById('mobileToolbar');
   if (mobileToolbar && !mobileToolbar.dataset.bound) {
+    // 移动端点工具栏按钮会让编辑器失焦，selection 可能丢失。
+    // 在 mousedown 捕获阶段（焦点还没转移）先缓存光标 Range，供异步操作（如插入图片）使用。
+    mobileToolbar.addEventListener('mousedown', () => {
+      try {
+        const sel = window.getSelection();
+        if (sel.rangeCount > 0) {
+          const r = sel.getRangeAt(0);
+          if (editorEl.contains(r.commonAncestorContainer)) _mobileSavedRange = r.cloneRange();
+        }
+      } catch (_) {}
+    }, true);
     mobileToolbar.addEventListener('click', (e) => {
       const btn = e.target.closest('.mt-btn');
       if (!btn) return;
@@ -5599,11 +5667,6 @@ function updateMobileChrome() {
   if (mbnTrash && !mbnTrash.dataset.bound) {
     mbnTrash.addEventListener('click', () => { openTrash(); });
     mbnTrash.dataset.bound = '1';
-  }
-  const mbnSettings = document.getElementById('mbnSettings');
-  if (mbnSettings && !mbnSettings.dataset.bound) {
-    mbnSettings.addEventListener('click', () => { if (currentUser && currentUser.isAdmin) openSettings(); });
-    mbnSettings.dataset.bound = '1';
   }
   const mbnMe = document.getElementById('mbnMe');
   if (mbnMe && !mbnMe.dataset.bound) {
