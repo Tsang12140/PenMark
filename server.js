@@ -1580,6 +1580,43 @@ function shareAllowed(req, res, next) {
   if (req.user && (req.user.isAdmin || req.user.can_share)) return next();
   return res.status(403).json({ error: 'No share permission' });
 }
+async function recordReceivedShare(shareToken, userId, now) {
+  const updated = await db.execute(
+    'UPDATE share_receipts SET last_opened_at = $1 WHERE share_token = $2 AND user_id = $3',
+    [now, shareToken, userId]
+  );
+  if (updated.changes) return;
+  try {
+    await db.execute(
+      'INSERT INTO share_receipts (share_token, user_id, first_opened_at, last_opened_at) VALUES ($1, $2, $3, $4)',
+      [shareToken, userId, now, now]
+    );
+  } catch (err) {
+    // A parallel tab may have inserted the same (share, user) row first.
+    await db.execute(
+      'UPDATE share_receipts SET last_opened_at = $1 WHERE share_token = $2 AND user_id = $3',
+      [now, shareToken, userId]
+    );
+  }
+}
+
+app.get('/api/shared-with-me', wrap(async (req, res) => {
+  const requestedLimit = Number(req.query.limit) || 12;
+  const limit = Math.min(Math.max(requestedLimit, 1), 24);
+  const rows = await db.query(
+    'SELECT sr.share_token AS token, sr.first_opened_at, sr.last_opened_at, ' +
+    's.permission, d.id AS doc_id, d.title, d.updated_at, u.nickname AS owner_nickname ' +
+    'FROM share_receipts sr ' +
+    'JOIN shares s ON s.token = sr.share_token ' +
+    'JOIN documents d ON d.id = s.doc_id ' +
+    'LEFT JOIN users u ON u.id = s.owner_id ' +
+    'WHERE sr.user_id = $1 AND s.owner_id <> $2 AND d.deleted_at IS NULL ' +
+    'AND (s.expire_at IS NULL OR s.expire_at > $3) ' +
+    'ORDER BY sr.last_opened_at DESC LIMIT $4',
+    [req.user.id, req.user.id, Date.now(), limit]
+  );
+  res.json(rows.map(row => ({ ...row, url: '/s/' + row.token })));
+}));
 
 app.get('/api/documents/:id/share', wrap(async (req, res) => {
   const row = await db.one(
@@ -1899,10 +1936,16 @@ app.get('/api/public/share/:token/version', wrap(async (req, res) => {
 
 // 访客上报：前端生成 fingerprint（Canvas+UA hash），后端 UPSERT 记录最近访问
 app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) => {
-  const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
+  const share = await db.one('SELECT token, owner_id, password_hash, expire_at FROM shares WHERE token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
 
+  if (share.password_hash) {
+    const session = auth.verifyShareSession(auth.readShareCookie(req));
+    if (!session || !session.authed || session.token !== share.token) {
+      return res.status(401).json({ error: 'need_password' });
+    }
+  }
   const fingerprint = normalizeVisitorFingerprint(req.body.fingerprint);
   if (!fingerprint) {
     return res.status(400).json({ error: 'fingerprint 不合法' });
@@ -1928,6 +1971,13 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
     }
   } catch (e) { /* 未登录访客，正常路径 */ }
 
+  if (visitorUserId && Number(visitorUserId) !== Number(share.owner_id)) {
+    try {
+      await recordReceivedShare(share.token, visitorUserId, now);
+    } catch (err) {
+      console.warn('[share/receipt] record failed:', err && err.message);
+    }
+  }
   // UPSERT：同 (token, fingerprint) 则累加 visit_count、刷新 last_visit_at
   try {
     const existing = await db.one(

@@ -346,4 +346,18 @@ CREATE TABLE IF NOT EXISTS user_asset_bandwidth (
 CREATE INDEX IF NOT EXISTS idx_user_asset_bandwidth_month ON user_asset_bandwidth(month_start);
 `);
 
+// 014: records a signed-in reader's accepted shared documents without copying content.
+db.exec(`
+CREATE TABLE IF NOT EXISTS share_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  share_token TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  first_opened_at INTEGER NOT NULL,
+  last_opened_at INTEGER NOT NULL,
+  UNIQUE(share_token, user_id),
+  FOREIGN KEY (share_token) REFERENCES shares(token) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_share_receipts_user_opened ON share_receipts(user_id, last_opened_at DESC);
+`);
 module.exports = db;

@@ -1910,6 +1910,8 @@ let expandedFolders = new Set(JSON.parse(localStorage.getItem('penmark_expanded_
 let draggingDocId = null;
 let renamingFolderId = null;
 let docClipboard = null;
+let sharedDocuments = [];
+let sharedDocumentsRequest = 0;
 
 async function loadSidebar() {
   try {
@@ -1929,23 +1931,63 @@ function persistExpanded() {
 
 function renderSidebar(docs) {
   docListEl.innerHTML = '';
-  if (!docs.length && !folders.length) {
-    docListEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--ink-faint);font-size:12px;">暂无文档，点击上方新建</div>';
+  const hasShared = isMobile() && sharedDocuments.length > 0;
+  if (!docs.length && !folders.length && !hasShared) {
+    docListEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--ink-faint);font-size:12px;">&#26242;&#26080;&#25991;&#26723;&#65292;&#28857;&#20987;&#19978;&#26041;&#26032;&#24314;&#24320;&#22987;</div>';
     return;
   }
-  // 按文件夹分组
+  if (hasShared) renderSharedSidebarSection();
+  if (!docs.length && !folders.length) return;
   const grouped = {};
   const unfiled = [];
   docs.forEach(d => {
     if (d.folder_id) (grouped[d.folder_id] = grouped[d.folder_id] || []).push(d);
     else unfiled.push(d);
   });
-  // 渲染各文件夹
   folders.forEach(f => renderFolderItem(f, grouped[f.id] || []));
-  // 未分类区（始终显示，作为 drop target）
   renderUnfiledSection(unfiled);
 }
 
+function renderSharedSidebarSection() {
+  const section = document.createElement('section');
+  section.className = 'shared-sidebar-section';
+  section.innerHTML =
+    '<div class="shared-sidebar-head">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>' +
+      '<span>&#19982;&#25105;&#20849;&#20139;</span>' +
+    '</div>';
+  sharedDocuments.slice(0, 12).forEach(doc => {
+    const token = String(doc.token || '');
+    if (!token) return;
+    const permission = doc.permission === 'edit' ? '\u53ef\u7f16\u8f91' : '\u53ea\u8bfb';
+    const owner = String(doc.owner_nickname || '\u67d0\u4f4d\u7528\u6237');
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'shared-sidebar-item';
+    item.setAttribute('data-share-token', token);
+    item.setAttribute('aria-label', '\u6253\u5f00\u5171\u4eab\u6587\u6863\uff1a' + String(doc.title || '\u65e0\u6807\u9898'));
+    item.innerHTML =
+      '<span class="shared-sidebar-title">' + escapeHtml(doc.title || '\u65e0\u6807\u9898') + '</span>' +
+      '<span class="shared-sidebar-meta"><span>' + escapeHtml(owner) + '</span><span class="shared-sidebar-permission">' + permission + '</span><span>' + formatDateShort(new Date(doc.updated_at || Date.now())) + '</span></span>';
+    item.addEventListener('click', () => window.location.assign('/s/' + encodeURIComponent(token)));
+    section.appendChild(item);
+  });
+  docListEl.appendChild(section);
+}
+
+async function loadSharedDocuments() {
+  const request = ++sharedDocumentsRequest;
+  try {
+    const rows = await api('/api/shared-with-me');
+    if (request !== sharedDocumentsRequest) return sharedDocuments;
+    sharedDocuments = Array.isArray(rows) ? rows : [];
+  } catch (_) {
+    if (request !== sharedDocumentsRequest) return sharedDocuments;
+    sharedDocuments = [];
+  }
+  if (isMobile()) renderSidebar(sidebarDocs);
+  return sharedDocuments;
+}
 function renderFolderItem(folder, docs) {
   const expanded = expandedFolders.has(folder.id);
   const wrap = document.createElement('div');
@@ -4769,20 +4811,25 @@ async function init() {
     }
     const docs = await api('/api/documents');
     if (isMobile()) {
-      // 移动端：默认停在主页，不自动打开文档
       await loadSidebar();
+      void loadSharedDocuments();
     } else if (docs.length) {
-      // 桌面端：加载侧边栏，进入主页仪表盘（不自动打开最近文档）
       await loadSidebar();
       showDashboard();
     } else {
-      // 首次使用，创建欢迎文档
-      const res = await api('/api/documents', 'POST', {
-        title: '欢迎使用 知著 PenMark',
-        content: welcomeContent()
-      });
-      await loadSidebar();
-      await openDoc(res.id);
+      let received = [];
+      try { received = await api('/api/shared-with-me?limit=1'); } catch (_) {}
+      if (Array.isArray(received) && received.length) {
+        await loadSidebar();
+        showDashboard();
+      } else {
+        const res = await api('/api/documents', 'POST', {
+          title: '\u6b22\u8fce\u4f7f\u7528 \u77e5\u8457 PenMark',
+          content: welcomeContent()
+        });
+        await loadSidebar();
+        await openDoc(res.id);
+      }
     }
   } catch (e) {
     if (e.message === 'need login') return;
@@ -4809,38 +4856,43 @@ function hideDashboard() {
 }
 
 // 渲染仪表盘内容（统计 + 最近文档）
+let dashboardRenderRun = 0;
 async function renderDashboard() {
+  const renderRun = ++dashboardRenderRun;
   const dashUserName = $('dashUserName');
   if (dashUserName && currentUser) {
-    dashUserName.textContent = currentUser.nickname || currentUser.username || '朋友';
+    dashUserName.textContent = currentUser.nickname || currentUser.username || '\u670b\u53cb';
   }
-  let docs = [];
-  try { docs = await api('/api/documents?preview=1'); }
-  catch (e) { /* 静默：仪表盘可重试 */ }
+  const [docsResult, sharedResult] = await Promise.allSettled([
+    api('/api/documents?preview=1'),
+    api('/api/shared-with-me')
+  ]);
+  if (renderRun !== dashboardRenderRun) return;
+  const docs = docsResult.status === 'fulfilled' && Array.isArray(docsResult.value) ? docsResult.value : [];
+  const sharedDocs = sharedResult.status === 'fulfilled' && Array.isArray(sharedResult.value) ? sharedResult.value : [];
 
   const total = docs.length;
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
   const weekUpdated = docs.filter(d => (d.updated_at || 0) > weekAgo).length;
   let totalWords = 0;
-  docs.forEach(d => {
-    totalWords += Number(d.content_length || 0);
-  });
+  docs.forEach(d => { totalWords += Number(d.content_length || 0); });
   $('statTotal').textContent = total;
   $('statWeek').textContent = weekUpdated;
-  $('statWords').textContent = totalWords > 9999 ? (totalWords / 10000).toFixed(1) + '万' : totalWords;
+  $('statWords').textContent = totalWords > 9999 ? (totalWords / 10000).toFixed(1) + '\u4e07' : totalWords;
 
+  renderDashboardSharedDocs(sharedDocs);
   const dashDocs = $('dashDocs');
   if (!dashDocs) return;
   const recent = docs.slice().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).slice(0, 6);
   if (!recent.length) {
-    dashDocs.innerHTML = '<div class="dash-empty">还没有文档，点击右上角"新建文档"开始</div>';
+    dashDocs.innerHTML = '<div class="dash-empty">&#36824;&#27809;&#26377;&#25991;&#26723;&#65292;&#28857;&#20987;&#21491;&#19978;&#35282;&#8220;&#26032;&#24314;&#25991;&#26723;&#8221;&#24320;&#22987;</div>';
     return;
   }
   dashDocs.innerHTML = recent.map(d => {
-    const snippet = String(d.snippet || '').trim().slice(0, 80) || '空文档';
+    const snippet = String(d.snippet || '').trim().slice(0, 80) || '\u7a7a\u6587\u6863';
     const dateStr = formatDateShort(new Date(d.updated_at || Date.now()));
     return '<button class="dash-doc" data-id="' + d.id + '">' +
-      '<div class="dash-doc-title">' + escapeHtml(d.title || '无标题') + '</div>' +
+      '<div class="dash-doc-title">' + escapeHtml(d.title || '\u65e0\u6807\u9898') + '</div>' +
       '<div class="dash-doc-snippet">' + escapeHtml(snippet) + '</div>' +
       '<div class="dash-doc-meta">' + dateStr + '</div>' +
     '</button>';
@@ -4853,6 +4905,34 @@ async function renderDashboard() {
   });
 }
 
+function renderDashboardSharedDocs(docs) {
+  const section = $('dashSharedSection');
+  const list = $('dashSharedDocs');
+  if (!section || !list) return;
+  if (!docs.length) {
+    section.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  section.hidden = false;
+  list.innerHTML = docs.map(doc => {
+    const permission = doc.permission === 'edit' ? '\u53ef\u7f16\u8f91' : '\u53ea\u8bfb';
+    const owner = escapeHtml(String(doc.owner_nickname || '\u67d0\u4f4d\u7528\u6237'));
+    const title = escapeHtml(String(doc.title || '\u65e0\u6807\u9898'));
+    const token = escapeHtml(String(doc.token || ''));
+    const date = formatDateShort(new Date(doc.updated_at || doc.last_opened_at || Date.now()));
+    return '<button class="dash-doc dash-shared-doc" data-share-token="' + token + '">' +
+      '<div class="dash-doc-title">' + title + '</div>' +
+      '<div class="dash-shared-meta"><span>' + owner + '</span><span class="dash-shared-permission">' + permission + '</span><span>' + date + '</span></div>' +
+    '</button>';
+  }).join('');
+  list.querySelectorAll('[data-share-token]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const token = btn.getAttribute('data-share-token');
+      if (token) window.location.assign('/s/' + encodeURIComponent(token));
+    });
+  });
+}
 function formatDateShort(d) {
   const now = new Date();
   const diff = now - d;
