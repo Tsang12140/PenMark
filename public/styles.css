@@ -3066,7 +3066,7 @@ body.reading-mode .block-handle{display:none;}
 .share-toc-toggle:hover{background:var(--bg-hover);color:var(--ink);}
 .share-toc-toggle svg{width:17px;height:17px;}
 .share-toc-toggle[hidden]{display:none!important;}
-.share-reading-dock,.share-chapter-dock,.share-progress-scrubber{display:none;}
+.share-reading-dock,.share-chapter-dock{display:none;}
 
 /* 分享页右上角登录/注册入口（融入工具栏，与主题切换按钮同视觉重量） */
 .share-login-btn{
@@ -4358,17 +4358,16 @@ body.image-preview-open{overflow:hidden!important;}
   .share-toc-overlay{position:fixed;inset:0;z-index:120;background:rgba(20,22,22,.28);backdrop-filter:blur(2px);}
   .share-toc-overlay[hidden],.share-toc-sheet[hidden]{display:none;}
   .share-reading-dock{
-    --share-tooltip-x:50%;
     position:fixed;z-index:95;left:50%;bottom:calc(12px + env(safe-area-inset-bottom));transform:translateX(-50%);
-    box-sizing:border-box;width:min(360px,calc(100vw - 32px));height:50px;padding:4px 12px 6px;
+    box-sizing:border-box;width:min(360px,calc(100vw - 32px));height:44px;padding:0 14px;
     display:block;min-width:0;
-    border:1px solid color-mix(in srgb,var(--line) 76%,transparent);border-radius:16px;
+    border:1px solid color-mix(in srgb,var(--line) 74%,transparent);border-radius:22px;
     background:color-mix(in srgb,var(--bg-editor) 88%,transparent);color:var(--ink-soft);
-    box-shadow:0 5px 18px rgba(30,25,18,.12);backdrop-filter:blur(18px) saturate(1.04);-webkit-backdrop-filter:blur(18px) saturate(1.04);
+    box-shadow:0 4px 14px rgba(30,25,18,.11);backdrop-filter:blur(18px) saturate(1.04);-webkit-backdrop-filter:blur(18px) saturate(1.04);
   }
   .share-reading-dock[hidden]{display:none!important;}
   .share-chapter-dock{
-    position:absolute;inset:0;width:auto;min-width:0;height:auto;padding:0 12px 14px;
+    position:static;width:100%;min-width:0;height:44px;padding:0;
     display:inline-flex;align-items:center;gap:8px;
     border:0;border-radius:0;background:transparent;color:var(--ink-soft);
     box-shadow:none;font-family:var(--sans);cursor:pointer;
@@ -4376,14 +4375,6 @@ body.image-preview-open{overflow:hidden!important;}
   .share-chapter-dock:active{transform:translateY(1px);}
   .share-chapter-dock svg{width:17px;height:17px;flex:0 0 auto;color:var(--accent);}
   .share-chapter-dock-label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;text-align:left;}
-  .share-progress-scrubber{--share-progress:0%;position:absolute;z-index:1;right:12px;bottom:6px;left:12px;display:block;appearance:none;width:calc(100% - 24px);height:14px;margin:0;background:transparent;cursor:pointer;touch-action:pan-y;}
-  .share-progress-scrubber::-webkit-slider-runnable-track{height:6px;border-radius:999px;background:linear-gradient(to right,var(--accent) 0 var(--share-progress),var(--line-soft) var(--share-progress) 100%);}
-  .share-progress-scrubber::-webkit-slider-thumb{appearance:none;width:16px;height:16px;margin-top:-5px;border:2px solid var(--bg-editor);border-radius:50%;background:var(--accent);box-shadow:0 1px 4px rgba(30,25,18,.18);}
-  .share-progress-scrubber::-moz-range-track{height:6px;border:0;border-radius:999px;background:var(--line-soft);}
-  .share-progress-scrubber::-moz-range-progress{height:6px;border-radius:999px;background:var(--accent);}
-  .share-progress-scrubber::-moz-range-thumb{width:12px;height:12px;border:2px solid var(--bg-editor);border-radius:50%;background:var(--accent);box-shadow:0 1px 4px rgba(30,25,18,.18);}
-  .share-progress-tooltip{position:absolute;z-index:2;left:clamp(28px,var(--share-tooltip-x),calc(100% - 28px));bottom:calc(100% + 8px);transform:translateX(-50%);padding:4px 7px;border:1px solid color-mix(in srgb,var(--line) 84%,transparent);border-radius:7px;background:var(--bg-editor);box-shadow:0 4px 12px rgba(30,25,18,.13);color:var(--ink-soft);font:600 11px/1 var(--sans);font-variant-numeric:tabular-nums;pointer-events:none;}
-  .share-progress-tooltip[hidden]{display:none!important;}
   .share-toc-sheet{
     position:fixed;z-index:121;top:auto;right:0;bottom:0;left:0;
     width:auto;max-height:min(72dvh,560px);
@@ -4404,7 +4395,7 @@ body.image-preview-open{overflow:hidden!important;}
   .share-toc-sheet-list button.active{background:var(--highlight);border-left-color:var(--accent);color:var(--accent);font-weight:600;}
 }
 @media (max-width:760px) and (pointer:coarse){
-  .share-container{padding:64px 14px 100px;}
+  .share-container{padding:64px 14px 84px;}
   .share-container.share-access-gate{min-height:calc(100dvh - 52px);padding:20px 18px 48px;}
   .share-pwd-card{padding:30px 20px 26px;border-radius:14px;}
   .share-paper{padding:28px 18px 32px;border-radius:8px;}
