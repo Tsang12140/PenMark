@@ -13,14 +13,18 @@ const tocSheetList = $('shareTocSheetList');
 const tocSheetClose = $('shareTocSheetClose');
 const chapterDock = $('shareChapterDock');
 const chapterDockLabel = $('shareChapterDockLabel');
-const chapterDockProgress = $('shareChapterDockProgress');
 const readingDock = $('shareReadingDock');
 const progressScrubber = $('readingProgressScrubber');
+const progressTooltip = $('shareProgressTooltip');
 let shareTocHeadings = [];
 let shareTocObserver = null;
 let shareTocKeepClickedUntil = 0;
 let shareTocRestoreFocus = null;
 let shareProgressBound = false;
+let readingProgressFrame = 0;
+let readingSeekFrame = 0;
+let pendingReadingSeek = null;
+let isScrubbingProgress = false;
 setupImagePreview(container, '.share-reader img, .share-editor img');
 
 const token = (function() {
@@ -438,11 +442,26 @@ function setupProgress() {
   const bar = $('readingProgress');
   if (!bar) return;
   if (!shareProgressBound) {
-    window.addEventListener('scroll', updateReadingProgress, { passive: true });
-    if (progressScrubber) progressScrubber.addEventListener('input', seekReadingProgress);
+    window.addEventListener('scroll', scheduleReadingProgress, { passive: true });
+    if (progressScrubber) {
+      progressScrubber.addEventListener('input', queueReadingSeek);
+      progressScrubber.addEventListener('pointerdown', startReadingScrub);
+      progressScrubber.addEventListener('pointerup', endReadingScrub);
+      progressScrubber.addEventListener('pointercancel', endReadingScrub);
+      progressScrubber.addEventListener('change', endReadingScrub);
+      progressScrubber.addEventListener('blur', endReadingScrub);
+    }
     shareProgressBound = true;
   }
   updateReadingProgress();
+}
+
+function scheduleReadingProgress() {
+  if (isScrubbingProgress || readingProgressFrame) return;
+  readingProgressFrame = requestAnimationFrame(() => {
+    readingProgressFrame = 0;
+    updateReadingProgress();
+  });
 }
 
 function updateReadingProgress() {
@@ -455,21 +474,49 @@ function updateReadingProgress() {
     bar.style.width = (scrolled * 100) + '%';
     bar.style.opacity = scrolled > 0.01 ? '1' : '0';
   }
-  if (chapterDockProgress) chapterDockProgress.textContent = percent + '%';
-  if (progressScrubber) {
+  if (progressScrubber && !isScrubbingProgress) {
     progressScrubber.value = String(percent);
     progressScrubber.style.setProperty('--share-progress', percent + '%');
     progressScrubber.setAttribute('aria-valuetext', percent + '%');
   }
 }
 
-function seekReadingProgress() {
+function updateProgressTooltip(percent) {
+  if (!progressTooltip) return;
+  progressTooltip.hidden = !isScrubbingProgress;
+  if (!isScrubbingProgress) return;
+  progressTooltip.textContent = percent + '%';
+  progressTooltip.style.setProperty('--share-tooltip-x', percent + '%');
+}
+
+function queueReadingSeek() {
   if (!progressScrubber) return;
-  const root = document.scrollingElement || document.documentElement;
-  const total = root.scrollHeight - root.clientHeight;
   const percent = Math.min(100, Math.max(0, Number(progressScrubber.value) || 0));
   progressScrubber.style.setProperty('--share-progress', percent + '%');
-  window.scrollTo({ top: total * percent / 100, behavior: 'auto' });
+  progressScrubber.setAttribute('aria-valuetext', percent + '%');
+  updateProgressTooltip(percent);
+  pendingReadingSeek = percent;
+  if (readingSeekFrame) return;
+  readingSeekFrame = requestAnimationFrame(() => {
+    readingSeekFrame = 0;
+    const root = document.scrollingElement || document.documentElement;
+    const total = root.scrollHeight - root.clientHeight;
+    const nextPercent = pendingReadingSeek;
+    pendingReadingSeek = null;
+    if (nextPercent != null) window.scrollTo({ top: total * nextPercent / 100, behavior: 'auto' });
+  });
+}
+
+function startReadingScrub() {
+  isScrubbingProgress = true;
+  if (progressScrubber) updateProgressTooltip(Math.min(100, Math.max(0, Number(progressScrubber.value) || 0)));
+}
+
+function endReadingScrub() {
+  if (!isScrubbingProgress) return;
+  isScrubbingProgress = false;
+  updateProgressTooltip(0);
+  scheduleReadingProgress();
 }
 function setShareTocExpanded(expanded) {
   [tocToggle, chapterDock].forEach(control => {
