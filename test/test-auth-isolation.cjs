@@ -81,6 +81,17 @@ function extractCookie(setCookieStr, name) {
   return part.slice(idx + 1).trim();
 }
 
+async function waitFor(checker, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 1000);
+  let result = null;
+  do {
+    result = await checker();
+    if (result) return result;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  return result;
+}
+
 /* ---------- 主测试流程 ---------- */
 async function main() {
   const { startServer } = require('../server');
@@ -273,6 +284,40 @@ async function main() {
     // 更新文档
     const updateDoc = await request(port, 'PUT', '/api/documents/' + docIdA, { title: 'A的文档(已更新)', content: '<p>新内容</p>' }, cookieA);
     check('更新文档成功', updateDoc.status === 200 && updateDoc.json && updateDoc.json.updated === 1);
+
+    // 版本历史：自动快照保存的是本次更新之前的内容；手动版本、另存副本和原地恢复均须隔离。
+    const autoVersion = await waitFor(async () => {
+      const versions = await request(port, 'GET', '/api/documents/' + docIdA + '/versions', null, cookieA);
+      return versions.status === 200 && versions.json && versions.json.find(v => v.source === 'auto') ? versions : null;
+    });
+    check('更新后后台创建自动版本', !!autoVersion, autoVersion ? '' : 'automatic version timed out');
+    const automaticEntry = autoVersion && autoVersion.json.find(v => v.source === 'auto');
+    const automaticDetail = automaticEntry && await request(port, 'GET', '/api/documents/' + docIdA + '/versions/' + automaticEntry.id, null, cookieA);
+    check('自动版本保留更新前内容', automaticDetail && automaticDetail.status === 200 && automaticDetail.json.content === '<p>私有内容</p>');
+    const otherUserVersionDetail = automaticEntry && await request(port, 'GET', '/api/documents/' + docIdA + '/versions/' + automaticEntry.id, null, cookieB);
+    check('其他用户不能读取版本内容', otherUserVersionDetail && otherUserVersionDetail.status === 404);
+
+    const manualVersion = await request(port, 'POST', '/api/documents/' + docIdA + '/versions', {}, cookieA);
+    check('用户可以手动创建版本', manualVersion.status === 201 && manualVersion.json && manualVersion.json.source === 'manual');
+    const manualDetail = manualVersion.json && await request(port, 'GET', '/api/documents/' + docIdA + '/versions/' + manualVersion.json.id, null, cookieA);
+    check('手动版本保留当前内容', manualDetail && manualDetail.status === 200 && manualDetail.json.content === '<p>新内容</p>');
+
+    const duplicateVersion = manualVersion.json && await request(port, 'POST', '/api/documents/' + docIdA + '/versions/' + manualVersion.json.id + '/duplicate', {}, cookieA);
+    const duplicateDoc = duplicateVersion && duplicateVersion.json && await request(port, 'GET', '/api/documents/' + duplicateVersion.json.id, null, cookieA);
+    check('历史版本可恢复为副本', duplicateVersion && duplicateVersion.status === 201 && duplicateDoc && duplicateDoc.status === 200 && duplicateDoc.json.content === '<p>新内容</p>');
+    if (duplicateVersion && duplicateVersion.json && duplicateVersion.json.id) {
+      await request(port, 'DELETE', '/api/documents/' + duplicateVersion.json.id, null, cookieA);
+      await request(port, 'DELETE', '/api/trash/' + duplicateVersion.json.id, null, cookieA);
+    }
+
+    const restoreVersion = automaticEntry && await request(port, 'POST', '/api/documents/' + docIdA + '/versions/' + automaticEntry.id + '/restore', {}, cookieA);
+    const restoredDoc = await request(port, 'GET', '/api/documents/' + docIdA, null, cookieA);
+    check('原地恢复会替换为选定版本', restoreVersion && restoreVersion.status === 200 && restoredDoc.status === 200 && restoredDoc.json.content === '<p>私有内容</p>');
+    const versionsAfterRestore = await request(port, 'GET', '/api/documents/' + docIdA + '/versions', null, cookieA);
+    const restoreBackup = versionsAfterRestore.json && versionsAfterRestore.json.find(v => v.source === 'restore_backup');
+    const restoreBackupDetail = restoreBackup && await request(port, 'GET', '/api/documents/' + docIdA + '/versions/' + restoreBackup.id, null, cookieA);
+    check('原地恢复前会自动备份当前内容', restoreBackupDetail && restoreBackupDetail.status === 200 && restoreBackupDetail.json.content === '<p>新内容</p>');
+
     const longTitle = 'x'.repeat(101);
     const cappedTitleUpdate = await request(port, 'PUT', '/api/documents/' + docIdA, { title: longTitle, content: '<p>new content</p>' }, cookieA);
     const cappedTitleRead = await request(port, 'GET', '/api/documents/' + docIdA, null, cookieA);

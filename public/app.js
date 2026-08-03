@@ -457,6 +457,257 @@ function showPrompt(options) {
   return _openDialog(Object.assign({}, options, { input: true }));
 }
 
+/* ---------- 版本历史：查看、建立恢复点与安全恢复 ---------- */
+const versionHistoryModal = $('versionHistoryModal');
+const versionHistoryList = $('versionHistoryList');
+const versionHistoryPreview = $('versionHistoryPreview');
+const versionHistoryDocTitle = $('versionHistoryDocTitle');
+const versionHistoryCreate = $('versionHistoryCreate');
+let versionHistoryTarget = null;
+let versionHistoryEntries = [];
+let versionHistorySelected = null;
+let versionHistoryLoadToken = 0;
+let versionHistoryRestoreFocus = null;
+
+const VERSION_HISTORY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>';
+
+function versionHistorySourceLabel(source) {
+  if (source === 'manual') return '手动创建';
+  if (source === 'restore_backup') return '恢复前备份';
+  return '自动保存';
+}
+
+function formatVersionHistoryTime(value) {
+  const date = new Date(Number(value) || Date.now());
+  const pad = n => String(n).padStart(2, '0');
+  return (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+function getVersionPreviewText(html) {
+  const container = document.createElement('div');
+  container.innerHTML = String(html || '');
+  return (container.innerText || container.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function clearVersionHistoryPreview(message) {
+  if (!versionHistoryPreview) return;
+  versionHistoryPreview.replaceChildren();
+  const empty = document.createElement('div');
+  empty.className = 'version-preview-empty';
+  empty.textContent = message;
+  versionHistoryPreview.appendChild(empty);
+}
+
+function renderVersionHistoryList() {
+  if (!versionHistoryList) return;
+  versionHistoryList.replaceChildren();
+  if (!versionHistoryEntries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'version-history-empty';
+    const title = document.createElement('strong');
+    title.textContent = '暂无可恢复版本';
+    const desc = document.createElement('span');
+    desc.textContent = '从现在开始，重要改动会自动保留。也可以立即创建一个版本。';
+    empty.append(title, desc);
+    versionHistoryList.appendChild(empty);
+    return;
+  }
+  versionHistoryEntries.forEach(entry => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'version-history-item' + (versionHistorySelected && Number(versionHistorySelected.id) === Number(entry.id) ? ' active' : '');
+    const top = document.createElement('span');
+    top.className = 'version-history-item-top';
+    const label = document.createElement('strong');
+    label.textContent = 'v' + (entry.version || 1) + ' · ' + versionHistorySourceLabel(entry.source);
+    const time = document.createElement('time');
+    time.textContent = formatVersionHistoryTime(entry.created_at);
+    top.append(label, time);
+    const meta = document.createElement('span');
+    meta.className = 'version-history-item-meta';
+    meta.textContent = entry.source === 'manual'
+      ? '由你手动创建'
+      : (Number(entry.chars_diff) > 0 ? '与当时内容相差约 ' + Number(entry.chars_diff) + ' 字' : '内容或标题已更新');
+    button.append(top, meta);
+    button.addEventListener('click', () => selectVersionHistoryEntry(entry));
+    versionHistoryList.appendChild(button);
+  });
+}
+
+function renderVersionHistoryPreview(entry) {
+  if (!versionHistoryPreview) return;
+  versionHistoryPreview.replaceChildren();
+  const header = document.createElement('div');
+  header.className = 'version-preview-head';
+  const heading = document.createElement('strong');
+  heading.textContent = entry.title || '无标题';
+  const meta = document.createElement('span');
+  meta.textContent = 'v' + (entry.version || 1) + ' · ' + versionHistorySourceLabel(entry.source) + ' · ' + formatVersionHistoryTime(entry.created_at);
+  header.append(heading, meta);
+
+  const note = document.createElement('p');
+  note.className = 'version-preview-note';
+  note.textContent = '这是只读预览。恢复为副本不会改动当前文档；原地恢复前会先保存当前内容。';
+  const text = document.createElement('pre');
+  text.className = 'version-preview-text';
+  text.textContent = getVersionPreviewText(entry.content) || '（空文档）';
+
+  const actions = document.createElement('div');
+  actions.className = 'version-preview-actions';
+  const duplicate = document.createElement('button');
+  duplicate.type = 'button';
+  duplicate.className = 'btn btn-primary';
+  duplicate.textContent = '恢复为副本';
+  duplicate.addEventListener('click', () => duplicateVersionHistoryEntry(entry));
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.className = 'btn btn-secondary';
+  restore.textContent = '恢复此版本';
+  restore.addEventListener('click', () => restoreVersionHistoryEntry(entry));
+  actions.append(duplicate, restore);
+  versionHistoryPreview.append(header, note, text, actions);
+}
+
+async function refreshVersionHistory() {
+  if (!versionHistoryTarget) return;
+  const targetId = Number(versionHistoryTarget.id);
+  const token = ++versionHistoryLoadToken;
+  versionHistoryEntries = [];
+  versionHistorySelected = null;
+  renderVersionHistoryList();
+  clearVersionHistoryPreview('正在读取历史版本…');
+  try {
+    const rows = await api('/api/documents/' + targetId + '/versions');
+    if (token !== versionHistoryLoadToken || !versionHistoryTarget || Number(versionHistoryTarget.id) !== targetId) return;
+    versionHistoryEntries = Array.isArray(rows) ? rows : [];
+    renderVersionHistoryList();
+    clearVersionHistoryPreview(versionHistoryEntries.length ? '选择一个版本，先查看内容，再决定如何恢复。' : '还没有历史版本。你可以先创建一个恢复点。');
+  } catch (e) {
+    if (token !== versionHistoryLoadToken) return;
+    clearVersionHistoryPreview('历史版本加载失败：' + (e.message || e));
+  }
+}
+
+async function openVersionHistory(doc) {
+  if (!doc || !doc.id || !versionHistoryModal) {
+    toast('请先打开一篇文档');
+    return;
+  }
+  if (currentDoc && Number(currentDoc.id) === Number(doc.id) && (currentDoc._dirty || saveTimer)) {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    await saveCurrent();
+  }
+  versionHistoryTarget = { id: Number(doc.id), title: doc.title || '无标题' };
+  versionHistoryRestoreFocus = document.activeElement;
+  if (versionHistoryDocTitle) versionHistoryDocTitle.textContent = versionHistoryTarget.title;
+  versionHistoryModal.hidden = false;
+  await refreshVersionHistory();
+  const close = $('versionHistoryClose');
+  if (close) close.focus();
+}
+
+function closeVersionHistory() {
+  if (!versionHistoryModal) return;
+  versionHistoryLoadToken += 1;
+  versionHistoryModal.hidden = true;
+  const focusTarget = versionHistoryRestoreFocus;
+  versionHistoryRestoreFocus = null;
+  if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
+}
+
+async function selectVersionHistoryEntry(entry) {
+  if (!versionHistoryTarget || !entry) return;
+  const targetId = Number(versionHistoryTarget.id);
+  versionHistorySelected = entry;
+  renderVersionHistoryList();
+  clearVersionHistoryPreview('正在加载这个版本…');
+  try {
+    const detail = await api('/api/documents/' + targetId + '/versions/' + encodeURIComponent(entry.id));
+    if (!versionHistoryTarget || Number(versionHistoryTarget.id) !== targetId || !versionHistorySelected || Number(versionHistorySelected.id) !== Number(entry.id)) return;
+    versionHistorySelected = detail;
+    renderVersionHistoryList();
+    renderVersionHistoryPreview(detail);
+  } catch (e) {
+    clearVersionHistoryPreview('版本内容加载失败：' + (e.message || e));
+  }
+}
+
+async function createVersionHistoryEntry() {
+  if (!versionHistoryTarget || !versionHistoryCreate) return;
+  const targetId = Number(versionHistoryTarget.id);
+  versionHistoryCreate.disabled = true;
+  const originalLabel = versionHistoryCreate.textContent;
+  versionHistoryCreate.textContent = '正在创建…';
+  try {
+    await api('/api/documents/' + targetId + '/versions', 'POST', {});
+    toast('已创建恢复点');
+    await refreshVersionHistory();
+  } catch (e) {
+    toast('创建版本失败：' + (e.message || e));
+  } finally {
+    versionHistoryCreate.disabled = false;
+    versionHistoryCreate.textContent = originalLabel;
+  }
+}
+
+async function duplicateVersionHistoryEntry(entry) {
+  if (!versionHistoryTarget || !entry) return;
+  try {
+    const result = await api('/api/documents/' + versionHistoryTarget.id + '/versions/' + encodeURIComponent(entry.id) + '/duplicate', 'POST', {});
+    closeVersionHistory();
+    await loadSidebar();
+    await openDoc(result.id);
+    toast('已创建恢复副本');
+  } catch (e) {
+    toast('创建恢复副本失败：' + (e.message || e));
+  }
+}
+
+async function restoreVersionHistoryEntry(entry) {
+  if (!versionHistoryTarget || !entry) return;
+  const confirmed = await showConfirm({
+    title: '恢复此版本',
+    desc: '当前内容会先自动保存为“恢复前备份”，然后再恢复为这个版本。',
+    confirmText: '确认恢复'
+  });
+  if (!confirmed) return;
+  const targetId = Number(versionHistoryTarget.id);
+  try {
+    const result = await api('/api/documents/' + targetId + '/versions/' + encodeURIComponent(entry.id) + '/restore', 'POST', {});
+    const restored = result && result.doc;
+    if (!restored) throw new Error('恢复结果无效');
+    cacheDoc({ ...restored, _dirty: false });
+    if (currentDoc && Number(currentDoc.id) === targetId) {
+      currentDoc = { ...restored, _dirty: false };
+      setDocTitle(restored.title === DEFAULT_UNTITLED_TITLE ? '' : restored.title);
+      setEditorHTML(restored.content || '');
+      updateDocumentTitle(restored.title);
+      refreshToolbar();
+      scheduleAfterSwitch(() => {
+        if (currentDoc && Number(currentDoc.id) === targetId) {
+          updateStats();
+          updateOutline(true);
+        }
+      });
+    }
+    await loadSidebar();
+    closeVersionHistory();
+    toast('已恢复该版本；恢复前内容已备份');
+  } catch (e) {
+    toast('恢复失败：' + (e.message || e));
+  }
+}
+
+if (versionHistoryModal) {
+  const close = $('versionHistoryClose');
+  if (close) close.addEventListener('click', closeVersionHistory);
+  versionHistoryModal.addEventListener('pointerdown', (e) => {
+    if (e.target === versionHistoryModal) closeVersionHistory();
+  });
+}
+if (versionHistoryCreate) versionHistoryCreate.addEventListener('click', createVersionHistoryEntry);
+const versionHistoryBtn = $('versionHistoryBtn');
+if (versionHistoryBtn) versionHistoryBtn.addEventListener('click', () => openVersionHistory(currentDoc));
 function _closeDialog(result) {
   if (!dialogModal) return;
   dialogModal.hidden = true;
@@ -2410,6 +2661,7 @@ function showDocMenu(doc, anchor, point) {
   const starLabel = doc.starred ? '取消星标' : '星标';
   const pinLabel = doc.pinned ? '取消置顶' : '置顶';
   docContextMenu.innerHTML =
+    '<div class="fcm-item" data-act="versions">版本历史</div>' +
     '<div class="fcm-item" data-act="star">' + starLabel + '</div>' +
     '<div class="fcm-item" data-act="pin">' + pinLabel + '</div>' +
     '<div class="fcm-item" data-act="move">移动到…</div>' +
@@ -2432,6 +2684,11 @@ function showDocMenu(doc, anchor, point) {
     e.stopPropagation();
     const act = e.target.getAttribute('data-act');
     if (!act) return;
+    if (act === 'versions') {
+      closeContextMenus();
+      openVersionHistory(doc);
+      return;
+    }
     if (act === 'move') {
       // 不关闭 docContextMenu，让 moveMenu 贴着它展开
       showMoveMenu(doc, docContextMenu);
@@ -4856,6 +5113,7 @@ let lastCtrlATime = 0; // 飞书式 Ctrl+A 两段选：记录上次按 Ctrl+A �
 document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape') {
+    if (versionHistoryModal && !versionHistoryModal.hidden) { closeVersionHistory(); return; }
     hideShortcutHelp();
     if (!responsiveOutline.hidden) { closeResponsiveOutline(); return; }
     if (aiModal && !aiModal.hidden) { closeAiModal(); return; }
@@ -5635,6 +5893,11 @@ function updateMobileChrome() {
     mobileMoreBtn.addEventListener('click', openMobileSheet);
     mobileMoreBtn.dataset.bound = '1';
   }
+  const mobileDocMenuBtn = document.getElementById('mobileDocMenuBtn');
+  if (mobileDocMenuBtn && !mobileDocMenuBtn.dataset.bound) {
+    mobileDocMenuBtn.addEventListener('click', () => openMobileSheet('document'));
+    mobileDocMenuBtn.dataset.bound = '1';
+  }
 
   // 关闭抽屉
   const sheetOverlay = document.getElementById('sheetOverlay');
@@ -5707,7 +5970,7 @@ function openMobileSheet(mode) {
   const overlay = document.getElementById('sheetOverlay');
   if (!sheet || !overlay) return;
   const titleEl = sheet.querySelector('.ms-title');
-  if (titleEl) titleEl.textContent = mode === 'me' ? '我的' : '更多工具';
+  if (titleEl) titleEl.textContent = mode === 'me' ? '我的' : (mode === 'document' ? '文档' : '更多工具');
   populateMobileSheet(mode);
   sheet.hidden = false;
   overlay.hidden = false;
@@ -5737,6 +6000,7 @@ function populateMobileSheet(mode) {
   if (!body) return;
   body.innerHTML = ''; // 每次都重建，确保内容与 mode 一致
   if (mode === 'me') { populateMeSheet(body); return; }
+  if (mode === 'document') { populateDocumentSheet(body); return; }
   populateToolsSheet(body);
 }
 
@@ -5814,6 +6078,57 @@ function populateMeSheet(body) {
 }
 
 // 构建底部抽屉里的折叠工具网格
+function populateDocumentSheet(body) {
+  const doc = currentDoc;
+  body.replaceChildren();
+  if (!doc || !doc.id) {
+    const empty = document.createElement('div');
+    empty.className = 'version-history-empty';
+    empty.textContent = '请先打开一篇文档。';
+    body.appendChild(empty);
+    return;
+  }
+  const section = document.createElement('div');
+  section.className = 'ms-section';
+  const title = document.createElement('div');
+  title.className = 'ms-section-title';
+  title.textContent = '文档';
+  const grid = document.createElement('div');
+  grid.className = 'ms-grid';
+  const entries = [{
+    label: '版本历史',
+    icon: VERSION_HISTORY_ICON,
+    action: () => openVersionHistory(doc)
+  }];
+  if (getDocumentOutlineHeadings().length) {
+    entries.push({
+      label: '章节',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>',
+      action: () => openResponsiveOutline()
+    });
+  }
+  const titleAiWrap = document.getElementById('docTitleAiWrap');
+  if (titleAiWrap && !titleAiWrap.hidden) {
+    entries.push({
+      label: 'AI 拟标题',
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
+      action: () => requestManualTitleSuggestion()
+    });
+  }
+  entries.forEach(item => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ms-item';
+    button.innerHTML = item.icon + '<span>' + item.label + '</span>';
+    button.addEventListener('click', () => {
+      closeMobileSheet();
+      item.action();
+    });
+    grid.appendChild(button);
+  });
+  section.append(title, grid);
+  body.appendChild(section);
+}
 function populateToolsSheet(body) {
   const fmtIcon = (svg) => svg;
   const items = [

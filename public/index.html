@@ -243,6 +243,9 @@
               </div>
             </div>
           </div>
+          <button class="mobile-doc-menu-btn" id="mobileDocMenuBtn" type="button" title="文档选项" aria-label="文档选项">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+          </button>
           <button class="mobile-share-btn" id="mobileShareBtn" data-action="share" title="分享" aria-label="分享" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
           </button>
@@ -271,6 +274,10 @@
       <span class="stat"><span id="imgCount">0</span> 张图片</span>
       <span class="dot">·</span>
       <span class="stat" id="saveState">已就绪</span>
+      <button class="version-history-btn" id="versionHistoryBtn" type="button" title="版本历史">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
+        <span>版本历史</span>
+      </button>
     </div>
   </main>
 </div>
@@ -377,6 +384,30 @@
       <button class="modal-close" id="shareModalClose" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="modal-body" id="shareModalBody"></div>
+  </div>
+</div>
+
+<!-- 文档版本历史：预览和恢复均在此完成，不直接替换正文。 -->
+<div class="modal-overlay" id="versionHistoryModal" hidden>
+  <div class="modal version-history-modal" role="dialog" aria-modal="true" aria-labelledby="versionHistoryTitle">
+    <div class="modal-head">
+      <span class="modal-title" id="versionHistoryTitle">版本历史</span>
+      <button class="modal-close" id="versionHistoryClose" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body version-history-body">
+      <div class="version-history-intro">
+        <div><strong id="versionHistoryDocTitle">当前文档</strong><span>恢复前会自动备份当前内容</span></div>
+        <button class="btn btn-secondary version-create-btn" id="versionHistoryCreate" type="button">创建版本</button>
+      </div>
+      <div class="version-history-layout">
+        <section class="version-history-list-wrap" aria-label="历史版本">
+          <div class="version-history-list" id="versionHistoryList"></div>
+        </section>
+        <section class="version-history-preview" id="versionHistoryPreview" aria-live="polite">
+          <div class="version-preview-empty">选择一个版本，先查看内容，再决定如何恢复。</div>
+        </section>
+      </div>
+    </div>
   </div>
 </div>
 

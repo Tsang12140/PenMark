@@ -791,13 +791,17 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
       const v = await tx.one('SELECT version, updated_at FROM documents WHERE id = $1', [docId]);
 
       // 事务内计算差异（基于与 UPDATE 同一快照的 prevRow），事务外再异步写入
-      if (prevRow) {
+      if (prevRow && (prevRow.title !== title || prevRow.content !== content)) {
         const prevText = stripHtml(prevRow.content || '');
         const currText = stripHtml(content || '');
         const charsDiff = Math.abs(currText.length - prevText.length);
-        if (charsDiff > 50) {
-          snapshotPayload = { title, content, charsDiff, version: (v && v.version) || 1 };
-        }
+        snapshotPayload = {
+          title: prevRow.title || '',
+          content: prevRow.content || '',
+          charsDiff,
+          version: prevRow.version || Math.max(1, ((v && v.version) || 2) - 1),
+          source: 'auto'
+        };
       }
       return { changes: info.changes, v };
     });
@@ -844,10 +848,18 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
       // 版本快照：差异已在事务内算好，此处仅 INSERT
       try {
         if (snapshotPayload) {
-          await db.execute(
-            'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-            [docId, userId, snapshotPayload.title, snapshotPayload.content, snapshotPayload.charsDiff, snapshotPayload.version, now]
+          const latest = await db.one(
+            'SELECT title, content, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1',
+            [docId, userId]
           );
+          const minInterval = 3 * 60 * 1000;
+          const isSameAsLatest = latest && latest.title === snapshotPayload.title && latest.content === snapshotPayload.content;
+          if ((!latest || now - latest.created_at >= minInterval) && !isSameAsLatest) {
+            await db.execute(
+              'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+              [docId, userId, snapshotPayload.title, snapshotPayload.content, snapshotPayload.charsDiff, snapshotPayload.version, snapshotPayload.source, now]
+            );
+          }
         }
       } catch (e) {
         console.warn('版本快照写入跳过：', e && e.message);
@@ -860,7 +872,7 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
 /* 文档版本历史列表（轻量元数据：不返回 content，前端按需请求单条详情） */
 app.get('/api/documents/:id/versions', wrap(async (req, res) => {
   const rows = await db.query(
-    'SELECT id, title, chars_diff, version, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 200',
+    'SELECT id, title, chars_diff, version, source, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 200',
     [req.params.id, req.user.id]
   );
   res.json(rows);
@@ -869,13 +881,86 @@ app.get('/api/documents/:id/versions', wrap(async (req, res) => {
 /* 文档版本详情：返回完整内容用于 AI 分析或回看 */
 app.get('/api/documents/:id/versions/:versionId', wrap(async (req, res) => {
   const row = await db.one(
-    'SELECT id, title, content, chars_diff, version, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
+    'SELECT id, title, content, chars_diff, version, source, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
     [req.params.id, req.user.id, req.params.versionId]
   );
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json(row);
 }));
 
+/* 手动建立一个恢复点。它是显式动作，仅在用户打开版本历史后发生。 */
+app.post('/api/documents/:id/versions', wrap(async (req, res) => {
+  const now = Date.now();
+  const doc = await db.one(
+    'SELECT id, title, content, version FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+    [req.params.id, req.user.id]
+  );
+  if (!doc) return res.status(404).json({ error: 'not found' });
+  const created = await db.execute(
+    'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [doc.id, req.user.id, doc.title || '', doc.content || '', 0, doc.version || 1, 'manual', now]
+  );
+  res.status(201).json({ id: created.insertId, source: 'manual', created_at: now, version: doc.version || 1 });
+}));
+
+async function getOwnedDocumentVersion(docId, userId, versionId) {
+  return db.one(
+    'SELECT id, doc_id, title, content, chars_diff, version, source, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
+    [docId, userId, versionId]
+  );
+}
+
+/* 将历史版本另存为副本：默认恢复路径，不改变用户当前文档。 */
+app.post('/api/documents/:id/versions/:versionId/duplicate', wrap(async (req, res) => {
+  const snapshot = await getOwnedDocumentVersion(req.params.id, req.user.id, req.params.versionId);
+  if (!snapshot) return res.status(404).json({ error: 'not found' });
+  const original = await db.one(
+    'SELECT folder_id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+    [req.params.id, req.user.id]
+  );
+  if (!original) return res.status(404).json({ error: 'not found' });
+  const now = Date.now();
+  const suffix = ' · 恢复副本';
+  const copyTitle = ((snapshot.title || '无标题').slice(0, Math.max(0, DOC_TITLE_MAX_LENGTH - suffix.length)) + suffix).slice(0, DOC_TITLE_MAX_LENGTH);
+  const info = await db.execute(
+    'INSERT INTO documents (title, title_origin, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [copyTitle, 'manual', snapshot.content || '', now, now, req.user.id, original.folder_id || null]
+  );
+  res.status(201).json({ id: info.insertId, title: copyTitle, folder_id: original.folder_id || null });
+}));
+
+/* 原地恢复始终先落一份恢复前备份，避免“恢复”本身再次造成不可逆丢失。 */
+app.post('/api/documents/:id/versions/:versionId/restore', wrap(async (req, res) => {
+  const now = Date.now();
+  const result = await db.transaction(async (tx) => {
+    const doc = await tx.one(
+      'SELECT id, title, content, title_origin, version, updated_at FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL',
+      [req.params.id, req.user.id]
+    );
+    if (!doc) throw new Error('NOT_FOUND');
+    const snapshot = await tx.one(
+      'SELECT id, title, content, version FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
+      [req.params.id, req.user.id, req.params.versionId]
+    );
+    if (!snapshot) throw new Error('VERSION_NOT_FOUND');
+    const currentText = stripHtml(doc.content || '');
+    const targetText = stripHtml(snapshot.content || '');
+    await tx.execute(
+      'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [doc.id, req.user.id, doc.title || '', doc.content || '', Math.abs(currentText.length - targetText.length), doc.version || 1, 'restore_backup', now]
+    );
+    await tx.execute(
+      'UPDATE documents SET title = $1, title_origin = $2, content = $3, updated_at = $4, version = version + 1 WHERE id = $5 AND user_id = $6',
+      [snapshot.title || '无标题', isUntitledTitle(snapshot.title) ? 'untitled' : 'manual', snapshot.content || '', now, doc.id, req.user.id]
+    );
+    return tx.one('SELECT * FROM documents WHERE id = $1 AND user_id = $2', [doc.id, req.user.id]);
+  }).catch(err => {
+    if (err.message === 'NOT_FOUND' || err.message === 'VERSION_NOT_FOUND') return null;
+    throw err;
+  });
+  if (!result) return res.status(404).json({ error: 'not found' });
+  res.json({ doc: result });
+}));
 /* 轻量级版本查询：B 端轮询用，避免每次拉取整个 content */
 app.get('/api/documents/:id/version', wrap(async (req, res) => {
   const row = await db.one('SELECT version, updated_at, title FROM documents WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);

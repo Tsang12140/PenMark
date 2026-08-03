@@ -253,11 +253,18 @@ CREATE TABLE IF NOT EXISTS document_versions (
   content TEXT NOT NULL DEFAULT '',
   chars_diff INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'auto',
   created_at INTEGER NOT NULL,
   FOREIGN KEY (doc_id) REFERENCES documents(id)
 );
 CREATE INDEX IF NOT EXISTS idx_doc_versions_doc ON document_versions(doc_id, created_at DESC);
 `);
+try {
+  const versionCols = db.prepare("PRAGMA table_info(document_versions)").all();
+  if (!versionCols.some(c => c.name === 'source')) {
+    db.exec("ALTER TABLE document_versions ADD COLUMN source TEXT NOT NULL DEFAULT 'auto'");
+  }
+} catch (e) { console.warn('document_versions source 迁移跳过：', e.message); }
 
 // AI 对话历史表（按文档保留：关闭面板/刷新后再打开仍能看到）
 db.exec(`
