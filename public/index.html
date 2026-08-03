@@ -583,5 +583,16 @@
   </div>
 </div>
 
+<!-- Service Worker 注册：让 iPhone 安装为 PWA 后每次打开都能拉到最新版本 -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function (err) {
+        console.warn('[PenMark] SW 注册失败：', err);
+      });
+    });
+  }
+</script>
+
 </body>
 </html>

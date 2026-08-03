@@ -2558,6 +2558,34 @@ export class Editor {
   _bindKeydown() {
     this.editor.addEventListener('keydown', (e) => {
       const ctrl = e.ctrlKey || e.metaKey;
+      // Backspace：在带 text-indent 的段落开头按退格，取消一级缩进而非删除字符
+      // （Tab 缩进后能直接退掉；Enter 继承的缩进也能在新行开头退掉）
+      if (e.key === 'Backspace' && !ctrl && !e.altKey) {
+        const sel = document.getSelection();
+        if (sel.isCollapsed && sel.rangeCount) {
+          const block = this._currentBlock();
+          if (block && /^(P|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|DIV)$/.test(block.tagName)) {
+            const ti = parseFloat(block.style.textIndent) || 0;
+            if (ti > 0) {
+              // 判断光标是否在 block 文本开头（前面只有空白）
+              const r = sel.getRangeAt(0);
+              const probe = document.createRange();
+              probe.setStart(block, 0);
+              probe.setEnd(r.startContainer, r.startOffset);
+              if (/^\s*$/.test(probe.toString())) {
+                e.preventDefault();
+                const step = 2;
+                let next = ti - step;
+                if (next < 0) next = 0;
+                if (next === 0) block.style.textIndent = '';
+                else block.style.textIndent = next + 'em';
+                this._afterChange();
+                return;
+              }
+            }
+          }
+        }
+      }
       if (e.key === 'Tab') {
         const cell = this._currentTableCell();
         if (cell) {
