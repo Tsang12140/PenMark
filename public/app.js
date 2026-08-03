@@ -3904,11 +3904,11 @@ async function refreshAiStatus(runButtonId) {
 
 // 内置排版预设：label 显示在按钮上，prompt 是发给 AI 的提示词（中文，与 ai.js layoutPresetInstructions 保持同步）
 const AI_PRESETS = {
+  wash: { label: '洗排版（不改字）', prompt: '洗排版（长文阅读）：只调整 HTML 结构，绝不改变任何可见文字、标点、数字、顺序或信息；不得增删、改写、概括、纠错或合并句子。移除所有普通文字的内联样式和多余包裹；不要输出 style、class、font、color、background、字号、字距、行距或对齐属性。保留已有图片、链接、链接卡片和自定义 data 属性。保留现有标题层级；仅在原文明确信号是标题时使用 <h2>/<h3>，不使用 <h1>，不凭空新增章节。每个自然段使用一个 <p>，不要为了凑版面插入 <br>、空段、全角空格或 &nbsp;。把真正的项目符号/序号整理为 <ul>/<ol><li>，不要用字符“•”“-”“—”假装列表。只在原文已经明确强调，或确实承担结论、警示、核心标签的短语上添加 <strong>；每段最多 1 处、每节最多 4 处，绝不加粗整句、整段或连续多项。不要使用 blockquote、表格、代码块，除非原文已有相应语义。' },
   share: { label: '分享前排版', prompt: '分享前排版：让文章更适合分享传播。建立清晰的标题层级、简短易读的段落、统一的列表、适度的强调与间距。不改动任何文字。' },
   light: { label: '轻度整理', prompt: '轻度整理：仅在原文强烈暗示时，规范化段落、标题、列表、间距，以及引用/代码/表格结构，不做多余改动。' },
   formal: { label: '正式文档', prompt: '正式文档排版：使用保守的标题、编号章节、段落、引用块与表格，仅在原文明确暗示时使用。' },
-  clean: { label: '清理杂样式', prompt: '清理杂样式：去除混乱的内联包裹与冗余样式，保留语义化 HTML 和简洁的段落/标题/列表。' },
-  wash: { label: '深度整理', prompt: '深度整理（长文阅读）：只调整 HTML 结构，绝不改变任何可见文字、标点、数字、顺序或信息；不得增删、改写、概括、纠错或合并句子。移除所有普通文字的内联样式和多余包裹；不要输出 style、class、font、color、background、字号、字距、行距或对齐属性。保留已有图片、链接、链接卡片和自定义 data 属性。保留现有标题层级；仅在原文明确信号是标题时使用 <h2>/<h3>，不使用 <h1>，不凭空新增章节。每个自然段使用一个 <p>，不要为了凑版面插入 <br>、空段、全角空格或 &nbsp;。把真正的项目符号/序号整理为 <ul>/<ol><li>，不要用字符“•”“-”“—”假装列表。只在原文已经明确强调，或确实承担结论、警示、核心标签的短语上添加 <strong>；每段最多 1 处、每节最多 4 处，绝不加粗整句、整段或连续多项。不要使用 blockquote、表格、代码块，除非原文已有相应语义。' }
+  clean: { label: '清理杂样式', prompt: '清理杂样式：去除混乱的内联包裹与冗余样式，保留语义化 HTML 和简洁的段落/标题/列表。' }
 };
 
 const AI_REWRITE_PRESETS = [
@@ -3919,6 +3919,9 @@ const AI_REWRITE_PRESETS = [
 
 function openAiModal(title, bodyHtml) {
   if (!aiModal) return;
+  hideFloatMenu();
+  hideCtxMenu();
+  floatMenuImg.hidden = true;
   aiModalTitle.textContent = title;
   aiModalBody.innerHTML = bodyHtml;
   aiModal.hidden = false;
@@ -4213,7 +4216,16 @@ function stopAiChat() {
 // 发送按钮在「发送」/「停止」两种模式间切换
 function setAiSendButtonMode(mode) {
   if (!aiPanelSend) return;
-  if (mode === 'stop') {
+  const isStop = mode === 'stop';
+  const icon = aiPanelSend.querySelector('.ai-panel-send-icon');
+  if (icon) {
+    icon.setAttribute('fill', isStop ? 'currentColor' : 'none');
+    icon.setAttribute('stroke', isStop ? 'none' : 'currentColor');
+    icon.innerHTML = isStop
+      ? '<rect x="6" y="6" width="12" height="12" rx="2"/>'
+      : '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>';
+  }
+  if (isStop) {
     aiPanelSend.classList.add('is-stop');
     aiPanelSend.title = '停止生成';
     aiPanelSend.setAttribute('aria-label', '停止生成');
@@ -4425,7 +4437,7 @@ function markEditorChanged() {
 
 /* ---------- AI 排版：自定义预设（按账号绑定） ---------- */
 let aiCustomPresets = []; // 当前用户的自定义预设
-let aiLayoutCurrentPreset = 'share';
+let aiLayoutCurrentPreset = 'wash';
 let aiLayoutCurrentCustomPrompt = '';
 const AI_ICON_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 const AI_ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
@@ -4545,11 +4557,11 @@ function renderAiHiddenRow() {
   });
 }
 
-async function openAiLayoutModal() {
+async function openAiLayoutModal(initialPreset = 'wash') {
   if (!currentDoc) { toast('请先打开一篇文档'); return; }
   openAiModal('AI 排版',
     '<div class="ai-modal-panel" id="aiLayoutPanel">' +
-      '<div class="ai-note">调整结构、分段、标题、列表和间距；默认不删字、不改写。点任意预设可查看提示词。</div>' +
+      '<div class="ai-note">默认已选「洗排版（不改字）」：整理整篇结构与重点，但不删字、不改写。点任意预设可查看提示词。</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
       '<div class="ai-preset-row" id="aiPresetRow"></div>' +
       '<div class="ai-preset-tip" id="aiPresetTip" hidden>' +
@@ -4568,9 +4580,10 @@ async function openAiLayoutModal() {
         '<button class="ai-action primary" id="aiLayoutApply" disabled>应用到文档</button>' +
       '</div>' +
     '</div>');
-  aiLayoutCurrentPreset = 'share';
+  aiLayoutCurrentPreset = AI_PRESETS[initialPreset] ? initialPreset : 'wash';
   aiLayoutCurrentCustomPrompt = '';
   renderAiPresetRow();
+  showAiPresetTip(AI_PRESETS[aiLayoutCurrentPreset].prompt, aiLayoutCurrentPreset);
   $('aiLayoutRun').addEventListener('click', () => runAiLayout(aiLayoutCurrentPreset, aiLayoutCurrentCustomPrompt));
   refreshAiStatus('aiLayoutRun');
   $('aiLayoutApply').addEventListener('click', applyAiLayoutResult);
@@ -4728,12 +4741,12 @@ function openAiRewriteModal() {
   if (!transaction) { toast('选区已变化，请重新选中'); return; }
   pendingAiRewriteText = '';
   pendingAiRewrite = null;
-  const presetHtml = AI_REWRITE_PRESETS.map((p, i) =>
+  const presetHtml = '<button class="ai-preset ai-preset-layout" id="aiRewriteWholeLayout" type="button" title="整理整篇文章，不改字">整篇洗排版</button>' + AI_REWRITE_PRESETS.map((p, i) =>
     '<button class="ai-preset" data-rewrite-preset="' + i + '">' + p.label + '</button>'
   ).join('');
   openAiModal('AI 改选区',
     '<div class="ai-modal-panel" id="aiRewritePanel">' +
-      '<div class="ai-note">AI 会读取全文作为背景，但只替换你选中的这段。等待期间继续写作也不会被自动覆盖。</div>' +
+      '<div class="ai-note">这里默认只替换选中文字。要整理整篇文章且不改字，请点「整篇洗排版」。</div>' +
       '<div class="ai-preset-row">' + presetHtml + '</div>' +
       '<div class="ai-warning" id="aiStatusNote"></div>' +
       '<div class="ai-field"><label>指令</label><textarea class="ai-input" id="aiRewriteInstruction" placeholder="输入对选中文字的处理要求，或点上方预设套用参考指令"></textarea></div>' +

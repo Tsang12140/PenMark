@@ -1574,8 +1574,7 @@ body.dashboard-active .statusbar{display:none;}
 }
 .fm-ai-submit:hover{background:var(--bg-hover);color:var(--accent);}
 .fm-ai-submit:active{background:var(--bg-active);}
-.fm-ai-submit .fm-ai-submit-icon,
-.fm-ai-submit .fm-ai-stop-icon{
+.fm-ai-submit .fm-ai-submit-icon{
   width:14px;
   height:14px;
 }
@@ -2842,12 +2841,9 @@ body.reading-mode .block-handle{display:none;}
 .ai-panel-send:hover{background:var(--primary-hover);}
 .ai-panel-send:disabled{opacity:.5;cursor:wait;}
 .ai-panel-send svg{width:16px;height:16px;}
-/* 发送按钮的「停止」模式：发送图标隐藏，停止图标显示，颜色变红 */
-.ai-panel-send .ai-stop-icon{display:none;}
+/* 发送按钮的「停止」模式：同一图标原位切换为停止，颜色变红 */
 .ai-panel-send.is-stop{background:#c44;}
 .ai-panel-send.is-stop:hover{background:#a33;}
-.ai-panel-send.is-stop .ai-send-icon{display:none;}
-.ai-panel-send.is-stop .ai-stop-icon{display:block;}
 
 /* 错误消息样式：红色文字 + 浅红底，无插入/复制按钮 */
 .ai-msg-error{
