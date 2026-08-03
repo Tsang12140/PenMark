@@ -1677,6 +1677,28 @@ export class Editor {
       }
 
       this._prepareEmptyEditorForPaste();
+      // 优先级最高：纯文本像 Markdown 时，直接走 MD 转换，忽略 HTML。
+      // 这覆盖从 VS Code / Typora 源码模式 / 记事本复制 .md 的场景——剪贴板虽带
+      // HTML（含语法高亮、蓝底、white-space:pre），但纯文本才是用户想粘贴的 MD 源码。
+      // 走 MD 转换生成标准 <p>/<h1>/<pre><code>，从源头消除蓝底、穿模、右边距问题。
+      // 但 HTML 含图片/表格/视频等富媒体时不走 MD 转换（MD 转换会丢失这些元素），走 HTML 路径保留。
+      const _hasRichMedia = /<img\b|<table\b|<video\b|<audio\b|<iframe\b/i.test(html || '');
+      if (plainText && this._looksLikeMarkdown(plainText) && !_hasRichMedia) {
+        e.preventDefault();
+        const mdHtml = this._markdownToHtml(plainText);
+        document.execCommand('insertHTML', false, mdHtml);
+        setTimeout(() => this._afterPasteCleanup(), 60);
+        return;
+      }
+      // 代码编辑器（VS Code / JetBrains 等）复制非 MD 代码时，HTML 带主题底色、
+      // white-space:pre，走 HTML 路径会穿模。改走纯文本：转成干净 <pre><code> 代码块
+      if (html && plainText && this._looksLikeCodeEditorHTML(html)) {
+        e.preventDefault();
+        const codeHtml = '<pre><code>' + this._escapeHtml(plainText) + '</code></pre>';
+        document.execCommand('insertHTML', false, codeHtml);
+        setTimeout(() => this._afterPasteCleanup(), 60);
+        return;
+      }
       if (html && this._shouldPasteAsHTML(html)) {
         e.preventDefault();
         const cleaned = this._cleanPastedHTML(html);
@@ -1744,10 +1766,148 @@ export class Editor {
             }
           }, 60);
         } else {
-          setTimeout(() => this._afterPasteCleanup(), 60);
+          // 纯文本：若像 Markdown 则转为 HTML 插入，否则放行默认行为
+          if (this._looksLikeMarkdown(plainText)) {
+            e.preventDefault();
+            const mdHtml = this._markdownToHtml(plainText);
+            document.execCommand('insertHTML', false, mdHtml);
+            setTimeout(() => this._afterPasteCleanup(), 60);
+          } else {
+            setTimeout(() => this._afterPasteCleanup(), 60);
+          }
         }
       }
     });
+  }
+
+  /* ---------- 粘贴纯文本时的轻量 Markdown 识别与转换 ----------
+     只在纯文本"看起来像 Markdown"时静默转换，不像则保持原样不误伤。
+     覆盖：标题/粗体/斜体/行内代码/链接/无序列表/有序列表/引用/分割线/代码块。
+     纯前端正则实现，无外部依赖，离线可用。 */
+  _looksLikeMarkdown(text) {
+    if (!text) return false;
+    // 块级特征（任一命中即认定）
+    if (/^\s{0,3}#{1,6}\s+\S/m.test(text)) return true;              // # 标题
+    if (/^\s{0,3}[-*+]\s+\S/m.test(text)) return true;               // - 无序列表
+    if (/^\s{0,3}\d+\.\s+\S/m.test(text)) return true;               // 1. 有序列表
+    if (/^\s{0,3}>\s?/m.test(text)) return true;                     // > 引用
+    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/m.test(text)) return true; // --- 分割线
+    if (/```/.test(text)) return true;                                // ``` 代码块
+    // 行内特征（特定性高，单独命中即认定）
+    if (/\*\*[^*]+\*\*/.test(text)) return true;                     // **粗体**
+    if (/\[[^\]]+\]\((https?:\/\/|www\.)[^\s)]+\)/.test(text)) return true; // [文](url)
+    if (/`[^`\n]+`/.test(text)) return true;                         // `行内代码`
+    // 斜体 *xxx* / _xxx_ 特异性低（易与乘号、列表符号、强调混淆），不单独触发
+    return false;
+  }
+
+  _markdownToHtml(text) {
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // 代码块 ```...```
+      if (/^\s{0,3}```/.test(line)) {
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !/^\s{0,3}```/.test(lines[i])) {
+          codeLines.push(this._escapeHtml(lines[i]));
+          i++;
+        }
+        i++; // 跳过闭合 ```
+        out.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
+        continue;
+      }
+
+      // 标题 # ~ ######
+      const hm = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      if (hm) {
+        const lv = hm[1].length;
+        out.push('<h' + lv + '>' + this._mdInline(hm[2]) + '</h' + lv + '>');
+        i++;
+        continue;
+      }
+
+      // 分割线 --- / *** / ___
+      if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        out.push('<hr>');
+        i++;
+        continue;
+      }
+
+      // 引用块 >（连续 > 行合并）
+      if (/^\s{0,3}>\s?/.test(line)) {
+        const ql = [];
+        while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) {
+          ql.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
+          i++;
+        }
+        out.push('<blockquote>' + this._mdInline(ql.join('<br>')) + '</blockquote>');
+        continue;
+      }
+
+      // 无序列表 - / * / +
+      if (/^\s{0,3}[-*+]\s+\S/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s{0,3}[-*+]\s+\S/.test(lines[i])) {
+          items.push('<li>' + this._mdInline(lines[i].replace(/^\s{0,3}[-*+]\s+/, '')) + '</li>');
+          i++;
+        }
+        out.push('<ul>' + items.join('') + '</ul>');
+        continue;
+      }
+
+      // 有序列表 1.
+      if (/^\s{0,3}\d+\.\s+\S/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s{0,3}\d+\.\s+\S/.test(lines[i])) {
+          items.push('<li>' + this._mdInline(lines[i].replace(/^\s{0,3}\d+\.\s+/, '')) + '</li>');
+          i++;
+        }
+        out.push('<ol>' + items.join('') + '</ol>');
+        continue;
+      }
+
+      // 空行：跳过（段落由空行分隔）
+      if (/^\s*$/.test(line)) { i++; continue; }
+
+      // 普通段落：连续非空、非块级行合并
+      const pl = [];
+      while (i < lines.length
+        && !/^\s*$/.test(lines[i])
+        && !/^\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>|```|(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[i])) {
+        pl.push(lines[i]);
+        i++;
+      }
+      if (pl.length) out.push('<p>' + this._mdInline(pl.join('<br>')) + '</p>');
+    }
+    return out.join('');
+  }
+
+  // Markdown 行内语法：先转义 HTML，再依次处理行内代码（保护）、链接、粗体、斜体
+  _mdInline(text) {
+    let s = this._escapeHtml(text);
+    // 行内代码先抽出占位，避免被后续正则误伤
+    const codes = [];
+    s = s.replace(/`([^`\n]+)`/g, (m, c) => {
+      codes.push(c);
+      return '\u0000C' + (codes.length - 1) + '\u0000';
+    });
+    // 链接 [text](url)
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)/g, (m, t, u) => {
+      const href = u.startsWith('www.') ? 'http://' + u : u;
+      return '<a href="' + href + '" target="_blank" rel="noopener">' + t + '</a>';
+    });
+    // 粗体 **xxx**
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // 斜体 *xxx*（粗体已处理，剩余单 * 即斜体；不匹配跨行）
+    s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    // 注：不处理 _xxx_ 斜体，避免误伤 file_name、snake_case 等下划线文本
+    // 还原行内代码
+    s = s.replace(/\u0000C(\d+)\u0000/g, (m, idx) => '<code>' + codes[idx] + '</code>');
+    return s;
   }
 
   _insertLargePlainText(text) {
@@ -1803,6 +1963,20 @@ export class Editor {
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
+  }
+
+  /* 识别代码编辑器（VS Code / JetBrains / Sublime 等）复制的 HTML：
+     特征是 white-space:pre + 等宽字体（通常还带主题 background-color）。
+     普通网页富文本（公众号、飞书、Typora 渲染页）极少同时出现这两者，
+     因此可据此区分，让代码编辑器来源改走纯文本路径，避免蓝底/穿模。 */
+  _looksLikeCodeEditorHTML(html) {
+    if (!html) return false;
+    const hasWhitePre = /white-space\s*:\s*pre\b/i.test(html);
+    const hasMono = /font-family\s*:[^;"]*(monospace|Menlo|Monaco|Consolas|Courier|JetBrains|Liberation)/i.test(html);
+    if (hasWhitePre && hasMono) return true;
+    // 部分编辑器用 <pre> 包裹且 style 在父 div 上：pre + 等宽字体也认定
+    if (/<pre\b/i.test(html) && hasMono) return true;
+    return false;
   }
 
   _shouldPasteAsHTML(html) {
@@ -1866,6 +2040,11 @@ export class Editor {
       .filter(s => !/expression\s*\(/i.test(s))
       .filter(s => !/url\s*\(\s*['"]?\s*javascript:/i.test(s))
       .filter(s => !/^\s*list-style\b/i.test(s))  // 剥掉粘贴内容自带的列表编号样式，编辑器用 CSS counter 统一渲染
+      .map(s => {
+        // white-space:pre 会让长行不换行、撑破信纸；改成 pre-wrap 保留换行但允许自动断行
+        if (/^\s*white-space\s*:\s*pre\s*$/i.test(s)) return 'white-space:pre-wrap';
+        return s;
+      })
       .join('; ');
   }
 

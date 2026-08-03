@@ -223,7 +223,7 @@ function renderDoc(data) {
   container.classList.remove('share-access-gate');
   const doc = data.doc;
   const canEdit = data.can_edit;
-  document.title = (doc.title || '分享文档') + ' · 知著 PenMark';
+  document.title = (doc.title || '分享文档') + ' - 知著 PenMark';
 
   const badge = canEdit
     ? '<span class="share-badge edit">可编辑</span>'
@@ -613,9 +613,9 @@ function getVisitorFingerprint() {
     ctx.fillStyle = '#f60';
     ctx.fillRect(0, 0, 240, 60);
     ctx.fillStyle = '#069';
-    ctx.fillText('PenMark-知著 PenMark 游客指纹·', 2, 4);
+    ctx.fillText('PenMark-知著 PenMark 游客指纹', 2, 4);
     ctx.fillStyle = 'rgba(102,204,0,0.7)';
-    ctx.fillText('PenMark-知著 PenMark 游客指纹·', 4, 6);
+    ctx.fillText('PenMark-知著 PenMark 游客指纹', 4, 6);
     canvasSignal = canvas.toDataURL();
   } catch(e) { canvasSignal = 'no-canvas'; }
 
@@ -743,7 +743,7 @@ function renderVisitorCapsule(data) {
   capsule.innerHTML =
     '<button type="button" class="sv-trigger" title="查看访客">' +
       '<span class="sv-dot' + (online > 0 ? ' online' : '') + '"></span>' +
-      '<span class="sv-text">' + total + ' 人访问' + (online > 0 ? ' · ' + online + ' 人在线' : '') + '</span>' +
+      '<span class="sv-text">' + total + ' 人访问' + (online > 0 ? ' ' + online + ' 人在线' : '') + '</span>' +
       '<svg class="sv-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>' +
     '</button>' +
     '<div class="sv-list"></div>';
@@ -766,7 +766,7 @@ function renderVisitorList(listEl, data) {
         '<span class="sv-avatar' + (isRegistered ? ' registered' : '') + '">' + escapeHtml((v.nickname || '?').slice(-1).toUpperCase()) + '</span>' +
         '<span class="sv-info">' +
           '<span class="' + nameClass + '">' + escapeHtml(v.nickname || '游客') + (isMe ? '（你）' : '') + '</span>' +
-          '<span class="sv-meta">' + relativeTime(v.last_visit_at) + (v.visit_count > 1 ? ' · 访问 ' + v.visit_count + ' 次' : '') + '</span>' +
+          '<span class="sv-meta">' + relativeTime(v.last_visit_at) + (v.visit_count > 1 ? ' 访问 ' + v.visit_count + ' 次' : '') + '</span>' +
         '</span>' +
       '</div>';
   });

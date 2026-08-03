@@ -44,6 +44,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
+  // 本地开发（localhost / 127.0.0.1）直接放行，不拦截不缓存，
+  // 避免 SW 缓存静态资源导致改代码后硬刷新也拿不到最新版本
+  if (self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1') return;
+
   // 只处理同源 GET 请求；跨域、POST、API 全部走网络
   if (req.method !== 'GET') return;
   const url = new URL(req.url);

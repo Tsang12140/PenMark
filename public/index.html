@@ -270,9 +270,9 @@
 
     <div class="statusbar" id="statusbar">
       <span class="stat"><span id="charCount">0</span> 字</span>
-      <span class="dot">·</span>
+      <span class="dot"></span>
       <span class="stat"><span id="imgCount">0</span> 张图片</span>
-      <span class="dot">·</span>
+      <span class="dot"></span>
       <span class="stat" id="saveState">已就绪</span>
       <button class="version-history-btn" id="versionHistoryBtn" type="button" title="版本历史">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
@@ -550,6 +550,17 @@
       <button class="settings-tab" data-stab="ai">AI &#20889;&#20316;</button>
     </div>
     <div class="modal-body" id="settingsModalBody"></div>
+  </div>
+</div>
+
+<!-- 邀请码分享弹窗：选文案、复制邀请码/链接/文案 -->
+<div class="modal-overlay" id="inviteShareModal" hidden>
+  <div class="modal invite-share-modal" role="dialog" aria-modal="true" aria-labelledby="inviteShareTitle">
+    <div class="modal-head">
+      <span class="modal-title" id="inviteShareTitle">分享邀请码</span>
+      <button class="modal-close" id="inviteShareClose" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body invite-share-body" id="inviteShareBody"></div>
   </div>
 </div>
 

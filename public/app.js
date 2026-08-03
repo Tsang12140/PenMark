@@ -168,7 +168,13 @@ async function revalidateCachedDoc(cachedDoc) {
     if (!version || version.version === cachedDoc.version) return;
     const fresh = await api('/api/documents/' + cachedDoc.id);
     cacheDoc(fresh);
-    if (!currentDoc || currentDoc.id !== cachedDoc.id || currentDoc._dirty) return;
+    if (!currentDoc || currentDoc.id !== cachedDoc.id) return;
+    if (currentDoc._dirty) {
+      // 用户已编辑：不静默覆盖，提示有更新版本，让用户决定是否刷新
+      // 避免把基于旧缓存的编辑保存上去覆盖服务器最新版本
+      showVersionBanner(version);
+      return;
+    }
     const active = { ...fresh, _dirty: false };
     currentDoc = active;
     setDocTitle(active.title === '\u65e0\u6807\u9898' ? '' : active.title);
@@ -257,7 +263,7 @@ async function refreshShareStats() {
     btn.classList.toggle('online', online > 0);
     const text = btn.querySelector('.ss-text');
     if (text) {
-      text.textContent = online > 0 ? (online + ' 在线 · ' + total + ' 访问') : (total + ' 访问');
+      text.textContent = online > 0 ? (online + ' 在线 ' + total + ' 访问') : (total + ' 访问');
     }
     btn.title = online > 0 ? (online + ' 人在线，共 ' + total + ' 人访问过') : ('共 ' + total + ' 人访问过');
   } catch (e) { /* 静默 */ }
@@ -519,7 +525,7 @@ function renderVersionHistoryList() {
     const top = document.createElement('span');
     top.className = 'version-history-item-top';
     const label = document.createElement('strong');
-    label.textContent = 'v' + (entry.version || 1) + ' · ' + versionHistorySourceLabel(entry.source);
+    label.textContent = 'v' + (entry.version || 1) + ' ' + versionHistorySourceLabel(entry.source);
     const time = document.createElement('time');
     time.textContent = formatVersionHistoryTime(entry.created_at);
     top.append(label, time);
@@ -542,7 +548,7 @@ function renderVersionHistoryPreview(entry) {
   const heading = document.createElement('strong');
   heading.textContent = entry.title || '无标题';
   const meta = document.createElement('span');
-  meta.textContent = 'v' + (entry.version || 1) + ' · ' + versionHistorySourceLabel(entry.source) + ' · ' + formatVersionHistoryTime(entry.created_at);
+  meta.textContent = 'v' + (entry.version || 1) + ' ' + versionHistorySourceLabel(entry.source) + ' ' + formatVersionHistoryTime(entry.created_at);
   header.append(heading, meta);
 
   const note = document.createElement('p');
@@ -1158,7 +1164,7 @@ function activatePaintFormat() {
   const tbBtn = $('paintFormatToolbarBtn');
   if (tbBtn) tbBtn.classList.add('active');
   hideFloatMenu();
-  toast('格式刷已激活 · 选中文字应用 · Esc 取消');
+  toast('格式刷已激活 选中文字应用 Esc 取消');
 }
 function applyPaintFormat() {
   if (!paintFormatState) return;
@@ -2010,6 +2016,7 @@ function scheduleAutoSave(delay) {
     return;
   }
   if (switching) return;
+  if (currentDoc._revalidating) return; // 缓存校验期间暂停保存，避免旧缓存内容覆盖服务器最新版本
   if (saveTimer) clearTimeout(saveTimer);
   saveStateEl.textContent = '编辑中…';
   saveTimer = setTimeout(saveCurrent, Number.isFinite(delay) ? Math.max(0, delay) : 1000);
@@ -3010,7 +3017,13 @@ async function openDoc(id, options = {}) {
       refreshAiPanelContext();
       loadAiChatHistory(doc.id);
     }
-    if (doc._fromCache) revalidateCachedDoc(doc);
+    if (doc._fromCache) {
+      // 缓存校验期间暂停自动保存，避免用户基于旧缓存内容编辑并保存，覆盖服务器最新版本
+      currentDoc._revalidating = true;
+      revalidateCachedDoc(doc).finally(() => {
+        if (currentDoc && String(currentDoc.id) === String(doc.id)) currentDoc._revalidating = false;
+      });
+    }
     else optimizeLegacyImages(doc);
     openSucceeded = true;
   } catch (e) { toast('打开失败：' + (e.message || e)); }
@@ -4544,7 +4557,7 @@ function renderAiHiddenRow() {
   if (!hidden.length) { row.hidden = true; row.innerHTML = ''; return; }
   row.hidden = false;
   row.innerHTML = '<span class="ai-preset-hidden-label">已隐藏：</span>' + hidden.map(key =>
-    '<button class="ai-preset-restore" data-restore="' + key + '">' + (AI_PRESETS[key] && AI_PRESETS[key].label || key) + ' · 恢复</button>'
+    '<button class="ai-preset-restore" data-restore="' + key + '">' + (AI_PRESETS[key] && AI_PRESETS[key].label || key) + ' 恢复</button>'
   ).join('');
   row.querySelectorAll('.ai-preset-restore').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -4764,6 +4777,8 @@ function openAiRewriteModal() {
   input.focus();
   const updateRunBtn = () => { runBtn.disabled = !(aiReady && input.value.trim().length > 0); };
   input.addEventListener('input', updateRunBtn);
+  const wholeLayoutBtn = $('aiRewriteWholeLayout');
+  if (wholeLayoutBtn) wholeLayoutBtn.addEventListener('click', () => openAiLayoutModal('wash'));
   aiModalBody.querySelectorAll('[data-rewrite-preset]').forEach(btn => {
     btn.addEventListener('click', () => {
       input.value = AI_REWRITE_PRESETS[Number(btn.getAttribute('data-rewrite-preset'))].value;
@@ -4879,10 +4894,14 @@ function setAiSubmitLoading(loading) {
   if (!fmAiSubmit) return;
   fmAiSubmit.classList.toggle('loading', !!loading);
   fmAiSubmit.title = loading ? '停止' : '提交（回车）';
-  const submitIcon = fmAiSubmit.querySelector('.fm-ai-submit-icon');
-  const stopIcon = fmAiSubmit.querySelector('.fm-ai-stop-icon');
-  if (submitIcon) submitIcon.hidden = !!loading;
-  if (stopIcon) stopIcon.hidden = !loading;
+  fmAiSubmit.setAttribute('aria-label', loading ? '停止' : '提交');
+  const icon = fmAiSubmit.querySelector('.fm-ai-submit-icon');
+  if (!icon) return;
+  icon.setAttribute('fill', loading ? 'currentColor' : 'none');
+  icon.setAttribute('stroke', loading ? 'none' : 'currentColor');
+  icon.innerHTML = loading
+    ? '<rect x="6" y="6" width="12" height="12" rx="2"/>'
+    : '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>';
 }
 
 if (fmAiQuick) {
@@ -5005,7 +5024,7 @@ async function runQuickAi() {
     hideAiPreview();
     hideFloatMenu();
     clearAiSelectionHighlight();
-    toast('已改写 · 可按 Ctrl/⌘ + Z 撤销');
+    toast('已改写 可按 Ctrl/⌘ + Z 撤销');
   } catch (e) {
     if (e && e.name === 'AbortError') toast('已停止');
     else toast('AI 失败：' + (e.message || e));
@@ -6335,7 +6354,7 @@ async function renderAiWritingSettings() {
 /* ---------- 用户管理 ---------- */
 async function renderUserManagement() {
   const users = await api('/api/admin/users');
-  let html = '<table class="user-table"><thead><tr><th>用户名</th><th>昵称</th><th>状态</th><th>分享权限</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+  let html = '<div class="user-table-wrap"><table class="user-table"><thead><tr><th>用户名</th><th>昵称</th><th>状态</th><th>分享权限</th><th>备注</th><th>操作</th></tr></thead><tbody>';
   users.forEach(u => {
     const status = u.is_banned ? '<span class="tag-banned">已禁用</span>' : '<span style="color:var(--ink-faint);font-size:12px">正常</span>';
     const shareBtn = u.is_admin ? '<span class="tag-share">管理员</span>' : '<button class="user-share-btn' + (u.can_share ? ' active' : '') + '" data-uid="' + u.id + '" data-field="can_share">' + (u.can_share ? '已授权' : '授权') + '</button>';
@@ -6348,7 +6367,7 @@ async function renderUserManagement() {
       '<td>' + (u.is_admin ? '' : '<button class="user-ban-btn" data-uid="' + u.id + '" data-banned="' + (u.is_banned ? 1 : 0) + '">' + (u.is_banned ? '解禁' : '禁用') + '</button>') + '</td>' +
       '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   settingsModalBody.innerHTML = html;
 
   settingsModalBody.querySelectorAll('.user-ban-btn').forEach(btn => {
@@ -6401,7 +6420,7 @@ async function renderReviewPanel() {
         '<span class="review-item-title">' + escapeHtml(d.title || '无标题') + '</span>' +
         (flagged ? '<span class="flag-badge">已标记</span>' : '') +
       '</div>' +
-      '<div class="review-item-author">' + escapeHtml(d.author_nickname || '') + ' · ' + relativeTime(d.updated_at) + '</div>' +
+      '<div class="review-item-author">' + escapeHtml(d.author_nickname || '') + ' ' + relativeTime(d.updated_at) + '</div>' +
       '<div class="review-item-content">' + escapeHtml(content) + (content.length >= 200 ? '…' : '') + '</div>' +
       '<div class="review-item-actions">' +
         '<button class="review-btn flag" data-did="' + d.id + '" data-flagged="' + (flagged ? 1 : 0) + '">' + (flagged ? '取消标记' : '标记违规') + '</button>' +
@@ -6479,8 +6498,9 @@ function renderInviteList(list) {
   const unused = list.filter(i => !i.used).length;
   const used = list.length - unused;
   const copyIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  const shareIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>';
   let html = '<div class="invite-toolbar">' +
-    '<div class="invite-stat">共 ' + list.length + ' 个 · 未用 ' + unused + ' · 已用 ' + used + '</div>' +
+    '<div class="invite-stat">共 ' + list.length + ' 个 未用 ' + unused + ' 已用 ' + used + '</div>' +
     '<div class="invite-actions">' +
     '<button class="seg-btn" id="genOneBtn">生成 1 个</button>' +
     '<button class="seg-btn" id="genFiveBtn">生成 5 个</button>' +
@@ -6500,7 +6520,7 @@ function renderInviteList(list) {
         : '';
       const del = i.used
         ? ''
-        : '<button class="invite-del" data-code="' + code + '" title="删除">删除</button>';
+        : '<div class="invite-row-actions"><button class="invite-share-btn" data-code="' + code + '" title="分享">' + shareIcon + '分享</button><button class="invite-del" data-code="' + code + '" title="删除">删除</button></div>';
       const codeCell = i.used
         ? '<div class="invite-code-cell used"><code class="invite-code">' + code + '</code></div>'
         : '<div class="invite-code-cell"><code class="invite-code" title="点击复制">' + code + '</code><button class="invite-copy-btn" data-code="' + code + '" title="复制">' + copyIcon + '</button></div>';
@@ -6531,6 +6551,10 @@ function renderInviteList(list) {
       } catch (e) { toast('删除失败：' + (e.message || e)); }
     });
   });
+  // 分享按钮：打开分享弹窗（选文案、复制邀请码/链接/文案）
+  settingsModalBody.querySelectorAll('.invite-share-btn').forEach(btn => {
+    btn.addEventListener('click', () => openInviteShare(btn.getAttribute('data-code')));
+  });
   // 点击邀请码或复制按钮复制（仅未使用）
   const copyCode = (text) => {
     navigator.clipboard.writeText(text).then(() => toast('已复制：' + text)).catch(() => {});
@@ -6554,6 +6578,56 @@ async function generateInvites(count) {
   } catch (e) {
     toast('生成失败：' + (e.message || e));
   }
+}
+
+/* ---------- 邀请码分享弹窗：单一温暖文案、复制邀请码/链接/文案 ---------- */
+const inviteShareModal = $('inviteShareModal');
+const inviteShareBody = $('inviteShareBody');
+$('inviteShareClose').addEventListener('click', () => { inviteShareModal.hidden = true; });
+inviteShareModal.addEventListener('click', (e) => { if (e.target === inviteShareModal) inviteShareModal.hidden = true; });
+
+// 文案：温暖邀请 + 说明邀请制与一人一次。链接已内嵌邀请码，打开后自动填写且不可改；
+// 服务端校验有效性，篡改码无法注册。邀请码大小写敏感，不可转大写。
+const INVITE_SHARE_TEXT = '我在使用「知著 PenMark」记录和整理想法，邀请你一起来体验。\n\n这是为你生成的邀请链接，仅可供 1 人注册，使用后将自动失效：\n\n{url}';
+
+function buildInviteUrl(code) {
+  return window.location.origin + '/login?invite=' + encodeURIComponent(code);
+}
+
+function openInviteShare(code) {
+  const safeCode = escapeHtml(code);
+  const url = buildInviteUrl(code);
+  const text = INVITE_SHARE_TEXT.replace(/\{url\}/g, url).replace(/\{code\}/g, code);
+
+  let html = '';
+  html += '<div class="invite-share-target">';
+  html += '<span class="invite-share-target-label">邀请码</span>';
+  html += '<code class="invite-code">' + safeCode + '</code>';
+  html += '</div>';
+  html += '<div>';
+  html += '<span class="invite-share-section-label">邀请文案</span>';
+  html += '<textarea class="invite-share-preview" id="inviteSharePreview" readonly>' + escapeHtml(text) + '</textarea>';
+  html += '</div>';
+  html += '<div class="invite-share-actions">';
+  html += '<button type="button" class="btn btn-secondary" id="inviteCopyCode">复制邀请码</button>';
+  html += '<button type="button" class="btn btn-secondary" id="inviteCopyLink">复制链接</button>';
+  html += '<button type="button" class="btn btn-primary" id="inviteCopyText">复制文案</button>';
+  html += '</div>';
+  html += '<p class="invite-share-tip">这是邀请制工具，每个邀请码仅限一人注册，用完即失效。若要邀请多人，请生成多个邀请码分别分享。</p>';
+
+  inviteShareBody.innerHTML = html;
+  inviteShareModal.hidden = false;
+
+  const previewEl = $('inviteSharePreview');
+  // 只读预览按内容自适应高度，避免长文案出现滚动条
+  previewEl.style.height = 'auto';
+  previewEl.style.height = Math.max(previewEl.scrollHeight, 96) + 'px';
+  const copyToClipboard = (text, msg) => {
+    navigator.clipboard.writeText(text).then(() => toast(msg)).catch(() => toast('复制失败，请手动复制'));
+  };
+  $('inviteCopyCode').addEventListener('click', () => copyToClipboard(code, '已复制邀请码：' + code));
+  $('inviteCopyLink').addEventListener('click', () => copyToClipboard(url, '已复制链接'));
+  $('inviteCopyText').addEventListener('click', () => copyToClipboard(previewEl.value, '已复制文案'));
 }
 
 /* ---------- 回收站 ---------- */
@@ -6948,7 +7022,7 @@ async function loadShareVisitors() {
     const data = await r.json();
     const total = data.total || 0;
     const online = data.online_30min || 0;
-    if (metaEl) metaEl.textContent = total > 0 ? ' · ' + total + ' 人访问' + (online > 0 ? ' · ' + online + ' 人在线' : '') : '';
+    if (metaEl) metaEl.textContent = total > 0 ? ' ' + total + ' 人访问' + (online > 0 ? ' ' + online + ' 人在线' : '') : '';
     const visitors = data.visitors || [];
     if (!visitors.length) {
       listEl.innerHTML = '<div class="share-visitors-empty">还没有访客记录</div>';
@@ -6959,7 +7033,7 @@ async function loadShareVisitors() {
       const name = v.nickname || '游客';
       const initial = (name || '?').slice(-1).toUpperCase();
       const time = v.last_visit_at ? relativeTime(v.last_visit_at) : '';
-      const cnt = v.visit_count > 1 ? ' · 访问 ' + v.visit_count + ' 次' : '';
+      const cnt = v.visit_count > 1 ? ' 访问 ' + v.visit_count + ' 次' : '';
       return '<div class="share-visitor' + (isReg ? ' registered' : '') + '">' +
         '<span class="share-visitor-avatar' + (isReg ? ' registered' : '') + '">' + escapeHtml(initial) + '</span>' +
         '<span class="share-visitor-info">' +
@@ -6974,12 +7048,12 @@ async function loadShareVisitors() {
 }
 
 function buildShareHint(share) {
-  let text = '';
-  if (share.has_password) text += '· 需密码 ';
-  text += (share.permission==='edit' ? '· 可编辑' : '· 仅查看');
-  if (share.expire_at) text += ' · 过期 ' + new Date(share.expire_at).toLocaleString();
-  else text += ' · 永久有效';
-  return text;
+  const parts = [];
+  if (share.has_password) parts.push('需密码');
+  parts.push(share.permission === 'edit' ? '可编辑' : '仅查看');
+  if (share.expire_at) parts.push('过期 ' + new Date(share.expire_at).toLocaleString());
+  else parts.push('永久有效');
+  return parts.join(' ');
 }
 
 function setupPinInputs() {

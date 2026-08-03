@@ -74,6 +74,25 @@ app.get('/login.html', async (req, res, next) => {
   }
 });
 
+// /login（无扩展名）分享链接入口：与 /login.html 同逻辑，但无静态文件可回落，
+// 故未登录时直接 sendFile(login.html)，URL 中的 ?invite=xxx 由 login.js 读取。
+// 必须在通配 404 之前注册，否则 /login?invite=... 会落到 404 页。
+app.get('/login', async (req, res, next) => {
+  try {
+    if (process.env.PENMARK_DESKTOP === '1') return res.redirect(302, '/');
+    const token = auth.readCookie(req, auth.COOKIE_NAME);
+    if (!token) return res.sendFile(path.join(__dirname, 'public', 'login.html'));
+    const user = await auth.verifySession(token);
+    if (!user) {
+      auth.clearCookie(res, req);
+      return res.sendFile(path.join(__dirname, 'public', 'login.html'));
+    }
+    return res.redirect(302, safeLoginRedirect(req.query && req.query.redirect));
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Document URLs share the editor shell; the browser loads the requested document on demand.

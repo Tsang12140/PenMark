@@ -217,6 +217,34 @@
     });
   });
 
+  // URL 参数 ?invite=xxx：自动填入邀请码并锁定，切到注册 tab。
+  // 注意：必须放在 tab 事件绑定之后，regTab.click() 才能生效；
+  // 邀请码大小写敏感（混合大小写字符集），不可 toUpperCase，否则与服务端不匹配会误报"已失效"。
+  try {
+    var inviteCode = new URLSearchParams(location.search).get('invite');
+    if (inviteCode) {
+      inviteCode = inviteCode.trim();
+      var regInviteInput = document.getElementById('regInvite');
+      if (regInviteInput) {
+        regInviteInput.value = inviteCode;
+        regInviteInput.readOnly = true;
+        // 完全锁定：不可编辑、不可选中、不可复制。邀请码随链接专属，不能从注册页抠走转手。
+        regInviteInput.style.opacity = '.6';
+        regInviteInput.style.cursor = 'not-allowed';
+        regInviteInput.style.userSelect = 'none';
+        regInviteInput.style.webkitUserSelect = 'none';
+        ['copy', 'cut', 'contextmenu', 'selectstart', 'dragstart'].forEach(function (evt) {
+          regInviteInput.addEventListener(evt, function (e) { e.preventDefault(); });
+        });
+      }
+      var regTab = document.querySelector('.login-tab[data-tab="register"]');
+      if (regTab) regTab.click();
+      var regNicknameEl = document.getElementById('regNickname');
+      if (regNicknameEl) regNicknameEl.focus();
+      return;
+    }
+  } catch (_) {}
+
   // 自动聚焦
   loginUsername.focus();
 })();
