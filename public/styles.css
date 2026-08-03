@@ -4534,13 +4534,14 @@ body.image-preview-open{overflow:hidden!important;}
   .share-toc-sheet-list button.active{background:var(--highlight);border-left-color:var(--accent);color:var(--accent);font-weight:600;}
 }
 @media (max-width:760px){
-  .share-container{padding:64px 14px 84px;}
+  .share-container{padding:48px 0 84px;}
   .share-container.share-access-gate{min-height:calc(100dvh - 52px);padding:20px 18px 48px;}
   .share-pwd-card{padding:30px 20px 26px;border-radius:14px;}
-  .share-paper{padding:28px 18px 32px;border-radius:8px;}
+  .share-paper{padding:28px 20px 36px;border:0;border-radius:0;box-shadow:none;}
   .share-paper-head{padding-bottom:16px;margin-bottom:20px;}
   .share-paper-title{font-size:22px;letter-spacing:1px;}
-  .share-reader,.share-editor{font-size:16px;line-height:1.8;}
+  .share-reader,.share-editor{font-size:16px;line-height:1.85;text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
+  .share-reader p,.share-editor p,.share-reader li,.share-editor li{text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
   .share-topbar{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));}
   .share-brand-mark .share-brand-logo{height:22px;}
   .share-theme-toggle{width:32px;height:32px;font-size:14px;}

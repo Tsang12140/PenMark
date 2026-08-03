@@ -11,7 +11,7 @@ const PENMARK_KNOWLEDGE = [
   '- The document is editable HTML. Supported block elements: h1-h6, p, blockquote, pre, ul, ol, li, table, hr.',
   '- Supported inline elements: strong (bold), em (italic), u (underline), s/strike (strikethrough), code (inline code), a (links).',
   '- Heading hierarchy: H1 is the top-level heading but is rarely used in articles; H2 is the standard major section heading; H3 is a subheading under H2; H4-H6 are deeper nested headings. Do not overuse H1.',
-  '- Paragraphs default to justified alignment (text-align:justify).',
+  '- The reader provides responsive typography. Do not add text-align, text-justify, text-align-last, letter-spacing, font-size, font-family, color, background, or spacing styles to normal paragraphs.',
   '- Custom atomic blocks that MUST be preserved exactly as-is: .link-card (link cards), .img-container (single image wrappers), .img-grid (image grids). Never strip their data attributes, classes, or inner structure.',
   '- When a user says "设成 H2" / "改成二级标题" / "make it H2", it means wrap the text in an <h2> element in this editor. "设成 H3" means <h3>, and so on.',
   '- "加粗" / "bold" means wrap in <strong>; "斜体"/"italic" means <em>; "设成引用"/"blockquote" means format as <blockquote>; "代码块"/"code block" means <pre>; "列表" means <ul>/<ol>.',
@@ -159,7 +159,7 @@ const layoutPresetInstructions = {
   share: '分享前排版：让文章更适合分享传播。建立清晰的标题层级、简短易读的段落、统一的列表、适度的强调与间距。不改动任何文字。',
   formal: '正式文档排版：使用保守的标题、编号章节、段落、引用块与表格，仅在原文明确暗示时使用。',
   clean: '清理杂样式：去除混乱的内联包裹与冗余样式，保留语义化 HTML 和简洁的段落/标题/列表。',
-  wash: '洗排版（深度格式清理）：剥离每个元素的所有内联样式（背景、字体、颜色、字号、下划线、边距等），只保留干净的语义化 HTML。建立清晰大纲：用 <h2> 作为大标题，<h3> 作为小标题，绝不使用 <h1>。识别作者可能想强调的关键短语，用 <strong> 包裹（谨慎使用，仅用于真正重要的点）。每个段落用 <p style="text-align:justify"> 包裹。将文本暗示的列表规范化为 <ul>/<ol>。不删除、不总结、不改写、不重排任何文字。'
+  wash: '深度整理（长文阅读）：只调整 HTML 结构，绝不改变任何可见文字、标点、数字、顺序或信息；不得增删、改写、概括、纠错或合并句子。移除所有普通文字的内联样式和多余包裹；不要输出 style、class、font、color、background、字号、字距、行距或对齐属性。保留已有图片、链接、链接卡片和自定义 data 属性。保留现有标题层级；仅在原文明确信号是标题时使用 <h2>/<h3>，不使用 <h1>，不凭空新增章节。每个自然段使用一个 <p>，不要为了凑版面插入 <br>、空段、全角空格或 &nbsp;。把真正的项目符号/序号整理为 <ul>/<ol><li>，不要用字符“•”“-”“—”假装列表。只在原文已经明确强调，或确实承担结论、警示、核心标签的短语上添加 <strong>；每段最多 1 处、每节最多 4 处，绝不加粗整句、整段或连续多项。不要使用 blockquote、表格、代码块，除非原文已有相应语义。'
 };
 
 function stripCodeFence(text) {
