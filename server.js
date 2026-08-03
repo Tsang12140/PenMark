@@ -93,6 +93,13 @@ app.get('/login', async (req, res, next) => {
   }
 });
 
+// sw.js 必须始终拿最新版本：否则浏览器无法感知 Service Worker 更新，
+// 导致新部署的前端代码被旧 SW 缓存卡住，用户硬刷新也拿不到新版。
+app.get('/sw.js', (req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'sw.js'));
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Document URLs share the editor shell; the browser loads the requested document on demand.

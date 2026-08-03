@@ -2,11 +2,11 @@
  * 目标：iPhone 安装为 PWA 后能拉到最新版本，同时离线可用。
  * 策略：
  *   - HTML 导航请求：network-first，网络失败回退缓存（保证每次打开都能拿到新版）
- *   - 静态资源（JS/CSS/图片/字体）：stale-while-revalidate，先返回缓存快速显示，后台更新
+ *   - 静态资源（JS/CSS/图片/字体）：network-first，先走网络拿最新版本，失败回退缓存
  *   - 不缓存 API 请求（/api/*）与登录态相关请求，避免本地数据被 SW 缓存污染
  * 更新机制：CACHE_VERSION 变更 → install 时预缓存 → activate 清理旧版本缓存 → skipWaiting + clients.claim 立即生效
  */
-const CACHE_VERSION = 'penmark-v1-20260803';
+const CACHE_VERSION = 'penmark-v1-20260804';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -72,20 +72,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 静态资源：stale-while-revalidate
+  // 静态资源（JS/CSS/图片/字体）：network-first
+  // 先走网络拿最新版本，网络失败再回退缓存。
+  // 之前用 stale-while-revalidate 会导致用户刷新时立即拿到缓存的旧 JS/CSS，
+  // 新功能即使部署了也看不到，故改为 network-first 与 HTML 保持一致。
   event.respondWith(
-    caches.match(req).then((cached) => {
-      const fetchPromise = fetch(req)
-        .then((res) => {
-          if (res && res.status === 200) {
-            const copy = res.clone();
-            caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req).then((cached) => cached || caches.match('/index.html')))
   );
 });
 
