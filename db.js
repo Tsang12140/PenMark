@@ -342,12 +342,18 @@ CREATE INDEX IF NOT EXISTS idx_media_assets_owner ON media_assets(owner_id, crea
 const mediaAssetColumns = new Set(db.prepare('PRAGMA table_info(media_assets)').all().map(column => column.name));
 const mediaAssetAdditions = [
   ['remote_provider', "TEXT NOT NULL DEFAULT 'local'"], ['remote_key', 'TEXT'], ['remote_status', "TEXT NOT NULL DEFAULT 'local'"],
-  ['remote_synced_at', 'INTEGER'], ['remote_attempted_at', 'INTEGER'], ['remote_attempts', 'INTEGER NOT NULL DEFAULT 0'], ['remote_error', 'TEXT']
+  ['remote_synced_at', 'INTEGER'], ['remote_attempted_at', 'INTEGER'], ['remote_attempts', 'INTEGER NOT NULL DEFAULT 0'], ['remote_error', 'TEXT'],
+  // 内容哈希：相同图片去重复用同一文件，省存储
+  ['content_hash', 'TEXT'],
+  // 缩略图文件名：版本历史预览用超小缩略图，省带宽
+  ['thumb_storage_name', 'TEXT']
 ];
 for (const [name, definition] of mediaAssetAdditions) {
   if (!mediaAssetColumns.has(name)) db.exec('ALTER TABLE media_assets ADD COLUMN ' + name + ' ' + definition);
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_media_assets_remote_queue ON media_assets(remote_provider, remote_status, remote_attempted_at)');
+// 去重查询：按 owner + content_hash 找已有图片
+db.exec('CREATE INDEX IF NOT EXISTS idx_media_assets_content_hash ON media_assets(owner_id, content_hash)');
 
 // 013: 普通用户图片存储配额与月度流量统计（管理员不限；普通用户 2GB 存储 / 500MB 月流量）
 // 配额常量在 assets.js 中维护，本表仅累计月度访问流量。

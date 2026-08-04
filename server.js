@@ -719,6 +719,25 @@ app.get('/api/assets/:id', wrap(async (req, res) => {
   res.sendFile(filePath);
 }));
 
+// 缩略图：版本历史预览用超小图，省带宽。无缩略图则回退原图。
+app.get('/api/assets/:id/thumb', wrap(async (req, res) => {
+  const asset = await db.one(
+    'SELECT a.* FROM media_assets a JOIN documents d ON d.id = a.doc_id WHERE a.id = $1 AND a.owner_id = $2 AND d.user_id = $3 AND d.deleted_at IS NULL',
+    [req.params.id, req.user.id, req.user.id]
+  );
+  if (!asset) return res.status(404).json({ error: 'not found' });
+  const thumbPath = await assetStore.thumbFilePath(asset);
+  if (thumbPath) {
+    res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+    return res.sendFile(thumbPath);
+  }
+  // 无缩略图（旧图或生成失败）：回退原图
+  const original = await assetStore.filePath(asset);
+  if (!original) return res.status(404).json({ error: '\u8d44\u6e90\u4e0d\u5b58\u5728' });
+  res.set({ 'Content-Type': asset.mime_type, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+  res.sendFile(original);
+}));
+
 // New pasted/dropped images show locally first, then upload in the background.
 app.post('/api/documents/:id/assets', wrap(async (req, res) => {
   const doc = await db.one('SELECT id, user_id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, req.user.id]);
@@ -885,6 +904,8 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
               'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
               [docId, userId, snapshotPayload.title, snapshotPayload.content, snapshotPayload.charsDiff, snapshotPayload.version, snapshotPayload.source, now]
             );
+            // 写入新快照后按分层策略清理过旧版本，避免无限累积
+            await pruneVersionHistory(docId, userId);
           }
         }
       } catch (e) {
@@ -894,6 +915,85 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
   });
   res.json({ updated: updatedChanges, version: vRow ? vRow.version : undefined, updated_at: vRow ? vRow.updated_at : now });
 }));
+
+// 从 HTML 中提取所有 /api/assets/<id> 引用的 asset id
+function extractAssetIds(html) {
+  const ids = [];
+  const re = /\/api\/assets\/([0-9a-fA-F-]{36})/gi;
+  let m;
+  while ((m = re.exec(String(html || '')))) ids.push(m[1].toLowerCase());
+  return ids;
+}
+
+// 版本分层保留 + 自动清理：最近20条兜底；1小时内全留；1天内每小时留1条；更早每天留1条。
+// 只清理超出分层策略且不在兜底窗口内的旧版本，避免版本无限累积。
+async function pruneVersionHistory(docId, userId) {
+  try {
+    const rows = await db.query(
+      'SELECT id, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC',
+      [docId, userId]
+    );
+    if (rows.length <= 20) return; // 兜底：少于20条不清理
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+    const keep = new Set();
+    const keptHour = new Set();
+    const keptDay = new Set();
+    rows.forEach((r, idx) => {
+      const ts = Number(r.created_at);
+      const age = now - ts;
+      if (idx < 20) { keep.add(r.id); return; }        // 最近20条兜底
+      if (age <= HOUR) { keep.add(r.id); return; }     // 1小时内全留
+      if (age <= DAY) {                                 // 1天内：每小时留最新1条
+        const key = Math.floor(ts / HOUR);
+        if (!keptHour.has(key)) { keep.add(r.id); keptHour.add(key); }
+        return;
+      }
+      const dayKey = Math.floor(ts / DAY);              // 更早：每天留最新1条
+      if (!keptDay.has(dayKey)) { keep.add(r.id); keptDay.add(dayKey); }
+    });
+    const toDelete = rows.filter(r => !keep.has(r.id)).map(r => r.id);
+    if (!toDelete.length) return;
+    for (let i = 0; i < toDelete.length; i += 500) {
+      const batch = toDelete.slice(i, i + 500);
+      const placeholders = batch.map((_, k) => '$' + (k + 3)).join(',');
+      await db.execute('DELETE FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id IN (' + placeholders + ')', [docId, userId, ...batch]);
+    }
+    console.log('[versions] pruned', toDelete.length, 'old versions for doc', docId);
+  } catch (e) {
+    console.warn('[versions] prune skipped:', e && e.message);
+  }
+}
+
+// 孤儿图片回收：扫描所有文档与版本内容，未被任何引用且超过30天宽限期的图片删除文件+记录。
+// 软删除文档（可恢复）的图片视为被引用，不清理。
+async function cleanupOrphanAssets() {
+  try {
+    const GRACE = 30 * 24 * 60 * 60 * 1000; // 30天宽限期
+    const cutoff = Date.now() - GRACE;
+    const assets = await db.query(
+      'SELECT id, storage_name, thumb_storage_name, created_at FROM media_assets WHERE created_at < $1',
+      [cutoff]
+    );
+    if (!assets.length) return;
+    const referenced = new Set();
+    const docs = await db.query('SELECT content FROM documents');
+    docs.forEach(d => extractAssetIds(d.content).forEach(id => referenced.add(id)));
+    const versions = await db.query('SELECT content FROM document_versions');
+    versions.forEach(v => extractAssetIds(v.content).forEach(id => referenced.add(id)));
+    let deleted = 0;
+    for (const a of assets) {
+      if (referenced.has(a.id.toLowerCase())) continue;
+      if (a.storage_name) await fs.promises.unlink(path.join(assetStore.root, a.storage_name)).catch(() => {});
+      if (a.thumb_storage_name) await fs.promises.unlink(path.join(assetStore.root, a.thumb_storage_name)).catch(() => {});
+      await db.execute('DELETE FROM media_assets WHERE id = $1', [a.id]);
+      deleted++;
+    }
+    if (deleted) console.log('[assets] cleanup orphans:', deleted);
+  } catch (e) {
+    console.warn('[assets] orphan cleanup skipped:', e && e.message);
+  }
+}
 
 /* 文档版本历史列表（轻量元数据：不返回 content，前端按需请求单条详情） */
 app.get('/api/documents/:id/versions', wrap(async (req, res) => {
@@ -2365,6 +2465,9 @@ async function startServer(opts) {
       const actualPort = server.address().port;
       const display = host === '127.0.0.1' ? '127.0.0.1' : 'localhost';
       console.log(`知著 PenMark 运行于 http://${display}:${actualPort}（同时监听 IPv4/IPv6）`);
+      // 孤儿图片回收：启动后5分钟跑一次，之后每24小时一次（30天宽限期，软删除文档的图不清理）
+      setTimeout(cleanupOrphanAssets, 5 * 60 * 1000);
+      setInterval(cleanupOrphanAssets, 24 * 60 * 60 * 1000);
       resolve({ server, port: actualPort, host });
     });
     server.on('error', reject);

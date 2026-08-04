@@ -289,14 +289,24 @@ function showVersionBanner(v) {
   refreshBtn.className = 'vb-btn vb-refresh';
   refreshBtn.textContent = '刷新查看';
   refreshBtn.onclick = async () => {
+    // 本地有未保存编辑时先确认：刷新=丢弃本地修改，加载服务器最新版。
+    // 绝不先 saveCurrent：本地可能是过时的旧版，先保存会用旧版覆盖服务器最新版，
+    // 造成多端数据回退（旧版把新版覆盖掉）。
+    if (currentDoc && currentDoc._dirty) {
+      const ok = await showConfirm({
+        title: '加载最新版本',
+        desc: '本地有未保存的修改。加载最新版本将丢弃这些修改，是否继续？',
+        confirmText: '丢弃并加载最新',
+        danger: true
+      });
+      if (!ok) return;
+    }
     banner.classList.remove('show');
-    // 先把本地草稿保存，避免被覆盖
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     saveStateEl.textContent = '同步中…';
     try {
-      await saveCurrent({ reorder: false });
       const doc = await api('/api/documents/' + currentDoc.id);
-      currentDoc = doc;
+      currentDoc = Object.assign({}, doc, { _dirty: false });
       setDocTitle(doc.title === '无标题' ? '' : doc.title);
       editor.setHTML(doc.content || '');
       saveStateEl.textContent = '已加载最新';
@@ -305,6 +315,8 @@ function showVersionBanner(v) {
       refreshToolbar();
       updateOutline(true);
       updateDocumentTitle(doc.title);
+      optimizeLegacyImages(currentDoc);
+      cacheDoc(doc);
     } catch (e) {
       toast('刷新失败：' + (e.message || e));
       saveStateEl.textContent = '刷新失败';
@@ -553,10 +565,19 @@ function renderVersionHistoryPreview(entry) {
 
   const note = document.createElement('p');
   note.className = 'version-preview-note';
-  note.textContent = '这是只读预览。恢复为副本不会改动当前文档；原地恢复前会先保存当前内容。';
-  const text = document.createElement('pre');
-  text.className = 'version-preview-text';
-  text.textContent = getVersionPreviewText(entry.content) || '（空文档）';
+  note.textContent = '只读预览，图片为缩略图。恢复为副本不改当前文档；原地恢复前会先备份当前内容。要看原图请恢复。';
+
+  // 直接渲染版本快照 HTML：保留标题/段落/列表/图片排版，图片指向缩略图省带宽。
+  const render = document.createElement('div');
+  render.className = 'version-preview-render';
+  let html = String(entry.content || '');
+  // 安全清理：移除脚本/iframe/事件属性（版本快照来自文档内容，本身受编辑器约束，此为兜底）
+  html = html.replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // 图片指向缩略图：/api/assets/<id> → /api/assets/<id>/thumb（已是 thumb 的不重复加）
+  html = html.replace(/(\/api\/assets\/[0-9a-fA-F-]{36})(?!\/thumb)/g, '$1/thumb');
+  render.innerHTML = html || '<p>（空文档）</p>';
 
   const actions = document.createElement('div');
   actions.className = 'version-preview-actions';
@@ -571,7 +592,7 @@ function renderVersionHistoryPreview(entry) {
   restore.textContent = '恢复此版本';
   restore.addEventListener('click', () => restoreVersionHistoryEntry(entry));
   actions.append(duplicate, restore);
-  versionHistoryPreview.append(header, note, text, actions);
+  versionHistoryPreview.append(header, note, render, actions);
 }
 
 async function refreshVersionHistory() {

@@ -3,8 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createS4AssetMirror } = require('./s4-assets');
+let sharp;
+try { sharp = require('sharp'); } catch (e) { sharp = null; }
 
 const MAX_BYTES = Number(process.env.PENMARK_ASSET_MAX_BYTES) || 15 * 1024 * 1024;
+// 缩略图：版本历史预览用，超小省带宽。宽度上限 240px、JPEG 质量 60，约 10-20KB。
+const THUMB_WIDTH = 240;
 const MIME_EXTENSIONS = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -103,6 +107,15 @@ function createAssetStore(db) {
 
   async function create({ docId, ownerId, isAdmin, dataUrl, mirrorToRemote }) {
     const image = decodeInlineImage(dataUrl);
+    // 内容哈希：用于同文档去重，相同图片复用同一 asset，不重复存文件
+    const contentHash = crypto.createHash('sha256').update(image.buffer).digest('hex');
+    const existing = await db.one(
+      'SELECT id, mime_type, byte_size FROM media_assets WHERE owner_id = $1 AND doc_id = $2 AND content_hash = $3 ORDER BY created_at DESC LIMIT 1',
+      [ownerId, docId, contentHash]
+    );
+    if (existing) {
+      return { id: existing.id, url: url(existing.id), mime_type: existing.mime_type, byte_size: existing.byte_size, remote_status: 'local' };
+    }
     // 配额预检：失败抛出带 code 的错误，路由层据此返回 413
     const quota = await checkQuota(ownerId, !!isAdmin, image.buffer.length);
     if (!quota.ok) {
@@ -121,15 +134,30 @@ function createAssetStore(db) {
     const finalPath = path.join(root, storageName);
     const tempPath = finalPath + '.uploading-' + crypto.randomBytes(6).toString('hex');
     await fs.promises.writeFile(tempPath, image.buffer, { flag: 'wx' });
+    // 生成超小缩略图：版本历史预览用，失败不阻断上传（预览回退原图）
+    let thumbName = null;
+    if (sharp) {
+      try {
+        const thumbBuf = await sharp(image.buffer)
+          .resize(THUMB_WIDTH, THUMB_WIDTH, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 60, mozjpeg: true })
+          .toBuffer();
+        if (thumbBuf && thumbBuf.length > 0) {
+          thumbName = id + '.thumb.jpg';
+          await fs.promises.writeFile(path.join(root, thumbName), thumbBuf, { flag: 'wx' });
+        }
+      } catch (e) { console.warn('[assets] thumbnail skipped:', e && e.message); }
+    }
     try {
       await fs.promises.rename(tempPath, finalPath);
       await db.execute(
-        'INSERT INTO media_assets (id, doc_id, owner_id, storage_name, mime_type, byte_size, created_at, remote_provider, remote_key, remote_status, remote_attempts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)',
-        [id, docId, ownerId, storageName, image.mimeType, image.buffer.length, Date.now(), shouldMirror ? 's4' : 'local', remoteKey, shouldMirror ? 'pending' : 'local']
+        'INSERT INTO media_assets (id, doc_id, owner_id, storage_name, mime_type, byte_size, created_at, remote_provider, remote_key, remote_status, remote_attempts, content_hash, thumb_storage_name) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $12)',
+        [id, docId, ownerId, storageName, image.mimeType, image.buffer.length, Date.now(), shouldMirror ? 's4' : 'local', remoteKey, shouldMirror ? 'pending' : 'local', contentHash, thumbName]
       );
     } catch (err) {
       await fs.promises.unlink(tempPath).catch(() => {});
       await fs.promises.unlink(finalPath).catch(() => {});
+      if (thumbName) await fs.promises.unlink(path.join(root, thumbName)).catch(() => {});
       throw err;
     }
     if (shouldMirror) remoteMirror.schedule(id);
@@ -138,6 +166,19 @@ function createAssetStore(db) {
 
   async function filePath(asset) {
     const candidate = path.resolve(root, asset.storage_name);
+    if (!candidate.startsWith(root + path.sep)) return null;
+    try {
+      await fs.promises.access(candidate, fs.constants.R_OK);
+      return candidate;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 缩略图文件路径：版本历史预览用。无缩略图返回 null，调用方回退原图。
+  async function thumbFilePath(asset) {
+    if (!asset || !asset.thumb_storage_name) return null;
+    const candidate = path.resolve(root, asset.thumb_storage_name);
     if (!candidate.startsWith(root + path.sep)) return null;
     try {
       await fs.promises.access(candidate, fs.constants.R_OK);
@@ -176,7 +217,7 @@ function createAssetStore(db) {
   }
 
   return {
-    create, externalize, filePath, url,
+    create, externalize, filePath, thumbFilePath, url, root,
     checkQuota, recordBandwidth,
     waitRemoteReady: remoteMirror.waitReady,
     signedRemoteUrl: remoteMirror.signedUrl,
