@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const db = require('./database');
 const auth = require('./auth');
 const autoTitle = require('./auto-title');
@@ -897,17 +898,18 @@ app.put('/api/documents/:id', wrap(async (req, res) => {
       try {
         if (snapshotPayload) {
           const latest = await db.one(
-            'SELECT title, content, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1',
+            'SELECT created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1',
             [docId, userId]
           );
-          const minInterval = 3 * 60 * 1000;
-          const isSameAsLatest = latest && latest.title === snapshotPayload.title && latest.content === snapshotPayload.content;
-          if ((!latest || now - latest.created_at >= minInterval) && !isSameAsLatest) {
+          // 放缓版本频率：10 分钟间隔 + 至少 50 字差异才存快照（改几个标点不存）
+          const minInterval = 10 * 60 * 1000;
+          const minCharsDiff = 50;
+          if ((!latest || now - latest.created_at >= minInterval) && snapshotPayload.charsDiff >= minCharsDiff) {
             await db.execute(
               'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-              [docId, userId, snapshotPayload.title, snapshotPayload.content, snapshotPayload.charsDiff, snapshotPayload.version, snapshotPayload.source, now]
+              [docId, userId, snapshotPayload.title, compressVersionContent(snapshotPayload.content), snapshotPayload.charsDiff, snapshotPayload.version, snapshotPayload.source, now]
             );
-            // 写入新快照后按分层策略清理过旧版本，避免无限累积
+            // 写入新快照后按方案 C 清理过旧版本
             await pruneVersionHistory(docId, userId);
           }
         }
@@ -928,33 +930,76 @@ function extractAssetIds(html) {
   return ids;
 }
 
-// 版本分层保留 + 自动清理：最近20条兜底；1小时内全留；1天内每小时留1条；更早每天留1条。
-// 只清理超出分层策略且不在兜底窗口内的旧版本，避免版本无限累积。
+// 版本 content 压缩：gzip + base64，用 'GZ:' 前缀标记，兼容旧数据（无前缀视为未压缩原文）。
+// HTML 文本压缩率通常 80-90%，大幅节省 document_versions 表空间。
+function compressVersionContent(text) {
+  const s = String(text || '');
+  if (s.length < 200) return s; // 太小不压缩（gzip header 开销可能反而变大）
+  try {
+    const compressed = zlib.gzipSync(s, { level: 9 });
+    const b64 = compressed.toString('base64');
+    return b64.length < s.length ? 'GZ:' + b64 : s; // 只在压缩后更小才用
+  } catch (e) {
+    return s;
+  }
+}
+function decompressVersionContent(stored) {
+  const s = String(stored || '');
+  if (!s.startsWith('GZ:')) return s; // 旧数据无前缀，直接返回原文
+  try {
+    return zlib.gunzipSync(Buffer.from(s.slice(3), 'base64')).toString('utf8');
+  } catch (e) {
+    return s; // 解压失败返回原始存储值，避免完全不可用
+  }
+}
+
+// 版本保留策略（方案 C + 月级保留）：
+//   - 最近 15 条滚动保留（密集改动可回退）
+//   - 7 天内每天留 1 条最新（保证能回退到昨天/前天）
+//   - 更早每月留 1 条最新（保证能回退到上个月/半年前）
+//   - 硬上限 30 条，超出按时间倒序删最老的（约半年后开始挤掉最老的月级版本）
+const VERSION_ROLLING_KEEP = 15;
+const VERSION_DAILY_KEEP_DAYS = 7;
+const VERSION_HARD_LIMIT = 30;
 async function pruneVersionHistory(docId, userId) {
   try {
+    // 先 COUNT 判断，大多数情况（≤15 条）直接 return，避免拉全量
+    const countRow = await db.one(
+      'SELECT COUNT(*) as n FROM document_versions WHERE doc_id = $1 AND user_id = $2',
+      [docId, userId]
+    );
+    if (Number(countRow && countRow.n) <= VERSION_ROLLING_KEEP) return;
+
     const rows = await db.query(
       'SELECT id, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 ORDER BY created_at DESC',
       [docId, userId]
     );
-    if (rows.length <= 20) return; // 兜底：少于20条不清理
     const now = Date.now();
-    const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+    const DAY = 24 * 60 * 60 * 1000;
+    const dailyCutoff = now - VERSION_DAILY_KEEP_DAYS * DAY;
+
     const keep = new Set();
-    const keptHour = new Set();
     const keptDay = new Set();
+    const keptMonth = new Set();
     rows.forEach((r, idx) => {
       const ts = Number(r.created_at);
-      const age = now - ts;
-      if (idx < 20) { keep.add(r.id); return; }        // 最近20条兜底
-      if (age <= HOUR) { keep.add(r.id); return; }     // 1小时内全留
-      if (age <= DAY) {                                 // 1天内：每小时留最新1条
-        const key = Math.floor(ts / HOUR);
-        if (!keptHour.has(key)) { keep.add(r.id); keptHour.add(key); }
+      if (idx < VERSION_ROLLING_KEEP) { keep.add(r.id); return; } // 滚动窗口：最近 15 条
+      if (ts >= dailyCutoff) {                                     // 7 天内：每天留 1 条
+        const dayKey = Math.floor(ts / DAY);
+        if (!keptDay.has(dayKey)) { keep.add(r.id); keptDay.add(dayKey); }
         return;
       }
-      const dayKey = Math.floor(ts / DAY);              // 更早：每天留最新1条
-      if (!keptDay.has(dayKey)) { keep.add(r.id); keptDay.add(dayKey); }
+      const d = new Date(ts);                                      // 更早：每月留 1 条
+      const monthKey = d.getUTCFullYear() * 12 + d.getUTCMonth();
+      if (!keptMonth.has(monthKey)) { keep.add(r.id); keptMonth.add(monthKey); }
     });
+
+    // 硬上限：保留后仍超过 30 条，删最老的
+    if (keep.size > VERSION_HARD_LIMIT) {
+      const keptRows = rows.filter(r => keep.has(r.id));
+      keptRows.slice(VERSION_HARD_LIMIT).forEach(r => keep.delete(r.id));
+    }
+
     const toDelete = rows.filter(r => !keep.has(r.id)).map(r => r.id);
     if (!toDelete.length) return;
     for (let i = 0; i < toDelete.length; i += 500) {
@@ -991,7 +1036,7 @@ async function cleanupOrphanAssets() {
     while (true) {
       const versions = await db.query('SELECT id, content FROM document_versions WHERE id > $1 ORDER BY id LIMIT 200', [lastVerId]);
       if (!versions.length) break;
-      for (const v of versions) { lastVerId = v.id; extractAssetIds(v.content).forEach(id => referenced.add(id)); }
+      for (const v of versions) { lastVerId = v.id; extractAssetIds(decompressVersionContent(v.content)).forEach(id => referenced.add(id)); }
     }
     let deleted = 0;
     for (const a of assets) {
@@ -1023,6 +1068,7 @@ app.get('/api/documents/:id/versions/:versionId', wrap(async (req, res) => {
     [req.params.id, req.user.id, req.params.versionId]
   );
   if (!row) return res.status(404).json({ error: 'not found' });
+  row.content = decompressVersionContent(row.content);
   res.json(row);
 }));
 
@@ -1036,16 +1082,18 @@ app.post('/api/documents/:id/versions', wrap(async (req, res) => {
   if (!doc) return res.status(404).json({ error: 'not found' });
   const created = await db.execute(
     'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-    [doc.id, req.user.id, doc.title || '', doc.content || '', 0, doc.version || 1, 'manual', now]
+    [doc.id, req.user.id, doc.title || '', compressVersionContent(doc.content || ''), 0, doc.version || 1, 'manual', now]
   );
   res.status(201).json({ id: created.insertId, source: 'manual', created_at: now, version: doc.version || 1 });
 }));
 
 async function getOwnedDocumentVersion(docId, userId, versionId) {
-  return db.one(
+  const row = await db.one(
     'SELECT id, doc_id, title, content, chars_diff, version, source, created_at FROM document_versions WHERE doc_id = $1 AND user_id = $2 AND id = $3',
     [docId, userId, versionId]
   );
+  if (row) row.content = decompressVersionContent(row.content);
+  return row;
 }
 
 /* 将历史版本另存为副本：默认恢复路径，不改变用户当前文档。 */
@@ -1081,11 +1129,12 @@ app.post('/api/documents/:id/versions/:versionId/restore', wrap(async (req, res)
       [req.params.id, req.user.id, req.params.versionId]
     );
     if (!snapshot) throw new Error('VERSION_NOT_FOUND');
+    snapshot.content = decompressVersionContent(snapshot.content); // 版本表存的是压缩格式，回退前解压
     const currentText = stripHtml(doc.content || '');
     const targetText = stripHtml(snapshot.content || '');
     await tx.execute(
       'INSERT INTO document_versions (doc_id, user_id, title, content, chars_diff, version, source, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [doc.id, req.user.id, doc.title || '', doc.content || '', Math.abs(currentText.length - targetText.length), doc.version || 1, 'restore_backup', now]
+      [doc.id, req.user.id, doc.title || '', compressVersionContent(doc.content || ''), Math.abs(currentText.length - targetText.length), doc.version || 1, 'restore_backup', now]
     );
     await tx.execute(
       'UPDATE documents SET title = $1, title_origin = $2, content = $3, updated_at = $4, version = version + 1 WHERE id = $5 AND user_id = $6',
