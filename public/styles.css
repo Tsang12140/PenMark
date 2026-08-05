@@ -936,6 +936,23 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   font-family:var(--mono);
   font-size:.9em;
 }
+/* 正文中的键盘按键标记（如欢迎文档里的 # - > 快捷输入符号） */
+.editor kbd{
+  display:inline-block;
+  padding:1px 6px;
+  border:1px solid var(--code-border);
+  border-bottom-width:2px;
+  border-radius:4px;
+  background:var(--code-bg);
+  color:var(--ink);
+  font-family:var(--mono);
+  font-size:.85em;
+  font-weight:600;
+  line-height:1.4;
+  white-space:nowrap;
+  box-shadow:0 1px 0 rgba(0,0,0,.06);
+  vertical-align:baseline;
+}
 
 /* 表格 */
 .editor table{
@@ -4314,6 +4331,22 @@ html:has(body.share-page){overflow-x:clip;}
   border-radius:3px;
   font-family:var(--mono);
   font-size:.9em;
+}
+.share-reader kbd,.share-editor kbd{
+  display:inline-block;
+  padding:1px 6px;
+  border:1px solid var(--code-border);
+  border-bottom-width:2px;
+  border-radius:4px;
+  background:var(--code-bg);
+  color:var(--ink);
+  font-family:var(--mono);
+  font-size:.85em;
+  font-weight:600;
+  line-height:1.4;
+  white-space:nowrap;
+  box-shadow:0 1px 0 rgba(0,0,0,.06);
+  vertical-align:baseline;
 }
 .share-reader table,.share-editor table{
   border-collapse:collapse;
