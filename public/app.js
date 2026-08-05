@@ -1038,6 +1038,20 @@ fontSelectEl.addEventListener('change', () => {
 
 function handleAction(action) {
   switch (action) {
+    case 'alignMenu': {
+      if (!ctxMenu.hidden) { hideCtxMenu(); break; }
+      // 工具栏触发：清空 float menu 选区缓存，避免点击对齐选项时 restoreFloatMenuRange()
+      // 恢复过期选区，导致对齐应用到错误段落。改由 editorEl.focus() 恢复当前选区。
+      floatMenuRange = null;
+      buildAlignMenu();
+      const btn = document.getElementById('alignMenuBtn');
+      if (btn) {
+        const rect = btn.getBoundingClientRect();
+        positionCtxMenu(rect.left, rect.bottom + 6, rect.top - 6);
+        btn.setAttribute('aria-expanded', 'true');
+      }
+      break;
+    }
     case 'hr': editor.insertHR(); break;
     case 'quote': editor.insertQuote(); break;
     case 'todo': editor.insertTodo(); break;
@@ -1125,6 +1139,7 @@ function openMobileImagePicker() {
 function refreshToolbar() {
   const btns = document.querySelectorAll('.tb-btn[data-cmd]');
   editor.refreshToolbarState(btns, blockStyleSel);
+  updateAlignButton();
 }
 
 document.addEventListener('selectionchange', () => {
@@ -1683,6 +1698,15 @@ function menuIcon(action, block) {
   if (action === 'block') {
     return '<span class="ctx-type-icon">' + (block === 'P' ? 'T' : block) + '</span>';
   }
+  if (action === 'align') {
+    const alignPaths = {
+      justifyLeft: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/>',
+      justifyCenter: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="18" y1="12" x2="6" y2="12"/><line x1="15" y1="18" x2="9" y2="18"/>',
+      justifyRight: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="9" y2="12"/><line x1="21" y1="18" x2="7" y2="18"/>',
+      justifyFull: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="3" y2="18"/>'
+    };
+    return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (alignPaths[block] || '') + '</svg>';
+  }
   const paths = {
     ol: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M3 5h2v3M3 11h2l-2 3h2M3 17h2v3H3"/>',
     ul: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
@@ -1710,6 +1734,35 @@ function currentBlockTag(block) {
   if (!block || block === editorEl) return '';
   return block.tagName.toUpperCase();
 }
+function currentAlign() {
+  try {
+    if (document.queryCommandState('justifyFull')) return 'full';
+    if (document.queryCommandState('justifyCenter')) return 'center';
+    if (document.queryCommandState('justifyRight')) return 'right';
+  } catch (_) {}
+  return 'left';
+}
+const ALIGN_ICON_PATHS = {
+  left: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/>',
+  center: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="18" y1="12" x2="6" y2="12"/><line x1="15" y1="18" x2="9" y2="18"/>',
+  right: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="9" y2="12"/><line x1="21" y1="18" x2="7" y2="18"/>',
+  full: '<line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="3" y2="18"/>'
+};
+function buildAlignMenu() {
+  const cur = currentAlign();
+  let html = '<div class="ctx-menu-label">段落对齐</div>';
+  html += ctxBtn('align', '左对齐', cur === 'left', 'justifyLeft');
+  html += ctxBtn('align', '居中对齐', cur === 'center', 'justifyCenter');
+  html += ctxBtn('align', '右对齐', cur === 'right', 'justifyRight');
+  html += ctxBtn('align', '两端对齐', cur === 'full', 'justifyFull');
+  ctxMenu.innerHTML = html;
+}
+function updateAlignButton() {
+  const btn = document.getElementById('alignMenuBtn');
+  if (!btn) return;
+  const icon = btn.querySelector('.align-icon');
+  if (icon) icon.innerHTML = ALIGN_ICON_PATHS[currentAlign()] || ALIGN_ICON_PATHS.left;
+}
 
 function positionCtxMenu(x, y, aboveY) {
   ctxMenu.hidden = false;
@@ -1723,7 +1776,7 @@ function positionCtxMenu(x, y, aboveY) {
   ctxMenu.style.top = top + 'px';
 }
 
-function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); if (blockHandle) blockHandle.setAttribute('aria-expanded', 'false'); }
+function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); if (blockHandle) blockHandle.setAttribute('aria-expanded', 'false'); const alignBtn = document.getElementById('alignMenuBtn'); if (alignBtn) alignBtn.setAttribute('aria-expanded', 'false'); }
 
 ctxMenu.addEventListener('mousedown', (e) => e.preventDefault()); // 不失焦
 ctxMenu.addEventListener('click', (e) => {
@@ -1745,6 +1798,7 @@ async function handleCtxAction(action, block, anchor) {
     case 'ol': editor.exec('insertOrderedList'); break;
     case 'codeblock': editor.insertCodeBlock(); break;
     case 'quote': editor.exec('formatBlock', '<BLOCKQUOTE>'); break;
+    case 'align': editor.exec(block); updateAlignButton(); break;
     case 'hr': editor.insertHR(); break;
     case 'cut': editor.cutCurrentBlock(); break;
     case 'copy': editor.copyCurrentBlock(); break;
@@ -7683,7 +7737,6 @@ let outlineScrollFrame = null;
 let outlinePinnedIdx = null;
 let outlineProgrammaticScroll = false;
 let outlineProgrammaticTimer = null;
-const OUTLINE_MIN_TEXT_LENGTH = 600;
 
 const responsiveOutlineLauncher = document.createElement('button');
 responsiveOutlineLauncher.className = 'responsive-outline-launcher';
@@ -7713,10 +7766,9 @@ let responsiveOutlineScrollFrame = null;
 let responsiveOutlineRestoreFocus = null;
 
 function getDocumentOutlineHeadings() {
-  const compactText = (editorEl.innerText || '').replace(/\s/g, '');
-  if (compactText.length < OUTLINE_MIN_TEXT_LENGTH) return [];
+  // 只要存在 1 个及以上有效标题即显示大纲，不依赖文档篇幅，避免短文档无大纲反馈
   const headings = Array.from(editorEl.querySelectorAll('h1, h2, h3')).filter(h => !h.closest('.toc') && h.textContent.trim());
-  if (headings.length < 2) return [];
+  if (!headings.length) return [];
   const prefix = 'outline-' + (currentDoc ? currentDoc.id : 'draft') + '-';
   headings.forEach((h, i) => { h.id = prefix + i; });
   return headings;
@@ -7790,7 +7842,7 @@ function scrollToDocumentHeading(heading) {
 
 function openResponsiveOutline() {
   const headings = getDocumentOutlineHeadings();
-  if (!headings.length) { toast('正文较短或还没有足够的标题，暂不显示章节'); return; }
+  if (!headings.length) { toast('还没有标题，暂不显示章节'); return; }
   responsiveOutlineHeadings = headings;
   const list = responsiveOutline.querySelector('.responsive-outline-list');
   list.innerHTML = headings.map((heading, index) => {

@@ -473,6 +473,7 @@ function closeShareTocSheet(restoreFocus) {
   setShareTocExpanded(false);
   if (restoreFocus !== false && shareTocRestoreFocus && document.contains(shareTocRestoreFocus)) shareTocRestoreFocus.focus();
   shareTocRestoreFocus = null;
+  document.body.style.overflow = '';
 }
 
 function openShareTocSheet() {
@@ -480,6 +481,7 @@ function openShareTocSheet() {
   shareTocRestoreFocus = document.activeElement;
   tocSheet.hidden = false;
   if (tocOverlay) tocOverlay.hidden = false;
+  document.body.style.overflow = 'hidden';
   setShareTocExpanded(true);
   const first = tocSheetList && tocSheetList.querySelector('button');
   if (first) first.focus();
@@ -577,7 +579,10 @@ if (chapterDock) chapterDock.addEventListener('click', () => {
   if (tocSheet && !tocSheet.hidden) closeShareTocSheet();
   else openShareTocSheet();
 });
-if (tocOverlay) tocOverlay.addEventListener('click', () => closeShareTocSheet());
+if (tocOverlay) {
+  tocOverlay.addEventListener('click', () => closeShareTocSheet());
+  tocOverlay.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+}
 if (tocSheetClose) tocSheetClose.addEventListener('click', () => closeShareTocSheet());
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && tocSheet && !tocSheet.hidden) closeShareTocSheet();

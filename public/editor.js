@@ -215,8 +215,28 @@ export class Editor {
   /* ---------- 命令执行 ---------- */
   exec(cmd, val) {
     this.editor.focus();
+    // 清除格式时，若当前块是引用块/代码块，先降级为正文段落，
+    // 否则 removeFormat 只清内联样式，用户无法摆脱引用底框/代码块。
+    if (cmd === 'removeFormat') this._flattenBlockToParagraph();
     document.execCommand(cmd, false, val);
     this._afterChange();
+  }
+  // 把引用块/代码块降级为正文段落：formatBlock 对嵌套脏结构不可靠，
+  // 手动把子节点移入新 <p> 再替换，保证 <blockquote>/<pre> 一定能回到正文。
+  _flattenBlockToParagraph() {
+    const block = this._currentBlock();
+    if (!block || (block.tagName !== 'BLOCKQUOTE' && block.tagName !== 'PRE')) return;
+    const p = document.createElement('p');
+    while (block.firstChild) p.appendChild(block.firstChild);
+    // 代码块常见结构 <pre><code>...</code></pre>：解包 <code>，否则会残留行内代码样式
+    if (block.tagName === 'PRE' && p.children.length === 1 && p.firstElementChild.tagName === 'CODE') {
+      const code = p.firstElementChild;
+      while (code.firstChild) p.insertBefore(code.firstChild, code);
+      p.removeChild(code);
+    }
+    if (!p.hasChildNodes()) p.innerHTML = '<br>';
+    block.replaceWith(p);
+    this._restoreCaretInBlock(p);
   }
   _afterChange(change) {
     this._ensureLeadingParagraph();

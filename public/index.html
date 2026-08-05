@@ -28,7 +28,7 @@
 <meta property="og:description" content="知著 PenMark 是一款极简在线富文本写作工具，支持公众号/微信图文一键粘贴、自动图片修复、链接卡片和飞书式目录大纲，所有内容本地优先保存。">
 <meta property="og:type" content="website">
 <title>知著 PenMark</title>
-<link rel="stylesheet" href="/styles.css?v=20260805d">
+<link rel="stylesheet" href="/styles.css?v=20260805g">
 </head>
 <body class="pre-auth">
 <div class="app">
@@ -132,10 +132,10 @@
       </div>
 
       <div class="tb-group">
-        <button class="tb-btn" data-cmd="justifyLeft" title="左对齐 Ctrl+Shift+L"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/></svg></button>
-        <button class="tb-btn" data-cmd="justifyCenter" data-overflow-priority="4" data-label="居中对齐" title="居中对齐 Ctrl+Shift+E"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="6" x2="3" y2="6"/><line x1="18" y1="12" x2="6" y2="12"/><line x1="15" y1="18" x2="9" y2="18"/></svg></button>
-        <button class="tb-btn" data-cmd="justifyRight" data-overflow-priority="1" data-label="右对齐" title="右对齐 Ctrl+Shift+R"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="9" y2="12"/><line x1="21" y1="18" x2="7" y2="18"/></svg></button>
-        <button class="tb-btn" data-cmd="justifyFull" data-overflow-priority="1" data-label="两端对齐" title="两端对齐 Ctrl+Shift+J"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="3" y2="18"/></svg></button>
+        <button class="tb-btn" data-action="alignMenu" id="alignMenuBtn" title="段落对齐（左/居中/右/两端）">
+          <svg class="align-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" y1="6" x2="3" y2="6"/><line x1="15" y1="12" x2="3" y2="12"/><line x1="17" y1="18" x2="3" y2="18"/></svg>
+          <svg class="tb-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
       </div>
 
       <div class="tb-group">
@@ -595,7 +595,7 @@
 <button class="reading-exit" id="readingExit" title="退出阅读模式（Esc）" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 退出阅读</button>
 
 <script src="/vendor/dom-to-image-more.min.js"></script>
-<script type="module" src="/app.js?v=20260805d"></script>
+<script type="module" src="/app.js?v=20260805g"></script>
 
 <!-- 导出图片：隐藏渲染区（用于生成预览和截图） -->
 <div id="exportRenderContainer" style="position:fixed;left:-9999px;top:0;pointer-events:none;"></div>

@@ -581,9 +581,72 @@ function decodeEntities(s) {
   return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
+// 识别产品内链接（/d/{id} 或 /s/{token}）：仅同源才认，避免误抓
+function parseInternalLink(url, req) {
+  try {
+    let path;
+    if (/^https?:\/\//i.test(url)) {
+      const u = new URL(url);
+      const origin = getPublicRequestOrigin(req);
+      const shareBase = process.env.SHARE_BASE_URL ? String(process.env.SHARE_BASE_URL).replace(/\/+$/, '') : null;
+      if (u.origin !== origin && (!shareBase || u.origin !== shareBase)) return null;
+      path = u.pathname;
+    } else {
+      path = url;
+    }
+    let m = path.match(/^\/d\/(\d+)$/);
+    if (m) return { type: 'd', id: Number(m[1]) };
+    m = path.match(/^\/s\/([a-zA-Z0-9]+)$/);
+    if (m) return { type: 's', token: m[1] };
+    return null;
+  } catch (_) { return null; }
+}
+// 产品内链接直接查库返回文档标题/摘要，不走 fetchOG（外部抓取拿不到登录态下的 /d/ 标题，
+// 也无法穿透加密分享）。A 文档引用 B 文档时卡片应显示 B 的标题。
+async function fetchInternalLinkMeta(kind, req) {
+  const origin = getPublicRequestOrigin(req);
+  const domain = (origin ? origin.replace(/^https?:\/\//, '') : '') || 'PenMark';
+  if (kind.type === 'd') {
+    if (!req.user) return null;
+    const row = await db.one('SELECT title, content FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [kind.id, req.user.id]);
+    if (!row) return null;
+    return {
+      url: origin + '/d/' + kind.id,
+      title: (row.title || '无标题').slice(0, 200),
+      description: extractTextExcerpt(row.content, 300),
+      image: extractFirstRemoteImage(row.content),
+      domain
+    };
+  }
+  if (kind.type === 's') {
+    const row = await db.one('SELECT d.title, d.content, s.password_hash, s.expire_at FROM shares s JOIN documents d ON d.id = s.doc_id WHERE s.token = $1', [kind.token]);
+    if (!row) return null;
+    if (row.expire_at && row.expire_at < Date.now()) return null;
+    // 加密分享不向未认证访客泄露标题
+    if (row.password_hash) {
+      return { url: origin + '/s/' + kind.token, title: '加密分享', description: '需要访问码才能查看', image: '', domain };
+    }
+    return {
+      url: origin + '/s/' + kind.token,
+      title: (row.title || '无标题').slice(0, 200),
+      description: extractTextExcerpt(row.content, 300),
+      image: extractFirstRemoteImage(row.content),
+      domain
+    };
+  }
+  return null;
+}
+
 app.get('/api/og', ogLimiter, wrap(async (req, res) => {
   const url = String(req.query.url || '').trim();
   if (!url) return res.status(400).json({ error: '缺少 url' });
+  const internal = parseInternalLink(url, req);
+  if (internal) {
+    try {
+      const meta = await fetchInternalLinkMeta(internal, req);
+      if (meta) return res.json(meta);
+    } catch (e) { /* 内部查询失败则回退到通用抓取 */ }
+  }
   try {
     const meta = await fetchOG(url);
     res.json(meta);
