@@ -589,14 +589,20 @@ function parseInternalLink(url, req) {
       const u = new URL(url);
       const origin = getPublicRequestOrigin(req);
       const shareBase = process.env.SHARE_BASE_URL ? String(process.env.SHARE_BASE_URL).replace(/\/+$/, '') : null;
-      if (u.origin !== origin && (!shareBase || u.origin !== shareBase)) return null;
+      // 比对所有已配置 APP_ORIGIN（逗号分隔多域名）+ 当前请求 origin + SHARE_BASE_URL，
+      // 避免多域名部署或反代场景下地址栏 URL origin 对不上导致内链识别失败
+      const allowed = new Set(CONFIGURED_APP_ORIGINS);
+      if (origin) allowed.add(origin);
+      if (shareBase) allowed.add(shareBase);
+      if (!allowed.has(u.origin)) return null;
       path = u.pathname;
     } else {
       path = url;
     }
     let m = path.match(/^\/d\/(\d+)$/);
     if (m) return { type: 'd', id: Number(m[1]) };
-    m = path.match(/^\/s\/([a-zA-Z0-9]+)$/);
+    // 兼容旧 base64url token（可能含 - _）与新消歧字符集 token
+    m = path.match(/^\/s\/([a-zA-Z0-9_-]+)$/);
     if (m) return { type: 's', token: m[1] };
     return null;
   } catch (_) { return null; }

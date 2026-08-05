@@ -375,8 +375,15 @@ function base64UrlDecode(str) {
 }
 
 function generateShareToken() {
-  // 48 位熵（6 字节 → 8 字符 base64url）：短码好分享，配合生成时唯一性重试避免碰撞
-  return crypto.randomBytes(6).toString('base64url');
+  // 与邀请码统一的消歧字符集（去掉 I/L/O/0/1/l/o 等易混字符，无 - _ 等奇葩符号）
+  // 5 位 × 56 字符表 ≈ 5.5 亿组合，配合生成时唯一性重试避免碰撞，小用户量级足够且更短更好看；
+  // 日后量级上来只需把下面的 5 改大，老分享按 token 精确匹配查库、不受影响
+  const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  let token = '';
+  for (let i = 0; i < 5; i++) {
+    token += CHARSET[crypto.randomInt(0, CHARSET.length)];
+  }
+  return token;
 }
 
 function signShareSession(payload) {

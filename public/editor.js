@@ -1883,8 +1883,9 @@ export class Editor {
         const text = plainText;
         const trimmed = text.trim();
         // 粘贴单个裸 URL → 先插链接，后台抓 OG 升级为卡片（先显示，再修复，符合热路径原则）
-        const isSingleUrl = trimmed && /^(https?:\/\/|www\.)[^\s<]+$/i.test(trimmed);
-        if (text && /(?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(text)) {
+        // 含产品内裸路径 /d/{id}、/s/{token}（从地址栏复制常见），单独粘贴时也走卡片转换
+        const isSingleUrl = trimmed && /^(https?:\/\/|www\.|\/(?:d\/\d+|s\/[a-zA-Z0-9_-]+))[^\s<]*$/i.test(trimmed);
+        if (text && /(?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,}|\/(?:d\/\d+|s\/[a-zA-Z0-9_-]+))/i.test(text)) {
           e.preventDefault();
           const html = this._linkifyPlainText(text);
           document.execCommand('insertHTML', false, html);
@@ -1973,7 +1974,7 @@ export class Editor {
 
   _linkifyPlainText(text) {
     const escaped = this._escapeHtml(text).replace(/\n/g, '<br>');
-    return escaped.replace(/(^|[\s([{])((?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<]*)/ig,
+    return escaped.replace(/(^|[\s([{])((?:https?:\/\/|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,}|\/(?:d\/\d+|s\/[a-zA-Z0-9_-]+))[^\s<]*)/ig,
       (all, prefix, raw) => {
         const match = raw.match(/^(.*?)([.,!?;:，。！？；：)\]]*)$/);
         const url = match ? match[1] : raw;
@@ -2614,6 +2615,8 @@ export class Editor {
     if (/^https?:\/\//i.test(text)) return text;
     if (/^www\./i.test(text)) return 'https://' + text;
     if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#].*)?$/i.test(text)) return 'https://' + text;
+    // 产品内路径：/d/{id}、/s/{token}，原样返回，由 /api/og 的 parseInternalLink 识别
+    if (/^\/(?:d\/\d+|s\/[a-zA-Z0-9_-]+)$/.test(text)) return text;
     return '';
   }
 
