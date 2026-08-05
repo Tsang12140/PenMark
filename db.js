@@ -382,4 +382,19 @@ CREATE TABLE IF NOT EXISTS share_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_share_receipts_user_opened ON share_receipts(user_id, last_opened_at DESC);
 `);
+
+// 017: 批量导入批次记录（撤销导入用）。doc_ids/folder_ids 存 JSON 文本，兼容 PG/SQLite。
+db.exec(`
+CREATE TABLE IF NOT EXISTS import_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  doc_ids TEXT NOT NULL DEFAULT '[]',
+  folder_ids TEXT NOT NULL DEFAULT '[]',
+  doc_count INTEGER NOT NULL DEFAULT 0,
+  folder_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  undone_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_import_batches_user ON import_batches(user_id, created_at DESC);
+`);
 module.exports = db;

@@ -7,32 +7,41 @@ function getDb() {
   return dbModule; // db.js 导出的就是 Database 对象
 }
 
-/* ---------- 将 $1, $2 占位符转换为 ? ---------- */
-// 注意：SQLite 的 ? 按出现顺序绑定，因此业务 SQL 中 $N 必须按数字顺序出现，
-// 否则 PostgreSQL（按 $N 数字绑定）与 SQLite（按出现顺序绑定）语义不一致。
-function convertPlaceholders(sql) {
-  return sql.replace(/\$(\d+)/g, () => '?');
+/* ---------- 将 $1, $2 占位符转换为 ? 并按数字顺序重排 params ---------- */
+// SQLite 的 ? 按出现顺序绑定，而 PostgreSQL 的 $N 按数字绑定。
+// 如果 SQL 中 $N 不按数字顺序出现（如 WHERE id=$2 AND user_id=$1），
+// 简单替换会导致 SQLite 把第一个参数绑定给 $2（id），造成数据隔离失败。
+// 这里收集 $N 出现顺序，然后按数字顺序重排 params，确保两端语义一致。
+function convertPlaceholders(sql, params) {
+  const order = [];
+  const converted = sql.replace(/\$(\d+)/g, (_, n) => {
+    order.push(Number(n));
+    return '?';
+  });
+  if (!params || !params.length) return { sql: converted, params: [] };
+  const reordered = order.map(n => params[n - 1]);
+  return { sql: converted, params: reordered };
 }
 
 /* ---------- 查询返回行数组 ---------- */
 async function query(sql, params) {
   const db = getDb();
-  const converted = convertPlaceholders(sql);
-  return db.prepare(converted).all(...(params || []));
+  const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+  return db.prepare(converted).all(...finalParams);
 }
 
 /* ---------- 查询返回单行或 null ---------- */
 async function one(sql, params) {
   const db = getDb();
-  const converted = convertPlaceholders(sql);
-  return db.prepare(converted).get(...(params || [])) || null;
+  const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+  return db.prepare(converted).get(...finalParams) || null;
 }
 
 /* ---------- 执行写操作，返回 { changes, insertId } ---------- */
 async function execute(sql, params) {
   const db = getDb();
-  const converted = convertPlaceholders(sql);
-  const info = db.prepare(converted).run(...(params || []));
+  const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+  const info = db.prepare(converted).run(...finalParams);
   return { changes: info.changes, insertId: info.lastInsertRowid ? Number(info.lastInsertRowid) : null };
 }
 
@@ -66,16 +75,16 @@ async function transaction(fn) {
   const db = getDb();
   const txClient = {
     async query(sql, params) {
-      const converted = convertPlaceholders(sql);
-      return db.prepare(converted).all(...(params || []));
+      const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+      return db.prepare(converted).all(...finalParams);
     },
     async one(sql, params) {
-      const converted = convertPlaceholders(sql);
-      return db.prepare(converted).get(...(params || [])) || null;
+      const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+      return db.prepare(converted).get(...finalParams) || null;
     },
     async execute(sql, params) {
-      const converted = convertPlaceholders(sql);
-      const info = db.prepare(converted).run(...(params || []));
+      const { sql: converted, params: finalParams } = convertPlaceholders(sql, params);
+      const info = db.prepare(converted).run(...finalParams);
       return { changes: info.changes, insertId: info.lastInsertRowid ? Number(info.lastInsertRowid) : null };
     }
   };

@@ -13,6 +13,121 @@ import {
 // of thousands of lines can freeze the tab before our deferred work even runs.
 const LARGE_PLAIN_TEXT_PASTE_THRESHOLD = 64 * 1024;
 
+// ===== Markdown → HTML 公共转换（供编辑器粘贴和设置页批量导入复用） =====
+// 从 Editor 类方法提取为独立函数，不依赖实例状态，可被 app.js import 调用。
+export function escapeHtmlInline(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export function markdownToHtml(text) {
+  const lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 代码块 ```...```
+    if (/^\s{0,3}```/.test(line)) {
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !/^\s{0,3}```/.test(lines[i])) {
+        codeLines.push(escapeHtmlInline(lines[i]));
+        i++;
+      }
+      i++; // 跳过闭合 ```
+      out.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
+      continue;
+    }
+
+    // 标题 # ~ ######
+    const hm = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+    if (hm) {
+      const lv = hm[1].length;
+      out.push('<h' + lv + '>' + mdInline(hm[2]) + '</h' + lv + '>');
+      i++;
+      continue;
+    }
+
+    // 分割线 --- / *** / ___
+    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push('<hr>');
+      i++;
+      continue;
+    }
+
+    // 引用块 >（连续 > 行合并）
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const ql = [];
+      while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) {
+        ql.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
+        i++;
+      }
+      out.push('<blockquote>' + mdInline(ql.join('<br>')) + '</blockquote>');
+      continue;
+    }
+
+    // 无序列表 - / * / +
+    if (/^\s{0,3}[-*+]\s+\S/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s{0,3}[-*+]\s+\S/.test(lines[i])) {
+        items.push('<li>' + mdInline(lines[i].replace(/^\s{0,3}[-*+]\s+/, '')) + '</li>');
+        i++;
+      }
+      out.push('<ul>' + items.join('') + '</ul>');
+      continue;
+    }
+
+    // 有序列表 1.
+    if (/^\s{0,3}\d+\.\s+\S/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s{0,3}\d+\.\s+\S/.test(lines[i])) {
+        items.push('<li>' + mdInline(lines[i].replace(/^\s{0,3}\d+\.\s+/, '')) + '</li>');
+        i++;
+      }
+      out.push('<ol>' + items.join('') + '</ol>');
+      continue;
+    }
+
+    // 空行：跳过（段落由空行分隔）
+    if (/^\s*$/.test(line)) { i++; continue; }
+
+    // 普通段落：连续非空、非块级行合并
+    const pl = [];
+    while (i < lines.length
+      && !/^\s*$/.test(lines[i])
+      && !/^\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>|```|(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[i])) {
+      pl.push(lines[i]);
+      i++;
+    }
+    if (pl.length) out.push('<p>' + mdInline(pl.join('<br>')) + '</p>');
+  }
+  return out.join('');
+}
+
+// Markdown 行内语法：先转义 HTML，再依次处理行内代码（保护）、链接、粗体、斜体
+export function mdInline(text) {
+  let s = escapeHtmlInline(text);
+  // 行内代码先抽出占位，避免被后续正则误伤
+  const codes = [];
+  s = s.replace(/`([^`\n]+)`/g, (m, c) => {
+    codes.push(c);
+    return '\u0000C' + (codes.length - 1) + '\u0000';
+  });
+  // 链接 [text](url)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)/g, (m, t, u) => {
+    const href = u.startsWith('www.') ? 'http://' + u : u;
+    return '<a href="' + href + '" target="_blank" rel="noopener">' + t + '</a>';
+  });
+  // 粗体 **xxx**
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // 斜体 *xxx*（粗体已处理，剩余单 * 即斜体；不匹配跨行）
+  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  // 注：不处理 _xxx_ 斜体，避免误伤 file_name、snake_case 等下划线文本
+  // 还原行内代码
+  s = s.replace(/\u0000C(\d+)\u0000/g, (m, idx) => '<code>' + codes[idx] + '</code>');
+  return s;
+}
+
 export class Editor {
   constructor(opts) {
     this.editor = opts.editor;
@@ -1801,114 +1916,10 @@ export class Editor {
     return false;
   }
 
-  _markdownToHtml(text) {
-    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    const out = [];
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // 代码块 ```...```
-      if (/^\s{0,3}```/.test(line)) {
-        const codeLines = [];
-        i++;
-        while (i < lines.length && !/^\s{0,3}```/.test(lines[i])) {
-          codeLines.push(this._escapeHtml(lines[i]));
-          i++;
-        }
-        i++; // 跳过闭合 ```
-        out.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
-        continue;
-      }
-
-      // 标题 # ~ ######
-      const hm = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
-      if (hm) {
-        const lv = hm[1].length;
-        out.push('<h' + lv + '>' + this._mdInline(hm[2]) + '</h' + lv + '>');
-        i++;
-        continue;
-      }
-
-      // 分割线 --- / *** / ___
-      if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-        out.push('<hr>');
-        i++;
-        continue;
-      }
-
-      // 引用块 >（连续 > 行合并）
-      if (/^\s{0,3}>\s?/.test(line)) {
-        const ql = [];
-        while (i < lines.length && /^\s{0,3}>\s?/.test(lines[i])) {
-          ql.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
-          i++;
-        }
-        out.push('<blockquote>' + this._mdInline(ql.join('<br>')) + '</blockquote>');
-        continue;
-      }
-
-      // 无序列表 - / * / +
-      if (/^\s{0,3}[-*+]\s+\S/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\s{0,3}[-*+]\s+\S/.test(lines[i])) {
-          items.push('<li>' + this._mdInline(lines[i].replace(/^\s{0,3}[-*+]\s+/, '')) + '</li>');
-          i++;
-        }
-        out.push('<ul>' + items.join('') + '</ul>');
-        continue;
-      }
-
-      // 有序列表 1.
-      if (/^\s{0,3}\d+\.\s+\S/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\s{0,3}\d+\.\s+\S/.test(lines[i])) {
-          items.push('<li>' + this._mdInline(lines[i].replace(/^\s{0,3}\d+\.\s+/, '')) + '</li>');
-          i++;
-        }
-        out.push('<ol>' + items.join('') + '</ol>');
-        continue;
-      }
-
-      // 空行：跳过（段落由空行分隔）
-      if (/^\s*$/.test(line)) { i++; continue; }
-
-      // 普通段落：连续非空、非块级行合并
-      const pl = [];
-      while (i < lines.length
-        && !/^\s*$/.test(lines[i])
-        && !/^\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>|```|(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[i])) {
-        pl.push(lines[i]);
-        i++;
-      }
-      if (pl.length) out.push('<p>' + this._mdInline(pl.join('<br>')) + '</p>');
-    }
-    return out.join('');
-  }
+  _markdownToHtml(text) { return markdownToHtml(text); }
 
   // Markdown 行内语法：先转义 HTML，再依次处理行内代码（保护）、链接、粗体、斜体
-  _mdInline(text) {
-    let s = this._escapeHtml(text);
-    // 行内代码先抽出占位，避免被后续正则误伤
-    const codes = [];
-    s = s.replace(/`([^`\n]+)`/g, (m, c) => {
-      codes.push(c);
-      return '\u0000C' + (codes.length - 1) + '\u0000';
-    });
-    // 链接 [text](url)
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)/g, (m, t, u) => {
-      const href = u.startsWith('www.') ? 'http://' + u : u;
-      return '<a href="' + href + '" target="_blank" rel="noopener">' + t + '</a>';
-    });
-    // 粗体 **xxx**
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // 斜体 *xxx*（粗体已处理，剩余单 * 即斜体；不匹配跨行）
-    s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-    // 注：不处理 _xxx_ 斜体，避免误伤 file_name、snake_case 等下划线文本
-    // 还原行内代码
-    s = s.replace(/\u0000C(\d+)\u0000/g, (m, idx) => '<code>' + codes[idx] + '</code>');
-    return s;
-  }
+  _mdInline(text) { return mdInline(text); }
 
   _insertLargePlainText(text) {
     const selection = window.getSelection();
@@ -3120,7 +3131,5 @@ export class Editor {
     this._convertRemoteImages();
   }
 
-  _escapeHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
+  _escapeHtml(s) { return escapeHtmlInline(s); }
 }

@@ -38,9 +38,11 @@
         "admin:reset-password": "node scripts/admin-cli.js reset-password"
     },
     "dependencies": {
+        "archiver": "^8.0.0",
         "better-sqlite3": "^12.11.1",
         "dom-to-image-more": "^3.10.2",
         "express": "^4.21.2",
+        "linkedom": "^0.18.13",
         "pg": "^8.22.0",
         "sharp": "^0.35.3"
     },
@@ -65,6 +67,9 @@
             "ai.js",
             "auto-title.js",
             "auto-title-routes.js",
+            "html-to-md.js",
+            "s4.js",
+            "s4-assets.js",
             "env.js",
             "database/index.js",
             "database/sqlite.js",

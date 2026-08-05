@@ -69,19 +69,29 @@ async function one(sql, params) {
 }
 
 // 执行写操作，返回 { changes, insertId }
-// 对于 INSERT，自动添加 RETURNING id 以获取新 ID
+// 对于 INSERT，自动添加 RETURNING id 以获取新 ID。
+// 但需跳过两种情况：
+//   1. SQL 已含 RETURNING（调用方显式指定了返回列）
+//   2. SQL 含 ON CONFLICT（upsert 场景，目标表可能无 id 列，如 user_asset_bandwidth 主键为复合键）
+//      且 upsert 调用方通常不需要 insertId（如 recordBandwidth 只关心是否写入成功）
 async function execute(sql, params) {
   const p = getPool();
   const trimmed = sql.trim();
   const isInsert = /^insert/i.test(trimmed);
+  const hasReturning = /returning/i.test(trimmed);
+  const hasOnConflict = /on\s+conflict/i.test(trimmed);
   let finalSql = sql;
-  if (isInsert && !/returning/i.test(trimmed)) {
+  if (isInsert && !hasReturning && !hasOnConflict) {
     finalSql = sql.replace(/;\s*$/, '') + ' RETURNING id';
   }
   const result = await p.query(finalSql, params || []);
   let insertId = null;
-  if (isInsert && result.rows.length > 0 && result.rows[0].id != null) {
-    insertId = Number(result.rows[0].id);
+  // 仅在追加 RETURNING id 的情况下尝试读取（避免误读调用方自定义的 RETURNING 列）；
+  // 同时防御 TEXT 类型主键（如 media_assets 的 UUID），Number() 转换失败时返回 null。
+  if (isInsert && !hasReturning && !hasOnConflict && result.rows.length > 0 && result.rows[0].id != null) {
+    const raw = result.rows[0].id;
+    const n = Number(raw);
+    insertId = Number.isFinite(n) ? n : null;
   }
   return { changes: result.rowCount || 0, insertId };
 }
@@ -104,14 +114,18 @@ async function transaction(fn) {
     async execute(sql, params) {
       const trimmed = sql.trim();
       const isInsert = /^insert/i.test(trimmed);
+      const hasReturning = /returning/i.test(trimmed);
+      const hasOnConflict = /on\s+conflict/i.test(trimmed);
       let finalSql = sql;
-      if (isInsert && !/returning/i.test(trimmed)) {
+      if (isInsert && !hasReturning && !hasOnConflict) {
         finalSql = sql.replace(/;\s*$/, '') + ' RETURNING id';
       }
       const r = await client.query(finalSql, params || []);
       let insertId = null;
-      if (isInsert && r.rows.length > 0 && r.rows[0].id != null) {
-        insertId = Number(r.rows[0].id);
+      if (isInsert && !hasReturning && !hasOnConflict && r.rows.length > 0 && r.rows[0].id != null) {
+        const raw = r.rows[0].id;
+        const n = Number(raw);
+        insertId = Number.isFinite(n) ? n : null;
       }
       return { changes: r.rowCount || 0, insertId };
     }

@@ -1,5 +1,5 @@
 // 知著 PenMark 应用主逻辑：文档管理、自动保存、搜索、暗色模式、工具栏
-import { Editor } from './editor.js';
+import { Editor, markdownToHtml } from './editor.js';
 import { setupImagePreview } from './image-preview.js';
 
 const $ = id => document.getElementById(id);
@@ -7,7 +7,6 @@ const editorEl = $('editor');
 const editorWrap = $('editorWrap');
 const docListEl = $('docList');
 const docTitleEl = $('docTitle');
-const docTitleOverflow = $('docTitleOverflow');
 const docTitleAiWrap = $('docTitleAiWrap');
 const docTitleAiBtn = $('docTitleAi');
 const docTitleSuggestion = $('docTitleSuggestion');
@@ -357,12 +356,19 @@ window.__pmCheckNow = checkDocVersion;
 /* ---------- 标签页标题：跟随当前文档名 ---------- */
 const PENMARK_SUFFIX = ' - 知著 PenMark';
 
-// 统一设置标题输入框的值，并同步失焦省略号显示层
+/* 正文标题自适应高度：textarea 按内容自动撑高，完整显示标题 */
+function autoGrowTitle(){
+  if (!docTitleEl) return;
+  docTitleEl.style.height = 'auto';
+  const h = docTitleEl.scrollHeight;
+  if (h > 0) docTitleEl.style.height = h + 'px';
+}
 function setDocTitle(text){
   const v = (text == null ? '' : String(text)).slice(0, TITLE_MAX);
   docTitleEl.value = v;
-  docTitleEl.title = v || '\u8f93\u5165\u6807\u9898';
-  if (docTitleOverflow) docTitleOverflow.textContent = v;
+  autoGrowTitle();
+  // 容器刚显示时 scrollHeight 可能为 0，下一帧再校准一次
+  requestAnimationFrame(autoGrowTitle);
 }
 
 function updateDocumentTitle(title) {
@@ -578,6 +584,15 @@ function renderVersionHistoryPreview(entry) {
   // 图片指向缩略图：/api/assets/<id> → /api/assets/<id>/thumb（已是 thumb 的不重复加）
   html = html.replace(/(\/api\/assets\/[0-9a-fA-F-]{36})(?!\/thumb)/g, '$1/thumb');
   render.innerHTML = html || '<p>（空文档）</p>';
+  // 清理编辑器特有的图片容器结构：版本快照保留了 img-container（含分辨率标注
+  // .img-size-label、缩放手柄 .rs-handle、固定宽高 style），预览时只保留干净的
+  // <img>，让图片用 max-width:100% 自适应，避免排版错乱和多余空隙。
+  render.querySelectorAll('.img-size-label, .rs-handle').forEach(el => el.remove());
+  render.querySelectorAll('.img-container').forEach(container => {
+    const img = container.querySelector('img');
+    if (img) container.replaceWith(img);
+    else container.remove();
+  });
 
   const actions = document.createElement('div');
   actions.className = 'version-preview-actions';
@@ -735,6 +750,7 @@ if (versionHistoryModal) {
 if (versionHistoryCreate) versionHistoryCreate.addEventListener('click', createVersionHistoryEntry);
 const versionHistoryBtn = $('versionHistoryBtn');
 if (versionHistoryBtn) versionHistoryBtn.addEventListener('click', () => openVersionHistory(currentDoc));
+
 function _closeDialog(result) {
   if (!dialogModal) return;
   dialogModal.hidden = true;
@@ -2140,7 +2156,11 @@ function updateListItem(doc, opts) {
   opts = opts || {};
   const item = docListEl.querySelector('.doc-item[data-id="' + doc.id + '"]');
   if (!item) return;
-  item.querySelector('.doc-title').textContent = doc.title;
+  // 只更新标题文本节点，不能对 .doc-title 容器直接 textContent——
+  // 那会冲掉 .doc-title-text/.doc-pin/.doc-star 子元素，让 flex 容器失去
+  // white-space:nowrap 约束，标题折成多行，且星标/置顶按钮消失。
+  const titleEl = item.querySelector('.doc-title-text');
+  if (titleEl) titleEl.textContent = doc.title || '无标题';
   item.querySelector('.doc-meta').textContent = relativeTime(doc.updated_at);
   if (opts.reorder === false) return;
   // 移到所在文件夹子列表的最前面（保持分组结构）
@@ -2233,6 +2253,14 @@ function translateApiError(msg) {
 let folders = [];
 let sidebarDocs = [];
 let starFilter = false;
+// 文档列表排序状态：field=updated|created|title，order=asc|desc。默认 updated_desc 与后端一致。
+let sortState = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('penmark_sort') || '{}');
+    if (raw && ['updated','created','title'].includes(raw.field) && ['asc','desc'].includes(raw.order)) return raw;
+  } catch (_) {}
+  return { field: 'updated', order: 'desc' };
+})();
 let expandedFolders = new Set(JSON.parse(localStorage.getItem('penmark_expanded_folders') || '[]'));
 let draggingDocId = null;
 let renamingFolderId = null;
@@ -2258,11 +2286,18 @@ function persistExpanded() {
 
 function renderSidebar(docs) {
   docListEl.innerHTML = '';
-  // 排序：置顶优先，其次按更新时间倒序（与后端 ORDER BY pinned DESC, updated_at DESC 一致）
+  // 排序：置顶永远优先，非置顶文档按 sortState 排序（field + order）
   const sorted = [...docs].sort((a, b) => {
     const pa = a.pinned ? 1 : 0, pb = b.pinned ? 1 : 0;
     if (pa !== pb) return pb - pa;
-    return new Date(b.updated_at) - new Date(a.updated_at);
+    const f = sortState.field, o = sortState.order === 'asc' ? 1 : -1;
+    if (f === 'title') {
+      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN') * o;
+    }
+    const key = f === 'created' ? 'created_at' : 'updated_at';
+    const ta = new Date(a[key]).getTime();
+    const tb = new Date(b[key]).getTime();
+    return (ta - tb) * o;
   });
   // 星标筛选视图：平铺显示所有星标文档，不按文件夹分组
   if (starFilter) {
@@ -2342,7 +2377,7 @@ function renderFolderItem(folder, docs) {
   head.innerHTML =
     '<span class="folder-arrow"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>' +
     '<span class="folder-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4a2 2 0 0 1 2-2h5l2 3h5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4z"/></svg></span>' +
-    '<span class="folder-name" title="' + escapeHtml(folder.name) + '">' + escapeHtml(folder.name) + '</span>' +
+    '<span class="folder-name">' + escapeHtml(folder.name) + '</span>' +
     '<button class="folder-count" data-act="new" title="在此文件夹新建文档"><span class="fc-num">' + (folder.doc_count || 0) + '</span><span class="fc-add" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></button>' +
     '<button class="folder-menu" title="更多操作"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>';
   head.addEventListener('click', (e) => {
@@ -2420,9 +2455,9 @@ function buildDocItem(doc) {
   const pinned = !!doc.pinned;
   item.innerHTML =
     '<div class="doc-title">' +
+      '<button class="doc-star' + (starred ? ' active' : '') + '" title="' + (starred ? '取消星标' : '星标') + '" aria-label="星标"><svg width="13" height="13" viewBox="0 0 24 24" fill="' + (starred ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>' +
       (pinned ? '<span class="doc-pin" title="已置顶"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v4.76a2 2 0 0 1-1.11 1.55l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></span>' : '') +
       '<span class="doc-title-text">' + escapeHtml(doc.title || '无标题') + '</span>' +
-      '<button class="doc-star' + (starred ? ' active' : '') + '" title="' + (starred ? '取消星标' : '星标') + '" aria-label="星标"><svg width="13" height="13" viewBox="0 0 24 24" fill="' + (starred ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>' +
     '</div>' +
     '<div class="doc-meta">' + relativeTime(doc.updated_at) + '</div>' +
     (doc.snippet ? '<div class="doc-snippet">' + escapeHtml(doc.snippet) + '</div>' : '') +
@@ -2665,6 +2700,7 @@ function showFolderMenu(folder, anchor) {
     : '<div class="fcm-item" data-act="new">在此新建文档</div>' +
       '<div class="fcm-item" data-act="rename">重命名</div>' +
       pasteItem +
+      '<div class="fcm-item" data-act="export">导出此文件夹</div>' +
       '<div class="fcm-item danger" data-act="delete">删除文件夹</div>';
   folderContextMenu.style.display = 'block';
   const rect = anchor.getBoundingClientRect();
@@ -2680,6 +2716,7 @@ function showFolderMenu(folder, anchor) {
     if (act === 'new') newDocInFolder(folder.id);
     else if (act === 'rename') renameFolder(folder);
     else if (act === 'paste') pasteDocToFolder(folder.id);
+    else if (act === 'export') downloadExport('/api/export/folder/' + folder.id, (folder.name || '文件夹') + '.zip');
     else if (act === 'delete') deleteFolder(folder);
   };
 }
@@ -2879,7 +2916,6 @@ async function startFolderRename(folderId, opts) {
     const restore = (name) => {
       const span = document.createElement('span');
       span.className = 'folder-name';
-      span.title = name;
       span.textContent = name;
       span.addEventListener('dblclick', (e) => {
         e.stopPropagation();
@@ -3150,10 +3186,22 @@ docTitleEl.addEventListener('input', () => {
     docTitleEl.value = docTitleEl.value.slice(0, TITLE_MAX);
     docTitleEl.setSelectionRange(TITLE_MAX, TITLE_MAX);
   }
-  docTitleEl.title = docTitleEl.value || '\u8f93\u5165\u6807\u9898';
-  if (docTitleOverflow) docTitleOverflow.textContent = docTitleEl.value;
+  autoGrowTitle();
   updateDocumentTitle(docTitleEl.value);
   scheduleAutoSave();
+});
+// 回车键：飞书风格，从标题跳转到正文开头（禁止在标题内手动换行）
+docTitleEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    editorEl.focus();
+    const r = document.createRange();
+    r.setStart(editorEl, 0);
+    r.collapse(true);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
 });
 
 function textPositionAt(root, offset) {
@@ -3338,6 +3386,50 @@ $('themeToggle').addEventListener('click', toggleTheme);
 
 /* ---------- 移动端主页/编辑器双层架构 ---------- */
 const sidebarEl = $('sidebar');
+
+/* 首页侧边栏列宽拖拽（桌面端）：240~340px（当前 260px 的 ±30%），持久化到 localStorage，双击恢复默认。
+   移动端 resizer 被 CSS 隐藏（移动端 sidebar 是抽屉式），此逻辑不会触发。 */
+const sidebarResizer = $('sidebarResizer');
+if (sidebarResizer && sidebarEl) {
+  const SB_KEY = 'penmark:sidebar-width';
+  const SB_MIN = 240;
+  const SB_MAX = 340;
+  const applySidebarWidth = (w) => {
+    const clamped = Math.max(SB_MIN, Math.min(SB_MAX, w));
+    sidebarEl.style.flexBasis = clamped + 'px';
+  };
+  // 初始化：读取上次拖拽保存的宽度
+  const savedW = Number(localStorage.getItem(SB_KEY));
+  if (savedW && savedW >= SB_MIN) applySidebarWidth(savedW);
+
+  let sbDragging = false, sbStartX = 0, sbStartW = 0;
+  sidebarResizer.addEventListener('pointerdown', (e) => {
+    sbDragging = true;
+    sbStartX = e.clientX;
+    sbStartW = sidebarEl.getBoundingClientRect().width;
+    sidebarResizer.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!sbDragging) return;
+    applySidebarWidth(sbStartW + (e.clientX - sbStartX));
+  });
+  document.addEventListener('pointerup', () => {
+    if (!sbDragging) return;
+    sbDragging = false;
+    sidebarResizer.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(SB_KEY, String(Math.round(sidebarEl.getBoundingClientRect().width)));
+  });
+  // 双击恢复默认列宽（清除持久化 + inline 样式，回到 CSS 默认 260px）
+  sidebarResizer.addEventListener('dblclick', () => {
+    localStorage.removeItem(SB_KEY);
+    sidebarEl.style.flexBasis = '';
+  });
+}
 const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
 // 桌面端识别：Electron 桌面应用，或 userAgent 不是移动设备的桌面浏览器
 // 关键：桌面浏览器窗口缩小到 760px 以下不切移动版，避免"被锁成超宽移动板"
@@ -6339,6 +6431,8 @@ async function loadSettingsTab(tab) {
     else if (tab === 'review') await renderReviewPanel();
     else if (tab === 'sensitive') await renderSensitiveWords();
     else if (tab === 'ai') await renderAiWritingSettings();
+    else if (tab === 'import') renderImportTab();
+    else if (tab === 'export') renderExportTab();
   } catch (e) {
     settingsModalBody.innerHTML = '<div class="share-error">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
@@ -6369,6 +6463,389 @@ async function renderAiWritingSettings() {
       toggle.disabled = false;
     }
   });
+}
+
+
+/* ---------- 批量导入 MD 文档 ---------- */
+let importState = null; // { running, total, done, failed, logs, abortFlag }
+let importGroups = null; // 扫描后的分组结果，供 doImport 使用
+
+function renderImportTab() {
+  settingsModalBody.innerHTML =
+    '<section class="import-panel">' +
+      '<div class="import-head">' +
+        '<h3>批量导入 Markdown</h3>' +
+        '<p>选择 Obsidian vault 或任意文件夹，自动以第一层子文件夹名作为产品文件夹，根目录 MD 进未分类。</p>' +
+        '<small>iOS 移动端可能不支持文件夹选择，建议在桌面浏览器操作。</small>' +
+      '</div>' +
+      '<div class="import-actions">' +
+        '<label class="import-pick-btn">' +
+          '<input type="file" id="importFileInput" webkitdirectory directory multiple hidden>' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>' +
+          '<span>选择文件夹</span>' +
+        '</label>' +
+        '<button class="import-abort-btn" id="importAbortBtn" type="button" hidden>取消</button>' +
+      '</div>' +
+      '<div class="import-preview" id="importPreview" hidden></div>' +
+      '<div class="import-progress" id="importProgress" hidden>' +
+        '<div class="import-progress-bar"><div class="import-progress-fill" id="importProgressFill"></div></div>' +
+        '<div class="import-progress-text" id="importProgressText">准备中…</div>' +
+      '</div>' +
+      '<div class="import-result" id="importResult"></div>' +
+      '<div class="import-undo" id="importUndo" hidden></div>' +
+      '<div class="import-log" id="importLog" hidden></div>' +
+    '</section>';
+  $('importFileInput').addEventListener('change', onImportFolderPicked);
+  const abortBtn = $('importAbortBtn');
+  if (abortBtn) abortBtn.addEventListener('click', () => {
+    if (importState) importState.abortFlag = true;
+    toast('正在取消…');
+  });
+  checkImportUndo();
+}
+
+// 检查是否有 7 天内可撤销的导入批次，有则显示"撤销上一次导入"按钮
+async function checkImportUndo() {
+  const box = $('importUndo');
+  if (!box) return;
+  box.hidden = true;
+  let batch = null;
+  try { batch = await api('/api/import/last-batch'); } catch (_) { return; }
+  if (!batch) return;
+  const days = Math.max(0, Math.floor((Date.now() - Number(batch.created_at)) / 86400000));
+  const ago = days >= 1 ? days + ' 天前' : '今天';
+  const folderPart = batch.folder_count > 0 ? ('、<strong>' + batch.folder_count + '</strong> 个文件夹') : '';
+  box.innerHTML =
+    '<div class="import-undo-info">' +
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>' +
+      '<span>上次导入 <strong>' + batch.doc_count + '</strong> 篇文档' + folderPart + '（' + ago + '），可撤销</span>' +
+    '</div>' +
+    '<button class="import-undo-btn" id="importUndoBtn" type="button">撤销上一次导入</button>';
+  box.hidden = false;
+  $('importUndoBtn').addEventListener('click', onImportUndo);
+}
+
+async function onImportUndo() {
+  const ok = await showConfirm({
+    title: '撤销上一次导入',
+    desc: '撤销后，本次导入的文档（含已编辑内容）将移入回收站，可随时恢复；本次导入且当前为空的文件夹会被删除。确定撤销？',
+    confirmText: '撤销导入',
+    danger: true
+  });
+  if (!ok) return;
+  const btn = $('importUndoBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '撤销中…'; }
+  try {
+    const r = await api('/api/import/undo', 'POST', {});
+    toast('已撤销：' + r.docs_moved + ' 篇文档移入回收站' + (r.folders_deleted > 0 ? '，删除 ' + r.folders_deleted + ' 个空文件夹' : ''));
+    await loadSidebar();
+    checkImportUndo(); // 刷新撤销区（撤销后应隐藏）
+  } catch (err) {
+    toast('撤销失败：' + (err.message || err));
+    if (btn) { btn.disabled = false; btn.textContent = '撤销上一次导入'; }
+  }
+}
+
+function renderExportTab() {
+  settingsModalBody.innerHTML =
+    '<section class="export-panel">' +
+      '<div class="export-head">' +
+        '<h3>导出 Markdown</h3>' +
+        '<p>把文档导出为 Markdown 文件，按文件夹分组，图片放入各文件夹的 images/ 子目录。可直接导入 Obsidian。</p>' +
+      '</div>' +
+      '<div class="export-actions">' +
+        '<button class="export-all-btn" id="exportAllBtn" type="button">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+          '<span>导出全部文档</span>' +
+        '</button>' +
+      '</div>' +
+      '<div class="export-tip">导出单个文件夹：在左侧文件夹上点击「更多」→「导出此文件夹」。</div>' +
+    '</section>';
+  $('exportAllBtn').addEventListener('click', () => downloadExport('/api/export/all', 'PenMark-导出.zip'));
+}
+
+// 通用导出下载：fetch zip → blob → 触发下载。能正确处理错误（非 zip 时显示后端错误信息）
+async function downloadExport(url, filename) {
+  const btn = document.querySelector('.export-all-btn');
+  if (btn) btn.disabled = true;
+  toast('正在打包导出…');
+  try {
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast('导出失败：' + (err.error || res.statusText));
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('导出成功');
+  } catch (err) {
+    toast('导出失败：' + (err.message || err));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function onImportFolderPicked(e) {
+  const files = Array.from(e.target.files || []);
+  window._importAllFiles = files;
+  const mdFiles = files.filter(f => /\.(md|markdown)$/i.test(f.name));
+  if (!mdFiles.length) { toast('未找到 .md 文件'); return; }
+  if (importState && importState.running) { toast('正在导入中，请等待或取消'); return; }
+
+  // 分组：取 MD 文件的"直接父目录"作为产品文件夹名（B 层）。
+  // 无论用户选了哪个层级（选了太外层的 E 而非 A），MD 的直接父目录永远是正确的 B 层。
+  // 干扰层（前缀空文件夹、图片子目录）因为没有 MD 文件，不参与分组。
+  // 如果 MD 直接在选择的根目录下（parts.length === 2，无 B 层包裹），进未分类。
+  const groups = new Map(); // folderName -> [{file, relPath}]
+  mdFiles.forEach(f => {
+    const parts = String(f.webkitRelativePath || f.name).split('/');
+    // parts 末尾是文件名，直接父目录 = parts[parts.length - 2]
+    const folderName = parts.length > 2 ? parts[parts.length - 2] : null; // null = 未分类
+    if (!groups.has(folderName)) groups.set(folderName, []);
+    groups.get(folderName).push({ file: f, relPath: parts.slice(1).join('/') });
+  });
+  importGroups = groups;
+
+  // 显示预览
+  const previewEl = $('importPreview');
+  if (!previewEl) return;
+  const sortedGroups = [...groups.entries()].sort((a, b) => {
+    if (a[0] === null) return 1; // 未分类排最后
+    if (b[0] === null) return -1;
+    return a[0].localeCompare(b[0], 'zh-CN');
+  });
+  const folderCount = groups.size - (groups.has(null) ? 1 : 0);
+  let previewHtml =
+    '<div class="import-preview-head">检测到 ' + mdFiles.length + ' 个文档，分布于 ' +
+    folderCount + ' 个文件夹：</div>' +
+    '<div class="import-preview-list">';
+  for (const [name, items] of sortedGroups) {
+    // 样例原始路径：取该文件夹下第一个 MD 的完整 webkitRelativePath
+    // 用户可借此一眼看出"直接父目录"提取是否正确（如出现 z/x 等异常段会立刻暴露）
+    const samplePath = String((items[0] && items[0].file && items[0].file.webkitRelativePath) || items[0].file.name || '').replace(/\\/g, '/');
+    previewHtml +=
+      '<div class="import-preview-folder">' +
+        '<div class="import-preview-row">' +
+          '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>' +
+          '<span class="import-preview-name">' + escapeHtml(name || '未分类') + '</span>' +
+          '<span class="import-preview-count">' + items.length + ' 篇</span>' +
+        '</div>' +
+        '<div class="import-preview-path" title="' + escapeHtml(samplePath) + '">' + escapeHtml(samplePath) + '</div>' +
+      '</div>';
+  }
+  previewHtml += '</div>';
+  previewHtml +=
+    '<div class="import-preview-actions">' +
+      '<button class="import-confirm-btn" id="importConfirmBtn" type="button">确认导入</button>' +
+      '<button class="import-repick-btn" id="importRepickBtn" type="button">重新选择</button>' +
+    '</div>';
+  previewEl.innerHTML = previewHtml;
+  previewEl.hidden = false;
+  // 隐藏进度/结果区（可能来自上次导入）
+  $('importProgress').hidden = true;
+  $('importResult').innerHTML = '';
+  $('importLog').hidden = true;
+
+  $('importConfirmBtn').addEventListener('click', doImport);
+  $('importRepickBtn').addEventListener('click', () => {
+    previewEl.hidden = true;
+    $('importFileInput').value = ''; // 重置以便重新选同一文件夹
+    $('importFileInput').click();
+  });
+}
+
+async function doImport() {
+  if (!importGroups) return;
+  const groups = importGroups;
+  const total = [...groups.values()].reduce((s, items) => s + items.length, 0);
+
+  importState = { running: true, total, done: 0, failed: 0, logs: [], abortFlag: false };
+  $('importPreview').hidden = true;
+  $('importProgress').hidden = false;
+  $('importAbortBtn').hidden = false;
+  $('importResult').innerHTML = '';
+  $('importLog').hidden = true;
+  updateImportProgress(0, '创建文件夹…');
+
+  // 1) 批量创建文件夹（去重），查询现有 folders 避免重名
+  const folderIdMap = new Map();
+  const newFolderIds = []; // 本次导入新建的文件夹 ID（撤销时按此清理空文件夹）
+  try {
+    const existing = await api('/api/folders');
+    existing.forEach(f => folderIdMap.set(f.name, f.id));
+  } catch (_) {}
+  for (const name of groups.keys()) {
+    if (name === null) continue;
+    if (folderIdMap.has(name)) continue;
+    const truncated = name.slice(0, 40); // server.js 限制 40 字符
+    try {
+      const r = await api('/api/folders', 'POST', { name: truncated });
+      folderIdMap.set(name, r.id);
+      if (r.id) newFolderIds.push(r.id);
+    } catch (err) {
+      logImport('文件夹创建失败：' + name + ' — ' + (err.message || err));
+    }
+  }
+
+  // 2) 串行处理每个 MD 文件
+  const importedDocIds = []; // 本次导入的文档 ID（撤销时按此移入回收站）
+  let fileIdx = 0;
+  for (const [folderName, items] of groups) {
+    if (importState.abortFlag) break;
+    const folderId = folderIdMap.get(folderName) || null;
+    for (const { file, relPath } of items) {
+      if (importState.abortFlag) break;
+      try {
+        const docId = await importOneMdFile(file, relPath, folderId);
+        if (docId) importedDocIds.push(docId);
+        importState.done++;
+      } catch (err) {
+        importState.failed++;
+        logImport('失败：' + relPath + ' — ' + (err.message || err));
+      }
+      fileIdx++;
+      updateImportProgress(fileIdx, '');
+      if (fileIdx % 10 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  importState.running = false;
+  $('importAbortBtn').hidden = true;
+  const ok = importState.done, fail = importState.failed;
+  $('importProgressText').textContent = '完成';
+  $('importResult').innerHTML =
+    '<div class="import-summary">' +
+      '<span class="import-ok">成功 ' + ok + '</span>' +
+      '<span class="import-fail">失败 ' + fail + '</span>' +
+      (fail ? '<button class="import-show-log" id="importShowLog">查看日志</button>' : '') +
+    '</div>';
+  const showLog = $('importShowLog');
+  if (showLog) showLog.addEventListener('click', () => { $('importLog').hidden = false; });
+  if (ok > 0) {
+    await loadSidebar();
+    toast('已导入 ' + ok + ' 篇文档');
+    // 记录导入批次，供"撤销上一次导入"使用（7 天内可撤销）
+    // 失败不影响导入结果，仅意味着失去一键撤销入口
+    try {
+      await api('/api/import/batch', 'POST', {
+        doc_ids: importedDocIds,
+        folder_ids: newFolderIds
+      });
+    } catch (_) {}
+    checkImportUndo(); // 刚导入完，刷新撤销按钮
+  }
+  window._importAllFiles = null;
+  importGroups = null;
+}
+
+async function importOneMdFile(file, relPath, folderId) {
+  let text = await file.text();
+  // 预处理：提取本地图片引用 ![](path)，替换为占位符（markdownToHtml 不处理图片语法）
+  const imgPlaceholders = []; // { placeholder, src, alt }
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, src) => {
+    if (/^(https?:|data:|mailto:)/i.test(src)) return m; // 网络图片跳过
+    const placeholder = '\u0001IMG' + imgPlaceholders.length + '\u0001';
+    imgPlaceholders.push({ placeholder, src, alt });
+    return placeholder;
+  });
+
+  let html = markdownToHtml(text);
+  // 把占位符替换回 <img>（占位符经过 escapeHtml 仍保留 \u0001 字符）
+  html = html.replace(/\u0001IMG(\d+)\u0001/g, (m, idx) => {
+    const ref = imgPlaceholders[Number(idx)];
+    if (!ref) return '';
+    return '<img src="' + ref.placeholder + '" alt="' + escapeHtml(ref.alt || '') + '">';
+  });
+
+  // 标题：第一个 # 标题或文件名
+  const titleMatch = text.match(/^\s*#\s+(.+)$/m);
+  const title = (titleMatch ? titleMatch[1] : file.name.replace(/\.(md|markdown)$/i, '')).slice(0, 100);
+
+  // 创建文档
+  const created = await api('/api/documents', 'POST', { title, content: html, folder_id: folderId });
+  const docId = created.id;
+  if (!docId) throw new Error('文档创建未返回 id');
+
+  if (imgPlaceholders.length === 0) return; // 无图直接结束
+
+  // 上传图片并替换占位符
+  const fileDir = String(file.webkitRelativePath || '').split('/').slice(0, -1).join('/');
+  const replacements = [];
+  for (const ref of imgPlaceholders) {
+    if (importState && importState.abortFlag) break;
+    try {
+      const imgFile = resolveImageFile(ref.src, fileDir);
+      if (!imgFile) { logImport('图片缺失：' + ref.src + '（' + relPath + '）'); continue; }
+      if (imgFile.size > 12 * 1024 * 1024) { logImport('图片过大跳过：' + ref.src); continue; }
+      const dataUrl = await readFileAsDataUrl(imgFile);
+      const r = await api('/api/documents/' + docId + '/assets', 'POST', { data_url: dataUrl });
+      replacements.push({ placeholder: ref.placeholder, url: r.url });
+    } catch (err) {
+      logImport('图片上传失败：' + ref.src + ' — ' + (err.message || err));
+    }
+  }
+  if (replacements.length) {
+    let finalHtml = html;
+    for (const r of replacements) finalHtml = finalHtml.split(r.placeholder).join(r.url);
+    await api('/api/documents/' + docId, 'PUT', { title, content: finalHtml });
+  }
+  return docId;
+}
+
+// 在 webkitRelativePath 同目录下查找图片文件
+function resolveImageFile(src, fileDir) {
+  const allFiles = window._importAllFiles || [];
+  const cleanSrc = String(src).replace(/\\/g, '/').replace(/^\.\//, '');
+  const candidate = (fileDir ? fileDir + '/' : '') + cleanSrc;
+  // 1) 完全匹配 webkitRelativePath
+  let f = allFiles.find(x => String(x.webkitRelativePath || '').replace(/\\/g, '/') === candidate);
+  if (f) return f;
+  // 2) 仅按文件名匹配（同目录）
+  const baseName = cleanSrc.split('/').pop();
+  const dirPrefix = fileDir ? fileDir + '/' : '';
+  f = allFiles.find(x => {
+    const p = String(x.webkitRelativePath || '').replace(/\\/g, '/');
+    return p === dirPrefix + baseName;
+  });
+  if (f) return f;
+  // 3) 全局按 basename 匹配（兜底）
+  f = allFiles.find(x => x.name === baseName && /^(png|jpe?g|gif|webp|svg|bmp)$/i.test(x.name.split('.').pop() || ''));
+  return f || null;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function updateImportProgress(done, extra) {
+  const total = importState.total;
+  const pct = total ? Math.round(done * 100 / total) : 0;
+  $('importProgressFill').style.width = pct + '%';
+  $('importProgressText').textContent = extra || (done + ' / ' + total + '（' + pct + '%）');
+}
+
+function logImport(msg) {
+  importState.logs.push(msg);
+  const el = $('importLog');
+  if (el && !el.hidden) {
+    const line = document.createElement('div');
+    line.className = 'import-log-line';
+    line.textContent = msg;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
 }
 
 
@@ -6665,6 +7142,76 @@ if (starBtn) {
     renderSidebar(sidebarDocs);
   });
 }
+
+/* ---------- 文档列表排序（搜索框内排序图标 + 下拉菜单） ---------- */
+const sortToggleBtn = $('sortToggle');
+const sortPopoverEl = $('sortPopover');
+const sortOrderToggleBtn = $('sortOrderToggle');
+const sortOrderLabelEl = $('sortOrderLabel');
+if (sortToggleBtn && sortPopoverEl) {
+  const ORDER_LABELS = { asc: '升序', desc: '降序' };
+  function applySortUI() {
+    sortPopoverEl.querySelectorAll('[data-field]').forEach(b => {
+      b.setAttribute('aria-selected', b.getAttribute('data-field') === sortState.field ? 'true' : 'false');
+    });
+    if (sortOrderLabelEl) sortOrderLabelEl.textContent = ORDER_LABELS[sortState.order] || '降序';
+    if (sortOrderToggleBtn) sortOrderToggleBtn.classList.toggle('asc', sortState.order === 'asc');
+  }
+  function persistSort() {
+    try { localStorage.setItem('penmark_sort', JSON.stringify(sortState)); } catch (_) {}
+  }
+  function openSortPopover() {
+    sortPopoverEl.hidden = false;
+    sortToggleBtn.classList.add('active');
+    sortToggleBtn.setAttribute('aria-expanded', 'true');
+  }
+  function closeSortPopover() {
+    sortPopoverEl.hidden = true;
+    sortToggleBtn.classList.remove('active');
+    sortToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+  applySortUI();
+  sortToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (sortPopoverEl.hidden) openSortPopover(); else closeSortPopover();
+  });
+  sortPopoverEl.addEventListener('click', (e) => {
+    const opt = e.target.closest('[data-field]');
+    if (opt) {
+      sortState = { field: opt.getAttribute('data-field'), order: sortState.order };
+      persistSort(); applySortUI();
+      closeSortPopover();
+      renderSidebar(sidebarDocs);
+      return;
+    }
+    if (e.target.closest('#sortOrderToggle')) {
+      sortState = { field: sortState.field, order: sortState.order === 'asc' ? 'desc' : 'asc' };
+      persistSort(); applySortUI();
+      renderSidebar(sidebarDocs);
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!sortPopoverEl.hidden && !sortPopoverEl.contains(e.target) && !sortToggleBtn.contains(e.target)) {
+      closeSortPopover();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !sortPopoverEl.hidden) closeSortPopover();
+  });
+}
+
+/* ---------- 截断的标题/文件夹名 hover 时显示完整文本（原生 title 提示） ---------- */
+docListEl.addEventListener('mouseover', (e) => {
+  const el = e.target.closest('.doc-title-text, .folder-name');
+  if (!el) return;
+  const text = el.textContent.trim();
+  const truncated = el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
+  if (truncated) {
+    if (el.getAttribute('title') !== text) el.setAttribute('title', text);
+  } else if (el.getAttribute('title') === text) {
+    el.removeAttribute('title');
+  }
+});
 $('trashModalClose').addEventListener('click', () => trashModal.hidden = true);
 trashModal.addEventListener('click', (e) => { if (e.target === trashModal) trashModal.hidden = true; });
 

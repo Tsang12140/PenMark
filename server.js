@@ -14,6 +14,8 @@ const invites = require('./invites');
 const ai = require('./ai');
 const { createAssetStore } = require('./assets');
 const assetStore = createAssetStore(db);
+const { ZipArchive } = require('archiver');
+const { htmlToMarkdown } = require('./html-to-md.js');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -510,10 +512,11 @@ function fetchOG(url, depth) {
       if (resp.statusCode !== 200) { resp.resume(); reject(new Error('HTTP ' + resp.statusCode)); return; }
       const ct = resp.headers['content-type'] || '';
       if (!/text\/html|application\/xhtml/i.test(ct)) { resp.resume(); reject(new Error('非 HTML 页面')); return; }
-      let buf = '', size = 0, tooBig = false;
-      resp.on('data', d => { size += d.length; if (size > 1048576) { tooBig = true; resp.destroy(); return; } buf += d; });
+      const chunks = []; let size = 0, tooBig = false;
+      resp.on('data', d => { size += d.length; if (size > 1048576) { tooBig = true; resp.destroy(); return; } chunks.push(d); });
       resp.on('end', () => {
         if (tooBig) { reject(new Error('页面过大')); return; }
+        const buf = Buffer.concat(chunks).toString('utf8');
         const meta = parseOG(buf, url);
         ogCacheSet(url, { t: Date.now(), data: meta });
         resolve(meta);
@@ -977,10 +980,19 @@ async function cleanupOrphanAssets() {
     );
     if (!assets.length) return;
     const referenced = new Set();
-    const docs = await db.query('SELECT content FROM documents');
-    docs.forEach(d => extractAssetIds(d.content).forEach(id => referenced.add(id)));
-    const versions = await db.query('SELECT content FROM document_versions');
-    versions.forEach(v => extractAssetIds(v.content).forEach(id => referenced.add(id)));
+    // 游标分页扫描，避免一次性把全库文档/版本正文载入内存导致 OOM
+    let lastDocId = 0;
+    while (true) {
+      const docs = await db.query('SELECT id, content FROM documents WHERE id > $1 ORDER BY id LIMIT 200', [lastDocId]);
+      if (!docs.length) break;
+      for (const d of docs) { lastDocId = d.id; extractAssetIds(d.content).forEach(id => referenced.add(id)); }
+    }
+    let lastVerId = 0;
+    while (true) {
+      const versions = await db.query('SELECT id, content FROM document_versions WHERE id > $1 ORDER BY id LIMIT 200', [lastVerId]);
+      if (!versions.length) break;
+      for (const v of versions) { lastVerId = v.id; extractAssetIds(v.content).forEach(id => referenced.add(id)); }
+    }
     let deleted = 0;
     for (const a of assets) {
       if (referenced.has(a.id.toLowerCase())) continue;
@@ -1241,7 +1253,7 @@ function sanitizeShareContent(html) {
   // script 残留（无闭合标签）
   out = out.replace(/<script\b[^>]*>/gi, '');
   // 2. 移除所有事件处理器（on*）
-  out = out.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  out = out.replace(/([\s/"'`=])on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '$1');
   // 3. 分享页仍需兼容尚未后台迁移的 Base64 图片。先把严格白名单内的
   //    raster data URL 暂存起来，再清除其余 data:/javascript:/vbscript:。
   //    SVG 不在白名单中，避免 data:image/svg+xml 携带可执行内容。
@@ -1287,7 +1299,7 @@ function sanitizeAiHtmlFragment(html) {
     // script 残留（无闭合标签）
     .replace(/<script\b[^>]*>/gi, '');
   // 2. 移除所有事件处理器（on*）
-  out = out.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  out = out.replace(/([\s/"'`=])on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '$1');
   // 3. 移除 javascript: / vbscript: / data: 协议（href/src/xlink:href）
   out = out.replace(/\s(?:href|src|xlink:href)\s*=\s*(?:"\s*(?:javascript|vbscript|data):[^"]*"|'\s*(?:javascript|vbscript|data):[^']*'|\s*(?:javascript|vbscript|data):[^\s>]+)/gi, '');
   // 4. 移除 CSS 表达式与危险属性
@@ -1716,6 +1728,199 @@ app.delete('/api/trash/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------- 批量导入：批次记录与撤销 ---------- */
+// 撤销窗口：7 天。超过后批次记录仍在，但失去一键撤销入口（文档本身不动）。
+const IMPORT_UNDO_WINDOW = 7 * 24 * 60 * 60 * 1000;
+
+// 记录一次导入批次（导入成功后由前端调用，doc_ids/folder_ids 存 JSON 文本）
+app.post('/api/import/batch', wrap(async (req, res) => {
+  const docIds = Array.isArray(req.body.doc_ids)
+    ? req.body.doc_ids.map(x => Number(x)).filter(x => Number.isInteger(x))
+    : [];
+  const folderIds = Array.isArray(req.body.folder_ids)
+    ? req.body.folder_ids.map(x => Number(x)).filter(x => Number.isInteger(x))
+    : [];
+  if (docIds.length === 0 && folderIds.length === 0) {
+    return res.status(400).json({ error: '批次为空' });
+  }
+  const now = Date.now();
+  const info = await db.execute(
+    'INSERT INTO import_batches (user_id, doc_ids, folder_ids, doc_count, folder_count, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+    [req.user.id, JSON.stringify(docIds), JSON.stringify(folderIds), docIds.length, folderIds.length, now]
+  );
+  res.json({ id: info.insertId, doc_count: docIds.length, folder_count: folderIds.length, created_at: now });
+}));
+
+// 查询当前用户最近一条 7 天内、未撤销的批次（前端据此显示"撤销"按钮）
+app.get('/api/import/last-batch', wrap(async (req, res) => {
+  const cutoff = Date.now() - IMPORT_UNDO_WINDOW;
+  const row = await db.one(
+    'SELECT id, doc_count, folder_count, created_at FROM import_batches WHERE user_id = $1 AND undone_at IS NULL AND created_at >= $2 ORDER BY created_at DESC LIMIT 1',
+    [req.user.id, cutoff]
+  );
+  res.json(row || null);
+}));
+
+// 撤销上一次导入：文档带当前最新内容移入回收站（可恢复），删除本次导入且当前为空的文件夹
+app.post('/api/import/undo', wrap(async (req, res) => {
+  const cutoff = Date.now() - IMPORT_UNDO_WINDOW;
+  const row = await db.one(
+    'SELECT id, doc_ids, folder_ids, created_at FROM import_batches WHERE user_id = $1 AND undone_at IS NULL AND created_at >= $2 ORDER BY created_at DESC LIMIT 1',
+    [req.user.id, cutoff]
+  );
+  if (!row) return res.status(404).json({ error: '没有可撤销的导入（超过 7 天或已撤销）' });
+
+  let docIds = [];
+  let folderIds = [];
+  try { docIds = JSON.parse(row.doc_ids || '[]'); } catch (_) {}
+  try { folderIds = JSON.parse(row.folder_ids || '[]'); } catch (_) {}
+
+  const now = Date.now();
+  let docsMoved = 0;
+  let foldersDeleted = 0;
+
+  await db.transaction(async (tx) => {
+    // 1) 文档移入回收站：只置 deleted_at，不改 content，用户从回收站恢复可拿回编辑后版本
+    for (const did of docIds) {
+      if (!Number.isInteger(Number(did))) continue;
+      const info = await tx.execute(
+        'UPDATE documents SET deleted_at = $1 WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL',
+        [now, Number(did), req.user.id]
+      );
+      if (info.changes > 0) docsMoved++;
+    }
+    // 2) 删除本次导入创建、且当前没有未删除文档的文件夹（有用户后续新建文档则保留）
+    for (const fid of folderIds) {
+      if (!Number.isInteger(Number(fid))) continue;
+      const cnt = await tx.one(
+        'SELECT COUNT(*) AS c FROM documents WHERE folder_id = $1 AND user_id = $2 AND deleted_at IS NULL',
+        [Number(fid), req.user.id]
+      );
+      if (Number(cnt.c) === 0) {
+        const info = await tx.execute('DELETE FROM folders WHERE id = $1 AND user_id = $2', [Number(fid), req.user.id]);
+        if (info.changes > 0) foldersDeleted++;
+      }
+    }
+    // 3) 标记批次已撤销，避免重复撤销
+    await tx.execute('UPDATE import_batches SET undone_at = $1 WHERE id = $2 AND user_id = $3', [now, row.id, req.user.id]);
+  });
+
+  res.json({ docs_moved: docsMoved, folders_deleted: foldersDeleted, created_at: row.created_at });
+}));
+
+/* ---------- 导出 Markdown（全量 / 单文件夹）---------- */
+// 文件名安全化：去掉非法字符，限长 60
+function safeExportName(name, fallback) {
+  let s = String(name || '').trim().replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ');
+  if (!s) s = fallback;
+  return s.slice(0, 60);
+}
+function extFromMime(mime) {
+  const map = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp' };
+  return map[String(mime || '').toLowerCase()] || 'png';
+}
+
+// 核心导出逻辑：把指定文档集合打包成 zip 流（A/B/C 三层，每文件夹 images/ 子目录）
+async function exportToZip(res, userId, docs, folderNameMap, zipName) {
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  res.set({
+    'Content-Type': 'application/zip',
+    'Content-Disposition': 'attachment; filename="' + encodeURIComponent(zipName) + '"'
+  });
+  archive.on('error', err => {
+    if (!res.headersSent) res.status(500).json({ error: '导出失败：' + (err.message || err) });
+  });
+  archive.pipe(res);
+
+  // 收集所有 asset ids，批量查询（分批 100，避免 IN 列表过长）
+  const allAssetIds = new Set();
+  docs.forEach(d => extractAssetIds(d.content).forEach(id => allAssetIds.add(id.toLowerCase())));
+  const assetMap = new Map(); // id -> { storage_name, mime_type }
+  if (allAssetIds.size > 0) {
+    const ids = [...allAssetIds];
+    for (let i = 0; i < ids.length; i += 100) {
+      const batch = ids.slice(i, i + 100);
+      const placeholders = batch.map((_, j) => '$' + (j + 1)).join(',');
+      const rows = await db.query(
+        'SELECT id, storage_name, mime_type FROM media_assets WHERE id IN (' + placeholders + ') AND owner_id = $' + (batch.length + 1),
+        [...batch, userId]
+      );
+      rows.forEach(r => assetMap.set(r.id, r));
+    }
+  }
+
+  const usedNames = new Map(); // folderName -> Set，文件名去重
+  const packedImages = new Set(); // 已打包图片路径，避免重复
+
+  for (const doc of docs) {
+    const folderName = doc.folder_id && folderNameMap.has(doc.folder_id)
+      ? safeExportName(folderNameMap.get(doc.folder_id), '文件夹')
+      : '未分类';
+
+    // 替换图片 src 为 images/xxx.png 相对路径，并记录该文档引用的 asset
+    const docAssetIds = new Set();
+    let content = String(doc.content || '').replace(/\/api\/assets\/([0-9a-fA-F-]{36})/gi, (m, id) => {
+      id = id.toLowerCase();
+      const asset = assetMap.get(id);
+      if (!asset) return m; // 找不到资源，保留原 URL（MD 里会是死链，但不阻断导出）
+      docAssetIds.add(id);
+      return 'images/' + id.slice(0, 8) + '.' + extFromMime(asset.mime_type);
+    });
+
+    // 打包图片到该文件夹的 images/ 子目录
+    for (const id of docAssetIds) {
+      const asset = assetMap.get(id);
+      const imgPath = folderName + '/images/' + id.slice(0, 8) + '.' + extFromMime(asset.mime_type);
+      if (packedImages.has(imgPath)) continue;
+      packedImages.add(imgPath);
+      try {
+        const filePath = await assetStore.filePath(asset);
+        if (filePath) archive.file(filePath, { name: imgPath });
+      } catch (_) { /* 图片文件丢失不阻断整体导出 */ }
+    }
+
+    // 文档转 MD 并打包
+    const md = htmlToMarkdown(content);
+    const baseName = safeExportName(doc.title, '无标题');
+    const used = usedNames.get(folderName) || new Set();
+    let name = baseName, n = 2;
+    while (used.has(name + '.md')) { name = baseName + ' (' + n + ')'; n++; }
+    used.add(name + '.md');
+    usedNames.set(folderName, used);
+    archive.append(md, { name: folderName + '/' + name + '.md' });
+  }
+
+  archive.finalize();
+}
+
+// 全量导出
+app.get('/api/export/all', wrap(async (req, res) => {
+  const docs = await db.query(
+    'SELECT id, title, content, folder_id FROM documents WHERE user_id = $1 AND deleted_at IS NULL ORDER BY folder_id NULLS LAST, updated_at DESC',
+    [req.user.id]
+  );
+  if (!docs.length) return res.status(400).json({ error: '没有可导出的文档' });
+  const folders = await db.query('SELECT id, name FROM folders WHERE user_id = $1', [req.user.id]);
+  const folderNameMap = new Map();
+  folders.forEach(f => folderNameMap.set(f.id, f.name));
+  await exportToZip(res, req.user.id, docs, folderNameMap, 'PenMark-导出.zip');
+}));
+
+// 单文件夹导出
+app.get('/api/export/folder/:id', wrap(async (req, res) => {
+  const folderId = Number(req.params.id);
+  if (!Number.isInteger(folderId) || folderId <= 0) return res.status(400).json({ error: '无效的文件夹ID' });
+  const folder = await db.one('SELECT id, name FROM folders WHERE id = $1 AND user_id = $2', [folderId, req.user.id]);
+  if (!folder) return res.status(404).json({ error: '文件夹不存在' });
+  const docs = await db.query(
+    'SELECT id, title, content, folder_id FROM documents WHERE user_id = $1 AND deleted_at IS NULL AND folder_id = $2 ORDER BY updated_at DESC',
+    [req.user.id, folderId]
+  );
+  if (!docs.length) return res.status(400).json({ error: '该文件夹没有可导出的文档' });
+  const folderNameMap = new Map([[folder.id, folder.name]]);
+  await exportToZip(res, req.user.id, docs, folderNameMap, safeExportName(folder.name, '文件夹') + '.zip');
+}));
+
 /* ---------- 举报 ---------- */
 app.post('/api/reports', reportLimiter, wrap(async (req, res) => {
   const { doc_id, reason } = req.body;
@@ -2008,8 +2213,8 @@ app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
   }
   shareRateLimit.delete(limitKey);
   const ss = auth.signShareSession({ token: share.token, authed: true });
-  auth.setShareCookie(res, ss);
-  res.json({ ok: true });
+    auth.setShareCookie(res, ss, req);
+    res.json({ ok: true });
 }));
 
 // Public-share image route. It has its own authorization because the normal asset route
@@ -2271,9 +2476,15 @@ app.post('/api/public/share/:token/visit', visitLimiter, wrap(async (req, res) =
 
 // 访客列表查询：用于刷新（不写入）
 app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
-  const share = await db.one('SELECT token, expire_at FROM shares WHERE token = $1', [req.params.token]);
+  const share = await db.one('SELECT token, expire_at, password_hash FROM shares WHERE token = $1', [req.params.token]);
   if (!share) return res.status(404).json({ error: '链接无效' });
   if (share.expire_at && share.expire_at < Date.now()) return res.status(410).json({ error: '链接已过期' });
+  if (share.password_hash) {
+    const ss = auth.verifyShareSession(auth.readShareCookie(req));
+    if (!ss || !ss.authed || ss.token !== share.token) {
+      return res.status(401).json({ error: 'need_password' });
+    }
+  }
 
   const recent = await db.query(
     'SELECT nickname, user_id, last_visit_at, visit_count FROM share_visitors WHERE share_token = $1 ORDER BY last_visit_at DESC LIMIT 50',
@@ -2291,7 +2502,6 @@ app.get('/api/public/share/:token/visitors', wrap(async (req, res) => {
   res.json({
     visitors: (recent || []).map(v => ({
       nickname: v.nickname,
-      user_id: v.user_id,
       is_registered: !!v.user_id,
       last_visit_at: v.last_visit_at,
       visit_count: v.visit_count

@@ -56,7 +56,9 @@ async function migrate() {
         await client.query('COMMIT');
         count++;
       } catch (err) {
-        await client.query('ROLLBACK');
+        try { await client.query('ROLLBACK'); } catch (rbErr) {
+          console.error('ROLLBACK 失败:', rbErr.message);
+        }
         throw new Error(`迁移 ${version} 失败: ${err.message}`);
       }
     }

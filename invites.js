@@ -6,10 +6,9 @@ const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 const CODE_LEN = 8;
 
 function generateCode() {
-  const bytes = crypto.randomBytes(CODE_LEN);
   let code = '';
   for (let i = 0; i < CODE_LEN; i++) {
-    code += CHARSET[bytes[i] % CHARSET.length];
+    code += CHARSET[crypto.randomInt(0, CHARSET.length)];
   }
   return code;
 }

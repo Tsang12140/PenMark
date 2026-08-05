@@ -28,7 +28,7 @@
 <meta property="og:description" content="知著 PenMark 是一款极简在线富文本写作工具，支持公众号/微信图文一键粘贴、自动图片修复、链接卡片和飞书式目录大纲，所有内容本地优先保存。">
 <meta property="og:type" content="website">
 <title>知著 PenMark</title>
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css?v=20260805d">
 </head>
 <body class="pre-auth">
 <div class="app">
@@ -47,6 +47,20 @@
     <div class="search-box">
       <span class="search-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
       <input type="text" id="searchInput" placeholder="搜索文档…">
+      <button class="sort-toggle" id="sortToggle" type="button" title="排序" aria-haspopup="listbox" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M11 4h10"/><path d="M11 8h7"/><path d="M11 12h4"/></svg>
+      </button>
+      <div class="sort-popover" id="sortPopover" role="listbox" hidden>
+        <div class="sort-popover-title">排序方式</div>
+        <button type="button" role="option" data-field="updated">修改时间</button>
+        <button type="button" role="option" data-field="created">创建时间</button>
+        <button type="button" role="option" data-field="title">标题</button>
+        <div class="sort-popover-divider"></div>
+        <button type="button" class="sort-order-toggle" id="sortOrderToggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M11 4h10"/><path d="M11 8h7"/><path d="M11 12h4"/></svg>
+          <span id="sortOrderLabel">降序</span>
+        </button>
+      </div>
     </div>
     <div class="new-row">
       <button class="new-btn" id="newDocBtn">
@@ -83,6 +97,7 @@
       </button>
     </div>
   </aside>
+  <div class="sidebar-resizer" id="sidebarResizer" title="拖动调整侧边栏宽度，双击恢复默认" role="separator" aria-orientation="vertical" aria-label="调整侧边栏列宽"></div>
 
   <!-- ============ 主区域 ============ -->
   <main class="main">
@@ -227,8 +242,7 @@
           </button>
           <div class="doc-title-field">
             <span class="doc-title-label" aria-hidden="true">&#25991;&#26723;&#26631;&#39064;</span>
-            <input type="text" id="docTitle" placeholder="无标题" maxlength="100">
-            <span class="doc-title-overflow" id="docTitleOverflow" aria-hidden="true"></span>
+            <textarea id="docTitle" placeholder="无标题" maxlength="100" rows="1"></textarea>
           </div>
           <div class="doc-title-ai-wrap" id="docTitleAiWrap" hidden>
             <button class="doc-title-ai-btn" id="docTitleAi" type="button" title="AI 拟标题" aria-label="AI 拟标题">
@@ -398,7 +412,7 @@
         <div><strong id="versionHistoryDocTitle">当前文档</strong><span>恢复前会自动备份当前内容</span></div>
         <button class="btn btn-secondary version-create-btn" id="versionHistoryCreate" type="button">创建版本</button>
       </div>
-      <div class="version-history-layout">
+      <div class="version-history-layout" id="versionHistoryLayout">
         <section class="version-history-list-wrap" aria-label="历史版本">
           <div class="version-history-list" id="versionHistoryList"></div>
         </section>
@@ -548,6 +562,8 @@
       <button class="settings-tab" data-stab="review">内容审核</button>
       <button class="settings-tab" data-stab="sensitive">敏感词</button>
       <button class="settings-tab" data-stab="ai">AI &#20889;&#20316;</button>
+      <button class="settings-tab" data-stab="import">导入</button>
+      <button class="settings-tab" data-stab="export">导出</button>
     </div>
     <div class="modal-body" id="settingsModalBody"></div>
   </div>
@@ -579,7 +595,7 @@
 <button class="reading-exit" id="readingExit" title="退出阅读模式（Esc）" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 退出阅读</button>
 
 <script src="/vendor/dom-to-image-more.min.js"></script>
-<script type="module" src="/app.js"></script>
+<script type="module" src="/app.js?v=20260805d"></script>
 
 <!-- 导出图片：隐藏渲染区（用于生成预览和截图） -->
 <div id="exportRenderContainer" style="position:fixed;left:-9999px;top:0;pointer-events:none;"></div>

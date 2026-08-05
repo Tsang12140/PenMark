@@ -318,14 +318,14 @@ function setCookie(res, token, req) {
   let cookie = COOKIE_NAME + '=' + encodeURIComponent(token) +
     '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge;
   if (secure) cookie += '; Secure';
-  res.setHeader('Set-Cookie', cookie);
+  res.append('Set-Cookie', cookie);
 }
 
 function clearCookie(res, req) {
   const secure = req ? isSecure(req) : false;
   let cookie = COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
   if (secure) cookie += '; Secure';
-  res.setHeader('Set-Cookie', cookie);
+  res.append('Set-Cookie', cookie);
 }
 
 /* ---------- Express 中间件 ---------- */
@@ -413,13 +413,13 @@ function setShareCookie(res, ss, req) {
   let cookie = SHARE_COOKIE_NAME + '=' + encodeURIComponent(ss) +
     '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge;
   if (secure) cookie += '; Secure';
-  res.setHeader('Set-Cookie', cookie);
+  res.append('Set-Cookie', cookie);
 }
 function clearShareCookie(res, req) {
   const secure = req ? isSecure(req) : false;
   let cookie = SHARE_COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
   if (secure) cookie += '; Secure';
-  res.setHeader('Set-Cookie', cookie);
+  res.append('Set-Cookie', cookie);
 }
 function readShareCookie(req) {
   return readCookie(req, SHARE_COOKIE_NAME);
