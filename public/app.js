@@ -1,5 +1,5 @@
 // 知著 PenMark 应用主逻辑：文档管理、自动保存、搜索、暗色模式、工具栏
-import { Editor, markdownToHtml } from './editor.js';
+import { Editor, markdownToHtml } from './editor.js?v=20260806f';
 import { setupImagePreview } from './image-preview.js';
 
 const $ = id => document.getElementById(id);
@@ -1167,8 +1167,6 @@ document.addEventListener('selectionchange', () => {
 /* ---------- 飞书式浮动菜单：选中显示完整菜单，点击显示精简菜单（标题层级） ---------- */
 const floatMenu = $('floatMenu');
 const floatMenuImg = $('floatMenuImg');
-let pinnedLinkCard = null;
-let pinnedLinkCardUntil = 0;
 let floatMenuRange = null;
 
 editorEl.addEventListener('mouseup', () => {
@@ -1250,14 +1248,6 @@ function updateTextFloatMenu() {
   // 如果快速 AI 输入框正在输入，保持浮动菜单现状（防止输入时菜单消失）
   const aiQuickEl = $('fmAiQuick');
   if (aiQuickEl && document.activeElement === aiQuickEl) return;
-  if (pinnedLinkCard && performance.now() < pinnedLinkCardUntil && editorEl.contains(pinnedLinkCard)) {
-    floatMenu.classList.remove('compact');
-    floatMenu.classList.add('card-context');
-    showFloatMenu(floatMenu, pinnedLinkCard.getBoundingClientRect(), 'top');
-    refreshFloatMenuState();
-    return;
-  }
-  floatMenu.classList.remove('card-context');
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) { hideFloatMenu(); return; }
   const range = sel.getRangeAt(0);
@@ -1458,184 +1448,9 @@ window.addEventListener('resize', () => { hideFloatMenu(); floatMenuImg.hidden =
 // 点击编辑器外隐藏
 document.addEventListener('mousedown', (e) => {
   if (e.target.closest('.float-menu')) return;
-  if (e.target.closest('.block-handle')) return;
   if (!editorEl.contains(e.target) && !e.target.closest('.img-container')) {
     hideFloatMenu();
     floatMenuImg.hidden = true;
-    hideBlockHandle();
-  }
-});
-
-/* ---------- 行首块操作按钮 ⋮⋮（飞书式） ---------- */
-const blockHandle = $('blockHandle');
-const BLOCK_SEL = 'p,h1,h2,h3,h4,h5,h6,blockquote,pre,li,div';
-const BLOCK_TAGS_RE = /^(P|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE|LI|DIV)$/;
-let hoverBlock = null;          // 当前 hover 的块级元素
-let blockHandleRaf = 0;         // rAF 节流
-
-function findHoverBlock(target) {
-  if (!target) return null;
-  let el = target.nodeType === 1 ? target : target.parentElement;
-  if (!el) return null;
-  const block = el.closest ? el.closest(BLOCK_SEL) : null;
-  if (!block || !editorEl.contains(block) || block === editorEl) return null;
-  // 嵌套结构（表格、img-grid）只取最外层
-  let parent = block.parentElement;
-  while (parent && parent !== editorEl) {
-    if (BLOCK_TAGS_RE.test(parent.tagName)) return parent; // 用更外层的块
-    parent = parent.parentElement;
-  }
-  return block;
-}
-
-editorEl.addEventListener('mousemove', (e) => {
-  const block = findHoverBlock(e.target);
-  if (block === hoverBlock) return; // 没变化
-  hoverBlock = block;
-  if (blockHandleRaf) return;
-  blockHandleRaf = requestAnimationFrame(() => {
-    blockHandleRaf = 0;
-    positionBlockHandle(hoverBlock);
-  });
-});
-
-editorEl.addEventListener('mouseleave', () => {
-  hoverBlock = null;
-  hideBlockHandle();
-});
-
-function positionBlockHandle(block) {
-  if (!block) { hideBlockHandle(); return; }
-  const rect = block.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) { hideBlockHandle(); return; }
-  // 只在编辑器可视范围内显示
-  const editorRect = editorEl.getBoundingClientRect();
-  if (rect.bottom < editorRect.top + 10 || rect.top > editorRect.bottom - 10) {
-    hideBlockHandle();
-    return;
-  }
-  blockHandle.style.left = (rect.left - 26) + 'px';
-  blockHandle.style.top = (rect.top + Math.max(0, (rect.height - 22) / 2)) + 'px';
-  blockHandle._block = block;
-  blockHandle.hidden = false;
-  // 下一帧添加 visible 让 opacity 过渡生效
-  requestAnimationFrame(() => blockHandle.classList.add('visible'));
-}
-
-function hideBlockHandle() {
-  blockHandle.classList.remove('visible');
-  // 等过渡完再 hidden，避免突兀消失
-  setTimeout(() => {
-    if (!blockHandle.classList.contains('visible')) blockHandle.hidden = true;
-  }, 130);
-}
-
-// 滚动/resize 时跟随
-window.addEventListener('scroll', () => {
-  if (hoverBlock) positionBlockHandle(hoverBlock);
-}, true);
-window.addEventListener('resize', () => {
-  if (hoverBlock) positionBlockHandle(hoverBlock);
-});
-
-// 点击 ⋮⋮：把光标定位到块首，弹出块菜单
-// 拖拽 ⋮⋮：移动当前块到目标位置（飞书核心交互）
-let dragState = null;
-const dragIndicator = document.createElement('div');
-dragIndicator.className = 'block-drag-indicator';
-dragIndicator.hidden = true;
-document.body.appendChild(dragIndicator);
-
-blockHandle.addEventListener('mousedown', (e) => {
-  if (e.button !== 0) return;
-  e.preventDefault(); // 防止失焦
-  const block = blockHandle._block;
-  if (!block || !editorEl.contains(block)) return;
-  dragState = {
-    block,
-    startX: e.clientX,
-    startY: e.clientY,
-    moved: false,
-    targetBlock: null,
-    targetPos: null  // 'before' | 'after'
-  };
-});
-
-document.addEventListener('mousemove', (e) => {
-  if (!dragState) return;
-  const dx = e.clientX - dragState.startX;
-  const dy = e.clientY - dragState.startY;
-  if (!dragState.moved && Math.hypot(dx, dy) > 5) {
-    dragState.moved = true;
-    blockHandle.classList.add('dragging');
-    editorEl.classList.add('block-dragging');
-  }
-  if (!dragState.moved) return;
-  // 找出当前鼠标位置对应的块级元素
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  let target = el ? (el.nodeType === 1 ? el : el.parentElement) : null;
-  if (target) target = target.closest ? target.closest(BLOCK_SEL) : null;
-  if (!target || !editorEl.contains(target) || target === editorEl || target === dragState.block) {
-    dragState.targetBlock = null;
-    dragIndicator.hidden = true;
-    return;
-  }
-  const rect = target.getBoundingClientRect();
-  const mid = rect.top + rect.height / 2;
-  const pos = e.clientY < mid ? 'before' : 'after';
-  dragState.targetBlock = target;
-  dragState.targetPos = pos;
-  // 显示蓝色横线
-  dragIndicator.hidden = false;
-  dragIndicator.style.left = rect.left + 'px';
-  dragIndicator.style.width = rect.width + 'px';
-  dragIndicator.style.top = (pos === 'before' ? rect.top - 1 : rect.bottom - 1) + 'px';
-});
-
-document.addEventListener('mouseup', () => {
-  if (!dragState) return;
-  const wasMoved = dragState.moved;
-  const targetBlock = dragState.targetBlock;
-  const targetPos = dragState.targetPos;
-  const srcBlock = dragState.block;
-  dragState = null;
-  blockHandle.classList.remove('dragging');
-  editorEl.classList.remove('block-dragging');
-  dragIndicator.hidden = true;
-  if (wasMoved) {
-    // 拖拽完成：执行移动
-    if (targetBlock && targetBlock !== srcBlock) {
-      try {
-        if (targetPos === 'before') targetBlock.parentNode.insertBefore(srcBlock, targetBlock);
-        else targetBlock.parentNode.insertBefore(srcBlock, targetBlock.nextSibling);
-        editor._afterChange();
-        // 把光标定位到移动后的块
-        try {
-          const range = document.createRange();
-          range.selectNodeContents(srcBlock);
-          range.collapse(true);
-          const sel = window.getSelection();
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } catch (_) {}
-      } catch (err) { toast('移动失败：' + (err.message || err)); }
-    }
-  } else {
-    // 没拖动 → 视为点击，弹出块菜单
-    editorEl.focus();
-    try {
-      const range = document.createRange();
-      range.selectNodeContents(srcBlock);
-      range.collapse(true);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } catch (_) {}
-    floatMenu.classList.remove('card-context');
-    buildCtxMenu(srcBlock);
-    const rect = blockHandle.getBoundingClientRect();
-    positionCtxMenu(rect.left, rect.right + 4, rect.top - 4);
-    blockHandle.setAttribute('aria-expanded', 'true');
   }
 });
 
@@ -1668,11 +1483,6 @@ function buildLinkMenu(anchor) {
   ctxMenu.innerHTML = html;
 }
 function buildCtxMenu(block) {
-  if (floatMenu.classList.contains('card-context')) {
-    ctxMenu.innerHTML = '<div class="ctx-menu-label">插入到卡片后</div>' +
-      ctxBtn('codeblock', '代码块') + ctxBtn('hr', '分隔线');
-    return;
-  }
   const tag = currentBlockTag(block);
   let html = '<div class="ctx-menu-label">段落类型</div>';
   html += ctxBtn('block', '正文', tag === 'P', 'P');
@@ -1776,7 +1586,7 @@ function positionCtxMenu(x, y, aboveY) {
   ctxMenu.style.top = top + 'px';
 }
 
-function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); if (blockHandle) blockHandle.setAttribute('aria-expanded', 'false'); const alignBtn = document.getElementById('alignMenuBtn'); if (alignBtn) alignBtn.setAttribute('aria-expanded', 'false'); }
+function hideCtxMenu() { ctxMenu.hidden = true; ctxAnchor = null; const trigger = floatMenu.querySelector('.fm-type-trigger'); if (trigger) trigger.setAttribute('aria-expanded', 'false'); const alignBtn = document.getElementById('alignMenuBtn'); if (alignBtn) alignBtn.setAttribute('aria-expanded', 'false'); }
 
 ctxMenu.addEventListener('mousedown', (e) => e.preventDefault()); // 不失焦
 ctxMenu.addEventListener('click', (e) => {
@@ -1838,27 +1648,24 @@ function openEditorLink(anchor) {
 
 // Editing keeps plain links safe from accidental navigation; cards expose an explicit open target.
 editorEl.addEventListener('click', (e) => {
+  // 转回链接按钮：直接将卡片退化为普通链接，不弹二级菜单
+  const revertBtn = e.target.closest('.lc-revert');
+  if (revertBtn) {
+    const card = revertBtn.closest('a[data-link-card="1"]');
+    if (card && editorEl.contains(card)) {
+      e.preventDefault();
+      e.stopPropagation();
+      editor.convertCardToLink(card);
+    }
+    return;
+  }
   const a = e.target.closest('a');
   if (!a || !editorEl.contains(a)) {
     activeLinkAnchor = null;
-    pinnedLinkCard = null;
-    pinnedLinkCardUntil = 0;
     return;
   }
   activeLinkAnchor = a;
   const isCard = a.getAttribute('data-link-card') === '1';
-  if (isCard) {
-    pinnedLinkCard = a;
-    pinnedLinkCardUntil = performance.now() + 250;
-    const cardRange = document.createRange();
-    cardRange.setStartAfter(a);
-    cardRange.collapse(true);
-    rememberFloatMenuRange(cardRange);
-    floatMenu.classList.remove('compact');
-    floatMenu.classList.add('card-context');
-    showFloatMenu(floatMenu, a.getBoundingClientRect(), 'top');
-    refreshFloatMenuState();
-  }
   const openTarget = e.target.closest('.lc-open, .lc-thumb');
   if ((isCard && openTarget) || e.ctrlKey || e.metaKey) {
     e.preventDefault();
@@ -7985,11 +7792,11 @@ function positionOutline() {
   const shellRect = shell.getBoundingClientRect();
   const sidebarRect = sidebar.getBoundingClientRect();
   const available = shellRect.left - sidebarRect.right;
-  if (available < 190) {
+  if (available < 240) {
     docOutline.hidden = true;
     return;
   }
-  const width = Math.min(200, available - 40);
+  const width = Math.min(300, available - 40);
   docOutline.style.width = width + 'px';
   docOutline.style.left = Math.max(sidebarRect.right + 16, shellRect.left - width - 24) + 'px';
   docOutline.style.top = Math.max((toolbar ? toolbar.getBoundingClientRect().bottom : 0) + 24, shellRect.top + 48) + 'px';

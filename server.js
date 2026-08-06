@@ -1175,7 +1175,7 @@ app.post('/api/documents/:id/versions/:versionId/duplicate', wrap(async (req, re
   );
   if (!original) return res.status(404).json({ error: 'not found' });
   const now = Date.now();
-  const suffix = ' · 恢复副本';
+  const suffix = ' 恢复副本';
   const copyTitle = ((snapshot.title || '无标题').slice(0, Math.max(0, DOC_TITLE_MAX_LENGTH - suffix.length)) + suffix).slice(0, DOC_TITLE_MAX_LENGTH);
   const info = await db.execute(
     'INSERT INTO documents (title, title_origin, content, created_at, updated_at, user_id, folder_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
@@ -2679,7 +2679,7 @@ function renderShareHTML(card) {
   const url = escapeMeta(card.url);
   const image = escapeMeta(card.ogImage);
   const siteName = escapeMeta(card.siteName);
-  const fullTitle = title + ' · ' + siteName;
+  const fullTitle = title + ' ' + siteName;
   const metas = [
     '<title>' + fullTitle + '</title>',
     '<meta name="description" content="' + desc + '">',
@@ -2697,7 +2697,7 @@ function renderShareHTML(card) {
   ].join('\n');
   // 替换原 <title> 占位行，注入卡片 meta
   return getShareHtmlTemplate().replace(
-    /<title>分享文档 · 知著 PenMark<\/title>/,
+    /<title>分享文档 知著 PenMark<\/title>/,
     metas
   );
 }

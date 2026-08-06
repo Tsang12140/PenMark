@@ -240,6 +240,7 @@ export class Editor {
   }
   _afterChange(change) {
     this._ensureLeadingParagraph();
+    this._ensureBlockBuffers();
     this.onUpdate(change);
   }
 
@@ -268,6 +269,98 @@ export class Editor {
     }
   }
 
+  // 确保不可编辑块（图片、链接卡片、分割线）前后都有可编辑段落兜底。
+  // contenteditable=false 元素和 <hr> 无法承接光标，当它们紧邻文档边界或
+  // 彼此相邻时，光标无处可落。此方法在前后自动补一个空 <p><br></p> 作为光标落点。
+  _ensureBlockBuffers() {
+    const blocks = this.editor.querySelectorAll('[contenteditable="false"], hr');
+    blocks.forEach(block => {
+      // 前面没有可编辑块时补一个
+      const prev = block.previousElementSibling;
+      if (!prev || prev.getAttribute('contenteditable') === 'false' || prev.tagName === 'HR') {
+        const p = document.createElement('p');
+        p.innerHTML = '<br>';
+        block.parentNode.insertBefore(p, block);
+      }
+      // 后面没有可编辑块时补一个
+      const next = block.nextElementSibling;
+      if (!next || next.getAttribute('contenteditable') === 'false' || next.tagName === 'HR') {
+        const p = document.createElement('p');
+        p.innerHTML = '<br>';
+        block.parentNode.insertBefore(p, block.nextSibling);
+      }
+    });
+  }
+
+  // 判断节点是否为「不可编辑块」（contenteditable=false 元素或 <hr>）。
+  // 这些块无法承接光标，Backspace 合并时会整体被吃掉。
+  _isNonEditableBlock(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.tagName === 'HR') return true;
+    return node.getAttribute('contenteditable') === 'false';
+  }
+
+  // 从任意节点向上找到编辑器的直接子节点（顶级块）。
+  // 用于 Backspace/Delete 防护：浏览器合并是按顶级块进行的，
+  // 光标在 <blockquote><p></p></blockquote> 的 <p> 里时，
+  // 实际会被合并的是 <blockquote>（顶级块），不是 <p>。
+  _topLevelBlock(node) {
+    if (!node) return null;
+    let el = node.nodeType === 3 ? node.parentNode : node;
+    while (el && el.parentNode && el.parentNode !== this.editor) {
+      el = el.parentNode;
+    }
+    return (el && el.parentNode === this.editor) ? el : null;
+  }
+
+  // Backspace 防护：光标在某顶级块开头且前一兄弟是不可编辑块时，
+  // 浏览器默认会吃掉前面的不可编辑块——此处拦截，改为：
+  // - 如果当前块是空 <p>（图片/卡片后的缓冲段落），删掉它，光标落到不可编辑块前面的可编辑块
+  // - 否则（有内容的 blockquote/h3/p 等）直接吞掉 Backspace，保护卡片/图片不被删
+  // 返回 true 表示已处理（调用方需 preventDefault）。
+  _guardNonEditableBackspace() {
+    const sel = document.getSelection();
+    if (!sel || !sel.isCollapsed || !sel.rangeCount) return false;
+
+    const top = this._topLevelBlock(sel.anchorNode);
+    if (!top || top === this.editor) return false;
+    if (this._isNonEditableBlock(top)) return false;
+
+    const r = sel.getRangeAt(0);
+    const probe = document.createRange();
+    try {
+      probe.setStart(top, 0);
+      probe.setEnd(r.startContainer, r.startOffset);
+    } catch (_) {
+      return false;
+    }
+    // 光标不在顶级块开头时（前面有实质内容），不拦截
+    if (!/^\s*$/.test(probe.toString())) return false;
+
+    const prev = top.previousElementSibling;
+    if (!prev || !this._isNonEditableBlock(prev)) return false;
+
+    // 当前块是空 <p>：删掉它，光标落到不可编辑块前面的可编辑块
+    if (top.tagName === 'P' && !top.textContent.trim()) {
+      const beforeCard = prev.previousElementSibling;
+      top.remove();
+      if (beforeCard && !this._isNonEditableBlock(beforeCard) && this.editor.contains(beforeCard)) {
+        this._placeCaretAtEnd(beforeCard);
+      } else {
+        // 前面没有可编辑块（卡片在文档开头）：补一个空 <p> 兜底
+        const p = document.createElement('p');
+        p.innerHTML = '<br>';
+        prev.parentNode.insertBefore(p, prev);
+        this._placeCaretAtStart(p);
+      }
+      this._afterChange();
+      return true;
+    }
+
+    // 当前块有内容（blockquote/h3/p 等）：吞掉 Backspace，保护卡片/图片不被删
+    return true;
+  }
+
   /* ---------- Input handling ---------- */
   _bindInput() {
     this.editor.addEventListener('input', (e) => {
@@ -280,6 +373,108 @@ export class Editor {
     this.editor.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._maybeAutoLink({ inputType: 'insertText', data: ' ' });
     });
+    // beforeinput 兜底：keydown 防护对某些浏览器的原生 contenteditable
+    // 合并行为（如 Chrome 的 deleteContentBackward 跨块合并）拦截不到，
+    // 这里在浏览器实际修改 DOM 之前再拦一道，禁止删除不可编辑块。
+    this.editor.addEventListener('beforeinput', (e) => {
+      const t = e.inputType;
+      if (!t) return;
+      // 仅处理向后/向前删除、剪切、拖拽移动等可能波及不可编辑块的输入类型
+      const isDelete = t === 'deleteContentBackward' ||
+                       t === 'deleteContentForward' ||
+                       t === 'deleteByCut' ||
+                       t === 'deleteByDrag' ||
+                       t === 'insertFromDrop';
+      if (!isDelete) return;
+      const sel = document.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      // 1) 选区跨越不可编辑块：直接拦截整段删除
+      if (this._rangeTouchesNonEditableBlock(range)) {
+        e.preventDefault();
+        return;
+      }
+      // 2) 折叠光标 + 向后删除 + 前一兄弟是不可编辑块：拦截，改为降级当前块
+      if (t === 'deleteContentBackward' && sel.isCollapsed) {
+        if (this._guardNonEditableBackspace()) {
+          e.preventDefault();
+          return;
+        }
+      }
+      // 3) 折叠光标 + 向前删除 + 后一兄弟是不可编辑块：拦截，禁止删掉后面的卡片
+      if (t === 'deleteContentForward' && sel.isCollapsed) {
+        if (this._guardNonEditableDelete()) {
+          e.preventDefault();
+          return;
+        }
+      }
+    });
+  }
+
+  // 判断选区是否触碰到不可编辑块（contenteditable=false 或 <hr>）。
+  // 用于拦截跨块删除、剪切、拖拽等会整体吃掉卡片/图片的操作。
+  _rangeTouchesNonEditableBlock(range) {
+    if (range.collapsed) return false;
+    // 选区跨越多个节点：检查范围内的不可编辑块
+    const frag = range.cloneContents();
+    if (frag.querySelector('[contenteditable="false"], hr')) return true;
+    // 还要检查选区起点/终点本身就在不可编辑块内
+    const startEl = range.startContainer.nodeType === 3
+      ? range.startContainer.parentNode
+      : range.startContainer;
+    const endEl = range.endContainer.nodeType === 3
+      ? range.endContainer.parentNode
+      : range.endContainer;
+    if (startEl && startEl.closest && startEl.closest('[contenteditable="false"], hr')) return true;
+    if (endEl && endEl.closest && endEl.closest('[contenteditable="false"], hr')) return true;
+    return false;
+  }
+
+  // Delete 键防护：光标在某顶级块末尾且后一兄弟是不可编辑块时，
+  // 浏览器默认会吃掉后面的不可编辑块——此处拦截：
+  // - 如果当前块是空 <p>，删掉它，光标落到不可编辑块后面的可编辑块
+  // - 否则直接吞掉这次 Delete（保护后面的卡片/图片不被删）
+  _guardNonEditableDelete() {
+    const sel = document.getSelection();
+    if (!sel || !sel.isCollapsed || !sel.rangeCount) return false;
+
+    const top = this._topLevelBlock(sel.anchorNode);
+    if (!top || top === this.editor) return false;
+    if (this._isNonEditableBlock(top)) return false;
+
+    const r = sel.getRangeAt(0);
+    const probe = document.createRange();
+    try {
+      probe.selectNodeContents(top);
+      probe.setStart(r.endContainer, r.endOffset);
+    } catch (_) {
+      return false;
+    }
+    // 光标不在块末尾时（后面还有实质内容），不拦截
+    if (!/^\s*$/.test(probe.toString())) return false;
+
+    const next = top.nextElementSibling;
+    if (!next || !this._isNonEditableBlock(next)) return false;
+
+    // 当前块是空 <p>：删掉它，光标落到不可编辑块后面的可编辑块
+    if (top.tagName === 'P' && !top.textContent.trim()) {
+      const afterCard = next.nextElementSibling;
+      top.remove();
+      if (afterCard && !this._isNonEditableBlock(afterCard) && this.editor.contains(afterCard)) {
+        this._placeCaretAtStart(afterCard);
+      } else {
+        // 后面没有可编辑块（卡片在文档末尾）：补一个空 <p> 兜底
+        const p = document.createElement('p');
+        p.innerHTML = '<br>';
+        next.parentNode.insertBefore(p, next.nextSibling);
+        this._placeCaretAtStart(p);
+      }
+      this._afterChange();
+      return true;
+    }
+
+    // 当前块非空：直接吞掉这次 Delete，不删后面的卡片
+    return true;
   }
 
   /* ---------- 撤销/重做 ---------- */
@@ -2652,6 +2847,16 @@ export class Editor {
         open.title = '打开链接';
         open.setAttribute('aria-label', '打开链接');
       }
+      // 补齐转回链接按钮（旧卡片没有）
+      if (!card.querySelector('.lc-revert')) {
+        const revert = document.createElement('span');
+        revert.className = 'lc-revert';
+        revert.setAttribute('role', 'button');
+        revert.setAttribute('aria-label', '转回链接');
+        revert.title = '转回链接';
+        revert.textContent = '转回链接';
+        card.appendChild(revert);
+      }
     });
   }
   async convertLinkToCard(anchor) {
@@ -2731,6 +2936,14 @@ export class Editor {
     } else {
       card.classList.add('no-thumb');
     }
+    // 转回链接按钮：仅编辑器内 hover 显示，点击直接退化为普通链接
+    const revert = document.createElement('span');
+    revert.className = 'lc-revert';
+    revert.setAttribute('role', 'button');
+    revert.setAttribute('aria-label', '转回链接');
+    revert.title = '转回链接';
+    revert.textContent = '转回链接';
+    card.appendChild(revert);
     return card;
   }
 
@@ -2796,6 +3009,13 @@ export class Editor {
                 return;
               }
             }
+          }
+          // 防止 Backspace 误删不可编辑块（图片、链接卡片、分割线）。
+          // 光标在某块开头且前一兄弟是 contenteditable=false 或 <hr> 时，
+          // 浏览器默认合并会吃掉不可编辑块——此处拦截，改为将当前块降级为 <p>。
+          if (this._guardNonEditableBackspace()) {
+            e.preventDefault();
+            return;
           }
         }
       }
