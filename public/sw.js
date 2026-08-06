@@ -6,7 +6,7 @@
  *   - 不缓存 API 请求（/api/*）与登录态相关请求，避免本地数据被 SW 缓存污染
  * 更新机制：CACHE_VERSION 变更 → install 时预缓存 → activate 清理旧版本缓存 → skipWaiting + clients.claim 立即生效
  */
-const CACHE_VERSION = 'penmark-v1-20260806i';
+const CACHE_VERSION = 'penmark-v1-20260806q';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -15,7 +15,9 @@ const PRECACHE_URLS = [
   '/editor.js',
   '/login.js',
   '/manifest.json',
-  '/favicon.svg'
+  '/favicon.svg',
+  '/highlight-utils.js',
+  '/vendor/highlight.min.js'
 ];
 
 // ===== install：预缓存核心资源，跳过等待立即生效 =====

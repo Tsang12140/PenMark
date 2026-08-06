@@ -14,7 +14,7 @@
 <link rel="manifest" href="/manifest.json">
 
 <title>分享文档 知著 PenMark</title>
-<link rel="stylesheet" href="/styles.css?v=20260806g">
+<link rel="stylesheet" href="/styles.css?v=20260806q">
 </head>
 <body class="share-page">
 
@@ -45,16 +45,19 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5v16"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>
     <span class="share-chapter-dock-label" id="shareChapterDockLabel">&#31456;&#33410;</span>
   </button>
+  <div class="share-dock-progress" aria-hidden="true"><div class="share-dock-progress-bar" id="shareDockProgressBar"></div></div>
 </div>
 <div class="share-toc" id="shareToc" hidden></div>
 <div class="share-toc-overlay" id="shareTocOverlay" hidden></div>
 <section class="share-toc-sheet" id="shareTocSheet" role="dialog" aria-modal="true" aria-labelledby="shareTocSheetTitle" hidden>
   <div class="share-toc-sheet-head"><strong id="shareTocSheetTitle">章节</strong><button class="share-toc-sheet-close" id="shareTocSheetClose" type="button" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+  <div class="share-toc-progress" id="shareTocProgress"><div class="share-toc-progress-bar" id="shareTocProgressBar"></div></div>
   <ol class="share-toc-sheet-list" id="shareTocSheetList"></ol>
 </section>
 
 <div class="toast-stack" id="toastStack"></div>
 
-<script type="module" src="/share.js?v=20260806g"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script type="module" src="/share.js?v=20260806o"></script>
 </body>
 </html>

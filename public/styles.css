@@ -48,8 +48,8 @@
   --primary-hover:#a0b7aa;
   --primary-ink:#101716;
   --shadow:0 1px 3px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
-  --code-bg:#252c2d;
-  --code-border:#3a4441;
+  --code-bg:#000000;
+  --code-border:#4a4f4d;
   --table-head:#252c2d;
 }
 
@@ -941,7 +941,109 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   color:var(--ink);
   -webkit-user-select:text;user-select:text;
 }
-.editor pre code{background:none;padding:0;font-family:var(--mono);color:inherit;}
+.editor pre code{background:none;padding:0;border:none;font-family:var(--mono);color:inherit;}
+
+/* ============ 代码块语法高亮（highlight.js）============
+   只作用于只读渲染（阅读模式/分享页/版本预览）的代码块内 token。
+   亮色（纸墨）为基础，雾纸/夜墨分别覆盖。 */
+pre code .hljs-comment,
+pre code .hljs-quote{color:#008000;font-style:italic;}
+pre code .hljs-keyword,
+pre code .hljs-selector-tag,
+pre code .hljs-literal,
+pre code .hljs-doctag{color:#af00db;}
+pre code .hljs-string,
+pre code .hljs-meta .hljs-string,
+pre code .hljs-regexp{color:#a31515;}
+pre code .hljs-number,
+pre code .hljs-symbol,
+pre code .hljs-bullet{color:#098658;}
+pre code .hljs-title,
+pre code .hljs-section,
+pre code .hljs-title.function_{color:#795e26;}
+pre code .hljs-attr,
+pre code .hljs-attribute,
+pre code .hljs-variable,
+pre code .hljs-template-variable{color:#001080;}
+pre code .hljs-built_in,
+pre code .hljs-selector-class,
+pre code .hljs-type{color:#267f99;}
+pre code .hljs-name,
+pre code .hljs-selector-id{color:#0000ff;}
+pre code .hljs-operator,
+pre code .hljs-punctuation{color:#000000;}
+pre code .hljs-emphasis{font-style:italic;}
+pre code .hljs-strong{font-weight:700;}
+/* 括号按嵌套深度着色（VS Code bracket colorizer） */
+pre code .bd-1{color:#e36209;}
+pre code .bd-2{color:#cf222e;}
+pre code .bd-3{color:#116329;}
+pre code .bd-4{color:#0550ae;}
+
+/* 雾纸（feishu）：柔和版 */
+[data-theme="feishu"] pre code .hljs-comment,
+[data-theme="feishu"] pre code .hljs-quote{color:#4e7d3a;font-style:italic;}
+[data-theme="feishu"] pre code .hljs-keyword,
+[data-theme="feishu"] pre code .hljs-selector-tag,
+[data-theme="feishu"] pre code .hljs-literal,
+[data-theme="feishu"] pre code .hljs-doctag{color:#b02a8a;}
+[data-theme="feishu"] pre code .hljs-string,
+[data-theme="feishu"] pre code .hljs-meta .hljs-string,
+[data-theme="feishu"] pre code .hljs-regexp{color:#a03424;}
+[data-theme="feishu"] pre code .hljs-number,
+[data-theme="feishu"] pre code .hljs-symbol,
+[data-theme="feishu"] pre code .hljs-bullet{color:#0e7a4e;}
+[data-theme="feishu"] pre code .hljs-title,
+[data-theme="feishu"] pre code .hljs-section,
+[data-theme="feishu"] pre code .hljs-title.function_{color:#7a4db0;}
+[data-theme="feishu"] pre code .hljs-attr,
+[data-theme="feishu"] pre code .hljs-attribute,
+[data-theme="feishu"] pre code .hljs-variable,
+[data-theme="feishu"] pre code .hljs-template-variable{color:#7a3a1e;}
+[data-theme="feishu"] pre code .hljs-built_in,
+[data-theme="feishu"] pre code .hljs-selector-class,
+[data-theme="feishu"] pre code .hljs-type{color:#0a6fb3;}
+[data-theme="feishu"] pre code .hljs-name,
+[data-theme="feishu"] pre code .hljs-selector-id{color:#1a56a0;}
+[data-theme="feishu"] pre code .hljs-operator,
+[data-theme="feishu"] pre code .hljs-punctuation{color:#4a4844;}
+[data-theme="feishu"] pre code .bd-1{color:#d97706;}
+[data-theme="feishu"] pre code .bd-2{color:#cf222e;}
+[data-theme="feishu"] pre code .bd-3{color:#116329;}
+[data-theme="feishu"] pre code .bd-4{color:#0a6fb3;}
+
+/* 夜墨（dark）：参照 VS Code Dark+ 色板 */
+[data-theme="dark"] pre code .hljs-comment,
+[data-theme="dark"] pre code .hljs-quote{color:#6a9955;font-style:italic;}
+[data-theme="dark"] pre code .hljs-keyword,
+[data-theme="dark"] pre code .hljs-selector-tag,
+[data-theme="dark"] pre code .hljs-literal,
+[data-theme="dark"] pre code .hljs-doctag{color:#c586c0;}
+[data-theme="dark"] pre code .hljs-string,
+[data-theme="dark"] pre code .hljs-meta .hljs-string,
+[data-theme="dark"] pre code .hljs-regexp{color:#ce9178;}
+[data-theme="dark"] pre code .hljs-number,
+[data-theme="dark"] pre code .hljs-symbol,
+[data-theme="dark"] pre code .hljs-bullet{color:#b5cea8;}
+[data-theme="dark"] pre code .hljs-title,
+[data-theme="dark"] pre code .hljs-section,
+[data-theme="dark"] pre code .hljs-title.function_{color:#dcdcaa;}
+[data-theme="dark"] pre code .hljs-attr,
+[data-theme="dark"] pre code .hljs-attribute,
+[data-theme="dark"] pre code .hljs-variable,
+[data-theme="dark"] pre code .hljs-template-variable{color:#9cdcfe;}
+[data-theme="dark"] pre code .hljs-built_in,
+[data-theme="dark"] pre code .hljs-selector-class,
+[data-theme="dark"] pre code .hljs-type{color:#4ec9b0;}
+[data-theme="dark"] pre code .hljs-name,
+[data-theme="dark"] pre code .hljs-selector-id{color:#9cdcfe;}
+[data-theme="dark"] pre code .hljs-operator,
+[data-theme="dark"] pre code .hljs-punctuation{color:#d4d4d4;}
+[data-theme="dark"] pre code{color:#ffffff;}
+[data-theme="dark"] pre code .bd-1{color:#ff7b72;}
+[data-theme="dark"] pre code .bd-2{color:#ffa657;}
+[data-theme="dark"] pre code .bd-3{color:#7ee787;}
+[data-theme="dark"] pre code .bd-4{color:#79c0ff;}
 .editor code{
   background:var(--code-bg);
   border:1px solid var(--code-border);
@@ -3331,14 +3433,14 @@ button{white-space:nowrap;}
 }
 .share-brand-mark{
   display:inline-flex;align-items:center;
-  width:auto;height:26px;
+  width:auto;height:34px;
   border-radius:6px;
   text-decoration:none;
   transition:opacity .12s;
 }
 .share-brand-mark:hover{opacity:.7;}
 .share-brand-logo{display:block;height:auto;width:auto;max-width:none;}
-.share-brand-mark .share-brand-logo{height:26px;}
+.share-brand-mark .share-brand-logo{height:34px;}
 /* 双版本 logo 按主题自动切换：组合选择器优先级 (0,2,0)，覆盖 .share-brand-logo 的 display:block。
    修复 bug：原本 footer 的 light+dark 两个 img 同时显示，dark 版本白底看不清。*/
 .share-brand-logo.brand-logo-dark{display:none;}
@@ -4049,7 +4151,7 @@ html:has(body.share-page){overflow-x:clip;}
 .share-progress{
   position:fixed;
   top:0;left:0;
-  height:3px;
+  height:5px;
   background:var(--accent);
   width:0;
   z-index:100;
@@ -4400,6 +4502,18 @@ html:has(body.share-page){overflow-x:clip;}
   width:100%;
   margin:1em 0;
 }
+/* 分享页宽表格：包一层可横向滚动的容器，超宽时手机右拉查看（JS 渲染时缠绕） */
+.share-reader .table-scroll,.share-editor .table-scroll{
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+  max-width:100%;
+  margin:1em 0;
+}
+.share-reader .table-scroll table,.share-editor .table-scroll table{
+  margin:0;
+  width:max-content;
+  min-width:100%;
+}
 .share-reader th,.share-reader td,.share-editor th,.share-editor td{
   border:1px solid var(--line);
   padding:8px 12px;
@@ -4671,7 +4785,14 @@ body.image-preview-open{overflow:hidden!important;}
   position:relative;
   font-family:var(--sans);
   user-select:none;
+  flex:0 0 auto; /* 不被 topbar 压缩，保证"访问/在线"文字显示全 */
 }
+.sv-num{
+  font-weight:700;
+  font-size:13px;
+  color:#2b7de9; /* 浅蓝，柔和不突兀 */
+}
+[data-theme="dark"] .sv-num{color:#57a6ff;}
 .sv-trigger{
   display:inline-flex;
   align-items:center;
@@ -4849,8 +4970,15 @@ body.image-preview-open{overflow:hidden!important;}
     background:color-mix(in srgb,var(--bg-editor) 88%,transparent);color:var(--ink-soft);
     box-shadow:0 4px 14px rgba(30,25,18,.11);backdrop-filter:blur(18px) saturate(1.04);-webkit-backdrop-filter:blur(18px) saturate(1.04);
     user-select:none;
+    overflow:hidden;
   }
   .share-reading-dock[hidden]{display:none!important;}
+  .share-dock-progress{
+    position:absolute;left:0;right:0;bottom:0;height:2px;background:color-mix(in srgb,var(--line) 70%,transparent);
+  }
+  .share-dock-progress-bar{
+    height:100%;width:0;background:var(--accent);transition:width .1s;
+  }
   .share-chapter-dock{
     position:static;width:100%;min-width:0;height:44px;padding:0;
     display:inline-flex;align-items:center;gap:8px;
@@ -4870,6 +4998,8 @@ body.image-preview-open{overflow:hidden!important;}
   }
   .share-toc-sheet-head{height:54px;padding:0 12px 0 18px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;}
   .share-toc-sheet-head strong{font-family:var(--sans);font-size:15px;color:var(--ink);}
+  .share-toc-progress{height:2px;background:var(--line-soft,var(--line));flex:0 0 auto;position:relative;}
+  .share-toc-progress-bar{height:100%;background:var(--accent);width:0;transition:width .1s;}
   .share-toc-sheet-close{width:40px;height:40px;border:0;border-radius:10px;background:transparent;color:var(--ink-soft);display:grid;place-items:center;cursor:pointer;user-select:none;}
   .share-toc-sheet-close:hover{background:var(--bg-hover);color:var(--ink);}
   .share-toc-sheet-close svg{width:20px;height:20px;}
@@ -4891,7 +5021,7 @@ body.image-preview-open{overflow:hidden!important;}
   .share-reader,.share-editor{font-size:16px;line-height:1.85;text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
   .share-reader p,.share-editor p,.share-reader li,.share-editor li{text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
   .share-topbar{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));}
-  .share-brand-mark .share-brand-logo{height:22px;}
+  .share-brand-mark .share-brand-logo{height:30px;}
   .share-theme-toggle{width:32px;height:32px;font-size:14px;}
   .share-theme-toggle svg{width:15px;height:15px;}
   /* 移动端登录入口缩成图标按钮，省横向空间 */
@@ -4904,8 +5034,7 @@ body.image-preview-open{overflow:hidden!important;}
   }
   .sv-trigger{height:28px;padding:0 10px 0 8px;font-size:11.5px;}
   .sv-list{min-width:200px;max-width:240px;}
-  /* 极窄屏时胶囊文字省略，避免挤掉主题按钮 */
-  .sv-text{max-width:90px;overflow:hidden;text-overflow:ellipsis;}
+  /* 访问/在线文字要显示全，不省略（用户确认空间足够） */
 }
 
 

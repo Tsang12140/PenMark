@@ -193,6 +193,7 @@ export class Editor {
   }
 
   _init() {
+    this._bindCopy();
     this._bindPaste();
     this._bindDragDrop();
     this._bindImageDelegation();
@@ -2029,6 +2030,33 @@ export class Editor {
       };
       img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
+    });
+  }
+
+  /* ---------- 复制：剥离代码块主题底色，避免把暗黑/浅色皮肤背景带进剪贴板 ----------
+     浏览器默认复制会把选中元素的计算 background 内联进剪贴板 HTML，导致从暗黑主题
+     复制代码块后粘贴到别处也带暗色底。这里用 cloneContents 手动构造剪贴板 HTML，
+     并清掉 pre 上的背景皮肤。 */
+  _bindCopy() {
+    this.editor.addEventListener('copy', (e) => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const clone = document.createElement('div');
+      clone.appendChild(sel.getRangeAt(0).cloneContents());
+      const preList = clone.querySelectorAll('pre');
+      if (!preList.length) return; // 无代码块，交给浏览器默认复制（保留 mark 高亮等意图）
+      preList.forEach((pre) => {
+        pre.style.removeProperty('background-color');
+        pre.style.removeProperty('background');
+        const code = pre.querySelector('code');
+        if (code) {
+          code.style.removeProperty('background-color');
+          code.style.removeProperty('background');
+        }
+      });
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', sel.toString());
+      e.clipboardData.setData('text/html', clone.innerHTML);
     });
   }
 

@@ -1,6 +1,7 @@
 // 知著 PenMark 分享公开页逻辑
 // 解析 token → 查元信息 → 必要时弹密码 → 加载文档 → 按权限渲染只读/可编辑
 import { setupImagePreview } from './image-preview.js';
+import { highlightCodeBlocks, restoreHighlightedCode } from './highlight-utils.js';
 
 const $ = id => document.getElementById(id);
 const container = $('shareContainer');
@@ -279,6 +280,8 @@ function renderDoc(data) {
 
   const reader = $('shareReader');
   markManualListItems(reader);
+  if (reader) highlightCodeBlocks(reader); // 只读视图代码块语法高亮
+  if (reader) wrapTables(reader); // 宽表格包横向滚动容器
   if (reader) reader.querySelectorAll('img').forEach((image) => {
     image.loading = 'lazy'; image.decoding = 'async';
   });
@@ -313,6 +316,24 @@ function renderDoc(data) {
   setupTOC();
 }
 
+// 宽表格：只读时包一层可横向滚动的容器，避免手机上显示不全无法右拉
+function wrapTables(root) {
+  if (!root) return;
+  root.querySelectorAll(':scope > table').forEach((table) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'table-scroll';
+    table.replaceWith(wrap);
+    wrap.appendChild(table);
+  });
+}
+// 编辑前还原：把表格移出滚动容器，避免 wrapper 随保存写入文档
+function unwrapTables(root) {
+  if (!root) return;
+  root.querySelectorAll(':scope > .table-scroll').forEach((wrap) => {
+    wrap.replaceWith(wrap.firstChild);
+  });
+}
+
 // 可编辑分享页：默认查看，点编辑按钮才解锁编辑
 // Editor-generated "1、" items are stored as <p>, not <ol><li>.
 // This class exists only in the shared reader, to preserve natural item spacing.
@@ -333,6 +354,8 @@ function setupShareEditToggle(token) {
     const reader = $('shareReader');
     if (!reader) return;
     // This class is only for reader typography and must not be saved to the document.
+    restoreHighlightedCode(reader); // 先剥离代码高亮，避免 hljs span 随编辑/保存写入文档
+    unwrapTables(reader); // 还原表格滚动容器，避免 wrapper 随编辑/保存写入文档
     const contentRoot = reader.cloneNode(true);
     contentRoot.querySelectorAll('.share-manual-list-item').forEach((paragraph) => {
       paragraph.classList.remove('share-manual-list-item');
@@ -491,6 +514,12 @@ function updateReadingProgress() {
     bar.style.width = (scrolled * 100) + '%';
     bar.style.opacity = scrolled > 0.01 ? '1' : '0';
   }
+  // 同步章节弹层里的阅读进度条
+  const tocBar = $('shareTocProgressBar');
+  if (tocBar) tocBar.style.width = (scrolled * 100) + '%';
+  // 同步章节药丸底部的阅读进度条
+  const dockBar = $('shareDockProgressBar');
+  if (dockBar) dockBar.style.width = (scrolled * 100) + '%';
 }
 function setShareTocExpanded(expanded) {
   [tocToggle, chapterDock].forEach(control => {
@@ -779,7 +808,7 @@ function renderVisitorCapsule(data) {
   capsule.innerHTML =
     '<button type="button" class="sv-trigger" title="查看访客">' +
       '<span class="sv-dot' + (online > 0 ? ' online' : '') + '"></span>' +
-      '<span class="sv-text">' + total + ' 人访问' + (online > 0 ? ' ' + online + ' 人在线' : '') + '</span>' +
+      '<span class="sv-text"><span class="sv-num">' + total + '</span> 访问' + (online > 0 ? ' <span class="sv-num">' + online + '</span> 在线' : '') + '</span>' +
       '<svg class="sv-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>' +
     '</button>' +
     '<div class="sv-list"></div>';
