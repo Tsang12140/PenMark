@@ -61,3 +61,18 @@ export function restoreHighlightedCode(root) {
     }
   });
 }
+
+// 清洗内容里的段落级内联底色：只作用于块级元素，去掉粘贴残留的近白/近黑背景，
+// 让段落始终跟随当前主题，避免切换主题后留一块难看的浅色/深色底。
+// 不触碰 inline span/mark 高亮与代码块（它们有专门样式或需保真的内联样式）。
+export function stripBlockBackgrounds(root) {
+  if (!root) return;
+  root.querySelectorAll('p, div, li, article, section, h1, h2, h3, h4, h5, h6, blockquote, td, th').forEach((el) => {
+    const s = el.style;
+    if (s && s.backgroundColor) {
+      s.removeProperty('background-color');
+      s.removeProperty('background');
+    }
+    if (el.getAttribute('style') === '') el.removeAttribute('style');
+  });
+}

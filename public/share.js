@@ -1,7 +1,7 @@
 // 知著 PenMark 分享公开页逻辑
 // 解析 token → 查元信息 → 必要时弹密码 → 加载文档 → 按权限渲染只读/可编辑
 import { setupImagePreview } from './image-preview.js';
-import { highlightCodeBlocks, restoreHighlightedCode } from './highlight-utils.js';
+import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds } from './highlight-utils.js';
 
 const $ = id => document.getElementById(id);
 const container = $('shareContainer');
@@ -279,6 +279,7 @@ function renderDoc(data) {
   container.innerHTML = html;
 
   const reader = $('shareReader');
+  stripBlockBackgrounds(reader); // 清洗段落级内联底色，跟随主题
   markManualListItems(reader);
   if (reader) highlightCodeBlocks(reader); // 只读视图代码块语法高亮
   if (reader) wrapTables(reader); // 宽表格包横向滚动容器

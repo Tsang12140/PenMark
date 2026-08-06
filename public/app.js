@@ -1,7 +1,7 @@
 // 知著 PenMark 应用主逻辑：文档管理、自动保存、搜索、暗色模式、工具栏
-import { Editor, markdownToHtml } from './editor.js?v=20260806l';
+import { Editor, markdownToHtml } from './editor.js?v=20260806s';
 import { setupImagePreview } from './image-preview.js';
-import { highlightCodeBlocks, restoreHighlightedCode } from './highlight-utils.js';
+import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds } from './highlight-utils.js';
 
 const $ = id => document.getElementById(id);
 const editorEl = $('editor');
@@ -586,6 +586,7 @@ function renderVersionHistoryPreview(entry) {
   // 图片指向缩略图：/api/assets/<id> → /api/assets/<id>/thumb（已是 thumb 的不重复加）
   html = html.replace(/(\/api\/assets\/[0-9a-fA-F-]{36})(?!\/thumb)/g, '$1/thumb');
   render.innerHTML = html || '<p>（空文档）</p>';
+  stripBlockBackgrounds(render); // 版本预览随主题，去掉段落级内联底色
   // 清理编辑器特有的图片容器结构：版本快照保留了 img-container（含分辨率标注
   // .img-size-label、缩放手柄 .rs-handle、固定宽高 style），预览时只保留干净的
   // <img>，让图片用 max-width:100% 自适应，避免排版错乱和多余空隙。
@@ -7856,6 +7857,7 @@ function toggleReadingMode() {
     hideFloatMenu();
     floatMenuImg.hidden = true;
     editorEl.contentEditable = 'false';
+    stripBlockBackgrounds(editorEl); // 阅读模式随主题，去掉段落级内联底色
     highlightCodeBlocks(editorEl);
   } else {
     editorEl.contentEditable = 'true';

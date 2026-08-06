@@ -7,6 +7,7 @@ import {
   normalizePixelWidths,
   resizeColumnWidth
 } from './table-utils.mjs';
+import { stripBlockBackgrounds } from './highlight-utils.js';
 
 // Normal browser pasting turns every line break into a separate DOM node in
 // contenteditable. That is fine for a paragraph, but a pasted .txt with tens
@@ -3207,6 +3208,7 @@ export class Editor {
     this.activeTableCell = null;
     this.tableSelection = null;
     this.editor.innerHTML = html || '<p><br></p>';
+    stripBlockBackgrounds(this.editor); // 自愈：清洗段落级内联底色，随主题
     this.normalizeLinkCards();
     this.fixImageContainers();
     this.normalizeTables();
@@ -3441,6 +3443,7 @@ export class Editor {
     // 同粘贴流程清理 + 固化远程图
     const cleaned = this._cleanPastedHTML(content);
     this.editor.innerHTML = cleaned;
+    stripBlockBackgrounds(this.editor); // 清洗段落级内联底色
     this.normalizeLinkCards();
     this.fixImageContainers();
     this._afterChange();
