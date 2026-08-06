@@ -55,6 +55,32 @@ export function markdownToHtml(text) {
       continue;
     }
 
+    // 表格：表头行 + 分隔行（GFN 表格）
+    if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const headerCells = splitTableRow(line);
+      i += 2; // 跳过表头行与分隔行
+      const bodyRows = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        bodyRows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      const n = Math.max(headerCells.length, 1);
+      const colgroup = '<colgroup>' +
+        Array.from({ length: n }, () => '<col style="width:' + (100 / n).toFixed(3) + '%">').join('') +
+        '</colgroup>';
+      let html = '<table data-pm-table="1">' + colgroup + '<thead><tr>';
+      for (let c = 0; c < n; c++) html += '<th>' + mdInline(headerCells[c] || '') + '</th>';
+      html += '</tr></thead><tbody>';
+      for (const row of bodyRows) {
+        html += '<tr>';
+        for (let c = 0; c < n; c++) html += '<td>' + mdInline(row[c] || '') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      out.push(html);
+      continue;
+    }
+
     // 引用块 >（连续 > 行合并）
     if (/^\s{0,3}>\s?/.test(line)) {
       const ql = [];
@@ -102,6 +128,21 @@ export function markdownToHtml(text) {
     if (pl.length) out.push('<p>' + mdInline(pl.join('<br>')) + '</p>');
   }
   return out.join('');
+}
+
+// GFM 表格辅助：识别表头行 / 分隔行 / 拆分单元格
+function isTableRow(line) {
+  return /^\s*\|/.test(line); // 以 | 开头（允许前导空白）
+}
+function isTableSeparator(line) {
+  const t = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return /-/.test(t) && /^[\s:|-]+$/.test(t); // 只含空格、|、:、- 且含 -
+}
+function splitTableRow(line) {
+  let s = line.trim();
+  if (s.charAt(0) === '|') s = s.slice(1);
+  if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+  return s.split('|').map(c => c.trim());
 }
 
 // Markdown 行内语法：先转义 HTML，再依次处理行内代码（保护）、链接、粗体、斜体
@@ -2126,6 +2167,8 @@ export class Editor {
     if (/^\s{0,3}>\s?/m.test(text)) return true;                     // > 引用
     if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/m.test(text)) return true; // --- 分割线
     if (/```/.test(text)) return true;                                // ``` 代码块
+    // | 表格：表头行（以 | 开头）后紧跟分隔行（只含空格、|、:、- 且含 -）
+    if (/^\s*\|[^\n]*\|\s*\n\s*\|?[\s:|-]+\|?\s*$/m.test(text)) return true;
     // 行内特征（特定性高，单独命中即认定）
     if (/\*\*[^*]+\*\*/.test(text)) return true;                     // **粗体**
     if (/\[[^\]]+\]\((https?:\/\/|www\.)[^\s)]+\)/.test(text)) return true; // [文](url)
