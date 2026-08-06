@@ -17,6 +17,7 @@
   --primary:#20292e;
   --primary-hover:#151c20;
   --primary-ink:#fff;
+  --link:#2563eb; /* 内联链接主题适配蓝 */
   --shadow:0 1px 3px rgba(32,41,46,.06), 0 10px 30px rgba(32,41,46,.07);
   --code-bg:#f0ece0;
   --code-border:#d9d2bf;
@@ -47,6 +48,7 @@
   --primary:#91aa9b;
   --primary-hover:#a0b7aa;
   --primary-ink:#101716;
+  --link:#7aa2f7; /* 深色下更亮的蓝，保证可读不刺眼 */
   --shadow:0 1px 3px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
   --code-bg:#000000;
   --code-border:#4a4f4d;
@@ -902,7 +904,13 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
   text-decoration:line-through;
   text-decoration-color:rgba(150,156,152,.6);
 }
-.editor a{color:#2563eb;text-decoration:underline;text-underline-offset:3px;}
+.editor a{color:var(--link);text-decoration:underline;text-underline-offset:3px;}
+/* 分享页/版本预览的普通内联链接：主题适配蓝 + 下划线；链接卡片已被下方 .link-card 规则覆盖为 ink 无下划线 */
+.share-reader a, .share-editor a, .version-preview-render a{
+  color:var(--link);
+  text-decoration:underline;
+  text-underline-offset:3px;
+}
 /* 链接卡片不是普通超链接：覆盖 .editor a 的蓝色下划线（:where 优先级为 0 会被压过） */
 .editor a.link-card, .share-editor a.link-card, .share-reader a.link-card, .version-preview-render a.link-card{
   color:var(--ink);
@@ -1562,6 +1570,7 @@ body.dashboard-active .statusbar{display:none;}
   --primary:#20292e;
   --primary-hover:#151c20;
   --primary-ink:#fff;
+  --link:#2563eb; /* 内联链接主题适配蓝 */
   --shadow:0 1px 3px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.04);
   --code-bg:#f1f3f1;
   --code-border:#dde2de;
@@ -5836,7 +5845,7 @@ body.dashboard-active .editor-wrap{display:none;}
 .version-preview-render table{border-collapse:collapse;width:100%;margin:0 0 10px;font-size:13px;}
 .version-preview-render th,.version-preview-render td{border:1px solid var(--line-soft);padding:6px 9px;text-align:left;}
 .version-preview-render hr{border:none;border-top:1px solid var(--line-soft);margin:14px 0;}
-.version-preview-render a{color:var(--accent);pointer-events:none;}
+.version-preview-render a{color:var(--link);pointer-events:none;}
 .version-preview-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:14px;}
 .version-preview-actions .btn{min-height:34px;}
 
