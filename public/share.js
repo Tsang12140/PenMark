@@ -19,6 +19,7 @@ let shareTocHeadings = [];
 let shareTocObserver = null;
 let shareTocKeepClickedUntil = 0;
 let shareTocRestoreFocus = null;
+let shareScrollLockedY = null; // 打开章节面板时冻结页面滚动并记住位置，避免回顶
 let shareProgressBound = false;
 let readingProgressFrame = 0;
 setupImagePreview(container, '.share-reader img, .share-editor img');
@@ -534,7 +535,28 @@ function closeShareTocSheet(restoreFocus) {
   setShareTocExpanded(false);
   if (restoreFocus !== false && shareTocRestoreFocus && document.contains(shareTocRestoreFocus)) shareTocRestoreFocus.focus();
   shareTocRestoreFocus = null;
-  document.body.style.overflow = '';
+  unlockShareScroll();
+}
+
+// 冻结页面滚动并记住位置：用 position:fixed 保持当前视觉位置，
+// 取代 body overflow:hidden（后者会把滚动位置重置回顶部，破坏阅读定位）。
+function lockShareScroll() {
+  if (shareScrollLockedY != null) return;
+  shareScrollLockedY = window.scrollY;
+  document.body.style.position = 'fixed';
+  document.body.style.top = '-'.concat(shareScrollLockedY, 'px');
+  document.body.style.width = '100%';
+}
+
+// 解除冻结，把滚动位置还回去
+function unlockShareScroll() {
+  if (shareScrollLockedY == null) return;
+  const y = shareScrollLockedY;
+  shareScrollLockedY = null;
+  document.body.style.position = '';
+  document.body.style.top = '';
+  document.body.style.width = '';
+  window.scrollTo(0, y);
 }
 
 function openShareTocSheet() {
@@ -542,7 +564,7 @@ function openShareTocSheet() {
   shareTocRestoreFocus = document.activeElement;
   tocSheet.hidden = false;
   if (tocOverlay) tocOverlay.hidden = false;
-  document.body.style.overflow = 'hidden';
+  lockShareScroll();
   setShareTocExpanded(true);
   const first = tocSheetList && tocSheetList.querySelector('button');
   if (first) first.focus();
@@ -570,7 +592,10 @@ function jumpToShareHeading(id, closeSheet) {
   setShareTocActive(id);
   shareTocKeepClickedUntil = Date.now() + 700;
   history.replaceState(null, '', '#' + encodeURIComponent(id));
-  const top = Math.max(0, window.scrollY + heading.getBoundingClientRect().top - 88);
+  // 面板打开时 body 被冻结（scrollY=0但内容已位移），用记录的滚动位置计算真实目标，
+  // 保证从任意章节跳转都定位准确；未打开面板时直接用 window.scrollY。
+  const baseY = shareScrollLockedY != null ? shareScrollLockedY : window.scrollY;
+  const top = Math.max(0, baseY + heading.getBoundingClientRect().top - 88);
   const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
   if (closeSheet) closeShareTocSheet(false);
   window.scrollTo({ top, behavior });
