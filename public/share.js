@@ -1,7 +1,7 @@
 // 知著 PenMark 分享公开页逻辑
 // 解析 token → 查元信息 → 必要时弹密码 → 加载文档 → 按权限渲染只读/可编辑
 import { setupImagePreview } from './image-preview.js';
-import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds } from './highlight-utils.js';
+import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds, enhanceCodeBlocks, unwrapCodeBlocks } from './highlight-utils.js';
 
 const $ = id => document.getElementById(id);
 const container = $('shareContainer');
@@ -283,6 +283,7 @@ function renderDoc(data) {
   stripBlockBackgrounds(reader); // 清洗段落级内联底色，跟随主题
   markManualListItems(reader);
   if (reader) highlightCodeBlocks(reader); // 只读视图代码块语法高亮
+  if (reader) enhanceCodeBlocks(reader);   // 代码块折叠/复制工具栏
   if (reader) wrapTables(reader); // 宽表格包横向滚动容器
   if (reader) reader.querySelectorAll('img').forEach((image) => {
     image.loading = 'lazy'; image.decoding = 'async';
@@ -358,6 +359,7 @@ function setupShareEditToggle(token) {
     // This class is only for reader typography and must not be saved to the document.
     restoreHighlightedCode(reader); // 先剥离代码高亮，避免 hljs span 随编辑/保存写入文档
     unwrapTables(reader); // 还原表格滚动容器，避免 wrapper 随编辑/保存写入文档
+    unwrapCodeBlocks(reader); // 还原代码块工具栏包装，避免 .code-block 随编辑/保存写入文档
     const contentRoot = reader.cloneNode(true);
     contentRoot.querySelectorAll('.share-manual-list-item').forEach((paragraph) => {
       paragraph.classList.remove('share-manual-list-item');

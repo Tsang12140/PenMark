@@ -1,7 +1,7 @@
 // 知著 PenMark 应用主逻辑：文档管理、自动保存、搜索、暗色模式、工具栏
 import { Editor, markdownToHtml } from './editor.js?v=20260806s';
 import { setupImagePreview } from './image-preview.js';
-import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds } from './highlight-utils.js';
+import { highlightCodeBlocks, restoreHighlightedCode, stripBlockBackgrounds, enhanceCodeBlocks, unwrapCodeBlocks } from './highlight-utils.js';
 
 const $ = id => document.getElementById(id);
 const editorEl = $('editor');
@@ -597,6 +597,7 @@ function renderVersionHistoryPreview(entry) {
     else container.remove();
   });
   highlightCodeBlocks(render); // 版本预览代码块语法高亮
+  enhanceCodeBlocks(render);   // 版本预览代码块折叠/复制工具栏
 
   const actions = document.createElement('div');
   actions.className = 'version-preview-actions';
@@ -7859,9 +7860,11 @@ function toggleReadingMode() {
     editorEl.contentEditable = 'false';
     stripBlockBackgrounds(editorEl); // 阅读模式随主题，去掉段落级内联底色
     highlightCodeBlocks(editorEl);
+    enhanceCodeBlocks(editorEl); // 阅读模式代码块折叠/复制工具栏
   } else {
     editorEl.contentEditable = 'true';
     restoreHighlightedCode(editorEl);
+    unwrapCodeBlocks(editorEl); // 退出阅读模式，还原代码块为裸 <pre>
   }
   updateOutline(true);
 }
