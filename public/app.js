@@ -14,6 +14,7 @@ const docTitleSuggestionText = $('docTitleSuggestionText');
 const docTitleSuggestionUse = $('docTitleSuggestionUse');
 const docTitleSuggestionRetry = $('docTitleSuggestionRetry');
 const TITLE_MAX = 100; // 标题最大字数（与 input maxlength、粘贴截断一致，防止超长内容撑爆标题栏）
+const SHARE_TEXT_TITLE_MAX = 20; // 复制分享文案里，标题最多带多少字，超出加省略号（微信里指路用，不必带全）
 const DEFAULT_UNTITLED_TITLE = String.fromCharCode(0x65e0, 0x6807, 0x9898);
 const searchInput = $('searchInput');
 docTitleEl.placeholder = '\u8f93\u5165\u6807\u9898';
@@ -3891,7 +3892,7 @@ async function refreshAiStatus(runButtonId) {
 
 // 内置排版预设：label 显示在按钮上，prompt 是发给 AI 的提示词（中文，与 ai.js layoutPresetInstructions 保持同步）
 const AI_PRESETS = {
-  wash: { label: '洗排版（不改字）', prompt: '洗排版（长文阅读）：只调整 HTML 结构，绝不改变任何可见文字、标点、数字、顺序或信息；不得增删、改写、概括、纠错或合并句子。移除所有普通文字的内联样式和多余包裹；不要输出 style、class、font、color、background、字号、字距、行距或对齐属性。保留已有图片、链接、链接卡片和自定义 data 属性。保留现有标题层级；仅在原文明确信号是标题时使用 <h2>/<h3>，不使用 <h1>，不凭空新增章节。每个自然段使用一个 <p>，不要为了凑版面插入 <br>、空段、全角空格或 &nbsp;。把真正的项目符号/序号整理为 <ul>/<ol><li>，不要用字符“•”“-”“—”假装列表。只在原文已经明确强调，或确实承担结论、警示、核心标签的短语上添加 <strong>；每段最多 1 处、每节最多 4 处，绝不加粗整句、整段或连续多项。不要使用 blockquote、表格、代码块，除非原文已有相应语义。' },
+  wash: { label: '洗排版（不改字）', prompt: '洗排版（长文阅读）：只调整 HTML 结构，绝不改变任何可见文字、标点、数字、顺序或信息；不得增删、改写、概括、纠错或合并句子。严禁移除或降级原文已有的 <strong> 加粗与 <mark> 高亮，这些是作者标注的重点词，必须原样保留。移除普通文字里多余的内联样式和包裹；不要输出 style、class、font、color、background、字号、字距、行距或对齐属性。保留已有图片、链接、链接卡片和自定义 data 属性。小标题统一使用 <h3>；仅当原文存在明确的 <h1>/<h2> 更高级别章节层级时才保留其层级，否则所有小标题一律用 <h3>，不使用 <h1>，不凭空新增章节。每个自然段使用一个 <p>，让每个 <h3> 标题与其紧随其后的正文段落归为一组，组与组之间靠正常间距自然分隔，不要为了凑版面插入 <br>、空段、全角空格或 &nbsp;。把真正的项目符号/序号整理为 <ul>/<ol><li>，不要用字符“•”“-”“—”假装列表。只在原文已经明确强调，或确实承担结论、警示、核心标签的短语上添加 <strong>；每段最多 1 处、每节最多 4 处，绝不加粗整句、整段或连续多项。不要使用 blockquote、表格、代码块，除非原文已有相应语义。' },
   share: { label: '分享前排版', prompt: '分享前排版：让文章更适合分享传播。建立清晰的标题层级、简短易读的段落、统一的列表、适度的强调与间距。不改动任何文字。' },
   light: { label: '轻度整理', prompt: '轻度整理：仅在原文强烈暗示时，规范化段落、标题、列表、间距，以及引用/代码/表格结构，不做多余改动。' },
   formal: { label: '正式文档', prompt: '正式文档排版：使用保守的标题、编号章节、段落、引用块与表格，仅在原文明确暗示时使用。' },
@@ -5152,7 +5153,12 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'g' && e.altKey) { e.preventDefault(); requestManualTitleSuggestion(); }
   else if (k === 's' && !e.altKey) { e.preventDefault(); if (saveTimer) clearTimeout(saveTimer); saveCurrent(); }
   else if (k === 'n' && !e.shiftKey) { e.preventDefault(); newDoc(); }
-  else if (k === 'f' && !e.shiftKey) { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+  else if (k === 'f' && !e.shiftKey) {
+    // Ctrl+F 只在焦点已位于全局搜索框时重新聚焦它；
+    // 其余情况放行浏览器原生查找，让它在当前文档正文内全文查找，
+    // 而不是跳到全局搜索框去搜所有文档。
+    if (document.activeElement === searchInput) { e.preventDefault(); searchInput.select(); }
+  }
   else if (k === 'o' && e.shiftKey && !e.altKey) { e.preventDefault(); openResponsiveOutline(); }
   else if (k === 'r' && e.altKey) { e.preventDefault(); toggleReadingMode(); }
   else if (k === 'h' && e.shiftKey && !e.altKey) { e.preventDefault(); exportHTML(); }
@@ -7161,8 +7167,9 @@ function shareCopyText(url, share) {
   const author = String((currentUser && (currentUser.nickname || currentUser.username)) || '\u77e5\u8457\u7528\u6237')
     .replace(/\s+/g, ' ').trim().slice(0, 50) || '\u77e5\u8457\u7528\u6237';
   const title = String(docTitleEl.value || (currentDoc && currentDoc.title) || '\u65e0\u6807\u9898')
-    .replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX) || '\u65e0\u6807\u9898';
-  let text = author + ' \u7ed9\u4f60\u5206\u4eab\u4e86\u6587\u6863\u201c' + title + '\u201d\n' + url;
+    .replace(/\s+/g, ' ').trim();
+  const shortTitle = title.length > SHARE_TEXT_TITLE_MAX ? title.slice(0, SHARE_TEXT_TITLE_MAX) + '\u2026' : (title || '\u65e0\u6807\u9898');
+  let text = author + ' \u7ed9\u4f60\u5206\u4eab\u4e86\u6587\u6863\u201c' + shortTitle + '\u201d\n' + url;
   // 有密码保护时，把明文密码一并带上，方便对方直接打开
   if (share && share.has_password) {
     const pinInputs = document.querySelectorAll('#sharePin .pin-input');

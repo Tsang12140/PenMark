@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
 const zlib = require('zlib');
 const db = require('./database');
 const auth = require('./auth');
@@ -394,6 +395,28 @@ function isPrivateHost(hostname) {
   return false;
 }
 
+function isPrivateIP(addr) {
+  if (!addr) return false;
+  if (String(addr).includes(':')) return isPrivateIPv6(addr);
+  const ipv4 = parseIPv4(addr);
+  return !!ipv4 && isPrivateIPv4(ipv4);
+}
+
+// 域名 SSRF 防护：isPrivateHost 只能识别「IP 字面量 / 黑名单」，无法识破
+// 解析到内网的域名（如 evil.com -> 127.0.0.1）。这里用 dns.lookup 解析出
+// 所有 IP，任一内网即视为内网主机。解析失败一律按内网阻断。
+function checkResolvedHost(hostname) {
+  return new Promise((resolve) => {
+    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+    if (isPrivateHost(h)) { resolve(true); return; }    // IP 字面量或黑名单：直接拦截
+    if (parseIPv4(h) || h.includes(':')) { resolve(false); return; } // 公网 IP 字面量：放行
+    dns.lookup(h, { all: true }, (err, addresses) => {
+      if (err) { resolve(true); return; }               // 解析失败按内网阻断
+      resolve(addresses.some(a => isPrivateIP(a.address)));
+    });
+  });
+}
+
 /* ---------- 远程图片代理 ---------- */
 function fetchImageAsBase64(url, maxRedirects, cb) {
   // finished 守卫：防止 timeout / error / data 多次回调 cb（destroy 是异步的，
@@ -409,38 +432,41 @@ function fetchImageAsBase64(url, maxRedirects, cb) {
   try { parsed = new URL(url); } catch (_) { done(new Error('invalid url')); return; }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { done(new Error('bad protocol')); return; }
   if (isPrivateHost(parsed.hostname)) { done(new Error('blocked host')); return; }
-  const lib = parsed.protocol === 'https:' ? https : http;
-  const req = lib.get(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Referer': parsed.origin + '/',
-      'Accept': 'image/*,*/*;q=0.8'
-    },
-    timeout: 12000
-  }, (resp) => {
-    if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
-      resp.resume();
-      const next = new URL(resp.headers.location, url).href;
-      fetchImageAsBase64(next, maxRedirects - 1, done);
-      return;
-    }
-    if (resp.statusCode !== 200) { resp.resume(); done(new Error('HTTP ' + resp.statusCode)); return; }
-    const chunks = [];
-    let size = 0;
-    const MAX = 15 * 1024 * 1024;
-    resp.on('data', (c) => {
-      size += c.length;
-      if (size > MAX) { try { req.destroy(); } catch (_) {} done(new Error('too large')); return; }
-      chunks.push(c);
+  checkResolvedHost(parsed.hostname).then((blocked) => {
+    if (blocked) { done(new Error('blocked host')); return; }
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': parsed.origin + '/',
+        'Accept': 'image/*,*/*;q=0.8'
+      },
+      timeout: 12000
+    }, (resp) => {
+      if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+        resp.resume();
+        const next = new URL(resp.headers.location, url).href;
+        fetchImageAsBase64(next, maxRedirects - 1, done);
+        return;
+      }
+      if (resp.statusCode !== 200) { resp.resume(); done(new Error('HTTP ' + resp.statusCode)); return; }
+      const chunks = [];
+      let size = 0;
+      const MAX = 15 * 1024 * 1024;
+      resp.on('data', (c) => {
+        size += c.length;
+        if (size > MAX) { try { req.destroy(); } catch (_) {} done(new Error('too large')); return; }
+        chunks.push(c);
+      });
+      resp.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        const ct = (resp.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
+        done(null, 'data:' + ct + ';base64,' + buf.toString('base64'), ct, buf.length);
+      });
     });
-    resp.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      const ct = (resp.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
-      done(null, 'data:' + ct + ';base64,' + buf.toString('base64'), ct, buf.length);
-    });
+    req.on('error', (err) => done(err));
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} done(new Error('timeout')); });
   });
-  req.on('error', (err) => done(err));
-  req.on('timeout', () => { try { req.destroy(); } catch (_) {} done(new Error('timeout')); });
 }
 
 app.get('/api/proxy-image', proxyImageLimiter, wrap(async (req, res) => {
@@ -489,7 +515,7 @@ function ogCacheSet(key, value) {
     if (oldestKey !== undefined) ogCache.delete(oldestKey);
   }
 }
-function fetchOG(url, depth) {
+async function fetchOG(url, depth) {
   depth = depth || 0;
   if (depth > 3) return Promise.reject(new Error('重定向过多'));
   const cached = ogCacheGet(url);
@@ -501,6 +527,7 @@ function fetchOG(url, depth) {
   try { u = new URL(url); } catch (_) { return Promise.reject(new Error('无效链接')); }
   if (!/^https?:$/.test(u.protocol)) return Promise.reject(new Error('仅支持 http/https'));
   if (isPrivateHost(u.hostname)) return Promise.reject(new Error('不支持内网地址'));
+  if (await checkResolvedHost(u.hostname)) return Promise.reject(new Error('不支持内网地址'));
   const lib = u.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
     const req = lib.get(url, { headers: { 'User-Agent': 'PenMark/1.0' }, timeout: 6000 }, (resp) => {
@@ -757,7 +784,7 @@ app.get('/api/documents', wrap(async (req, res) => {
 }));
 
 app.get('/api/documents/:id', wrap(async (req, res) => {
-  const row = await db.one('SELECT * FROM documents WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+  const row = await db.one('SELECT * FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, req.user.id]);
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json(row);
 }));
@@ -1219,7 +1246,7 @@ app.post('/api/documents/:id/versions/:versionId/restore', wrap(async (req, res)
 }));
 /* 轻量级版本查询：B 端轮询用，避免每次拉取整个 content */
 app.get('/api/documents/:id/version', wrap(async (req, res) => {
-  const row = await db.one('SELECT version, updated_at, title FROM documents WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+  const row = await db.one('SELECT version, updated_at, title FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, req.user.id]);
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json({ version: row.version, updated_at: row.updated_at, title: row.title });
 }));
@@ -2179,7 +2206,7 @@ app.get('/api/documents/:id/share', wrap(async (req, res) => {
 
 app.post('/api/documents/:id/share', shareAllowed, wrap(async (req, res) => {
   const docId = Number(req.params.id);
-  const doc = await db.one('SELECT id FROM documents WHERE id = $1 AND user_id = $2', [docId, req.user.id]);
+  const doc = await db.one('SELECT id FROM documents WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [docId, req.user.id]);
   if (!doc) return res.status(404).json({ error: '文档不存在' });
 
   const existing = await db.one('SELECT id, token, permission, password_hash, password_salt, expire_at, theme FROM shares WHERE doc_id = $1 AND owner_id = $2', [docId, req.user.id]);
@@ -2303,9 +2330,16 @@ app.get('/api/public/share/:token/info', wrap(async (req, res) => {
 }));
 
 const shareRateLimit = new Map();
+const SHARE_MAX_ATTEMPTS = 5;            // 每个窗口内最多尝试次数
+const SHARE_WINDOW_MS = 60000;           // 限次窗口
+const SHARE_LOCKOUT_THRESHOLD = 5;       // 连续失败多少次触发锁定
+const SHARE_LOCKOUT_MS = 15 * 60 * 1000; // 锁定时长 15 分钟
 const shareRateCleanupTimer = setInterval(() => {
   const now = Date.now();
-  for (const [k, v] of shareRateLimit) { if (now > v.reset) shareRateLimit.delete(k); }
+  for (const [k, v] of shareRateLimit) {
+    // 锁定中的条目在锁定到期前保留，避免误删导致锁定失效
+    if (now > v.reset && !(v.lockedUntil && now < v.lockedUntil)) shareRateLimit.delete(k);
+  }
 }, 60000);
 if (shareRateCleanupTimer.unref) shareRateCleanupTimer.unref();
 
@@ -2319,13 +2353,32 @@ app.post('/api/public/share/:token/auth', wrap(async (req, res) => {
     return res.json({ ok: true });
   }
   const limitKey = req.ip + ':' + req.params.token;
-  let limit = shareRateLimit.get(limitKey);
   const now = Date.now();
-  if (limit && limit.count >= 5 && now < limit.reset) return res.status(429).json({ error: '尝试次数过多，请稍后再试' });
-  if (!limit || now > limit.reset) limit = { count: 0, reset: now + 60000 };
+  let limit = shareRateLimit.get(limitKey);
+  // 清洗过期条目（锁定中的在锁定到期前不清理）
+  if (limit && now > limit.reset && !(limit.lockedUntil && now < limit.lockedUntil)) {
+    shareRateLimit.delete(limitKey);
+    limit = null;
+  }
+  if (!limit) limit = { count: 0, fails: 0, reset: now + SHARE_WINDOW_MS, lockedUntil: 0 };
+
+  // 锁定中：直接拒绝，提示剩余等待分钟数
+  if (limit.lockedUntil && now < limit.lockedUntil) {
+    const waitMin = Math.ceil((limit.lockedUntil - now) / 60000);
+    return res.status(429).json({ error: '尝试次数过多，请 ' + waitMin + ' 分钟后再试' });
+  }
+
+  // 滚动窗口限次
+  if (limit.count >= SHARE_MAX_ATTEMPTS) return res.status(429).json({ error: '尝试次数过多，请稍后再试' });
+
   const password = String(req.body.password || '');
   if (!auth.verifyPassword(password, share.password_salt, share.password_hash)) {
     limit.count++;
+    limit.fails++;
+    if (limit.fails >= SHARE_LOCKOUT_THRESHOLD) {
+      limit.lockedUntil = now + SHARE_LOCKOUT_MS;
+      limit.count = SHARE_MAX_ATTEMPTS; // 锁定后即便窗口内也持续 429
+    }
     shareRateLimit.set(limitKey, limit);
     return res.status(401).json({ error: '密码错误' });
   }

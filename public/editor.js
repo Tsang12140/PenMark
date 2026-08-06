@@ -562,7 +562,9 @@ export class Editor {
     if (!url || !url.trim() || url.trim() === 'https://') return;
     // 重新选中可能被点击吞掉的选区
     this.editor.focus();
-    document.execCommand('createLink', false, this._normalizeUrl(url) || url.trim());
+    const normalized = this._normalizeUrl(url);
+    if (!normalized) return; // 不安全 scheme（javascript:/data: 等）不创建链接
+    document.execCommand('createLink', false, normalized);
     this._afterChange();
   }
   insertTable(rows, cols) {

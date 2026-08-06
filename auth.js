@@ -20,6 +20,10 @@ function verifyPassword(password, salt, hash) {
   return crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(hash, 'hex'));
 }
 
+// 用户不存在时也跑一次 scrypt 校验，均衡登录时序，防止通过响应时间枚举用户名
+const DUMMY_SALT = 'penmark-dummy-salt';
+const DUMMY_HASH = hashPassword('penmark-dummy-password', DUMMY_SALT);
+
 /* ---------- 输入校验（同步） ---------- */
 function validateUsername(username) {
   if (!username) return '用户名不能为空';
@@ -129,10 +133,14 @@ async function getUserById(id) {
 async function login(username, password, req) {
   // 用户名大小写不敏感：admin / Admin / ADMIN 都能登录同一个账号
   const user = await db.one('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [String(username).trim()]);
-  if (!user) return { ok: false, error: '账号不存在' };
+  if (!user) {
+    // 用户不存在也执行一次 scrypt，防止时序枚举用户名；错误提示与密码错误统一
+    verifyPassword(password, DUMMY_SALT, DUMMY_HASH);
+    return { ok: false, error: '用户名或密码错误' };
+  }
   if (user.is_banned) return { ok: false, error: '账号已被禁用' };
   if (!verifyPassword(password, user.password_salt, user.password_hash)) {
-    return { ok: false, error: '密码错误' };
+    return { ok: false, error: '用户名或密码错误' };
   }
   const token = await createSession(user.id, req);
   return { ok: true, token, user: publicUser(user) };

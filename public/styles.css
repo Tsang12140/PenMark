@@ -798,8 +798,15 @@ body[data-editor-font="mono"] .editor{font-family:var(--mono);font-size:15px;}
 /* 编辑区内排版 */
 .editor h1{font-size:1.9em;font-weight:700;line-height:1.4;margin:1.2em 0 .6em;}
 .editor h2{font-size:1.5em;font-weight:700;line-height:1.4;margin:1.1em 0 .5em;}
-.editor h3{font-size:1.2em;font-weight:600;line-height:1.4;margin:1em 0 .4em;}
+.editor h3{font-size:1.2em;font-weight:700;line-height:1.4;margin:1em 0 .4em;}
 .editor h4{font-size:1.05em;font-weight:600;margin:.9em 0 .35em;}
+/* 标题内 strong 继承标题字重：避免手动加粗让同一层级标题粗细不一，观感混乱 */
+.editor h1 strong,.editor h1 b,
+.editor h2 strong,.editor h2 b,
+.editor h3 strong,.editor h3 b,
+.editor h4 strong,.editor h4 b,
+.editor h5 strong,.editor h5 b,
+.editor h6 strong,.editor h6 b{font-weight:inherit;}
 .editor p{margin:.6em 0;}
 .pm-plain-text-paste{white-space:pre-wrap;overflow-wrap:anywhere;}
 .editor blockquote{
@@ -3314,6 +3321,7 @@ button{white-space:nowrap;}
   box-shadow:0 1px 0 rgba(30,32,29,.025);
   backdrop-filter:blur(16px) saturate(1.06);
   -webkit-backdrop-filter:blur(16px) saturate(1.06);
+  user-select:none;
 }
 .share-topbar::after{
   content:"";
@@ -4028,6 +4036,14 @@ body.reading-mode .editor hr{
 body.share-page{
   background:var(--bg);
   overflow:visible;
+  /* 全局禁止 UI 元素选中，内容区单独开启 */
+  user-select:none;
+}
+/* 恢复核心内容的可选性：仅标题和正文允许复制 */
+body.share-page .share-paper-title,
+body.share-page .share-reader,
+body.share-page .share-editor{
+  user-select:text;
 }
 html:has(body.share-page){overflow-x:clip;}
 .share-progress{
@@ -4179,11 +4195,41 @@ html:has(body.share-page){overflow-x:clip;}
   letter-spacing:2px;
   line-height:1.4;
   margin:0 0 12px;
-  /* 智能换行：避免单字独占一行；同时兼容老浏览器 */
+  /* 收起（截断）状态：正常换行，让每一行尽量排满，省略号落在第二行末尾；
+     不用 keep-all，否则中文只在空格/标点换行，第二行会因短词被提前截断 */
+  word-break:normal;
+  overflow-wrap:anywhere;
+  /* 长标题默认最多 2 行，加 .expanded 后展开完整 */
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
+  overflow:hidden;
+}
+.share-paper-title.expanded{
+  -webkit-line-clamp:unset;
+  display:block;
+  /* 仅展开时：智能平衡换行 + 避免单字独占一行 */
   text-wrap:balance;
   word-break:keep-all;
-  overflow-wrap:anywhere;
 }
+.share-paper-title.collapsible{cursor:pointer;}
+.share-paper-title-toggle{
+  display:inline-block;
+  margin:0 0 12px;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:var(--ink);
+  opacity:.42;               /* 刻意弱化，不抢标题本身 */
+  font-family:var(--sans);
+  font-size:13px;
+  font-weight:400;
+  line-height:1;
+  cursor:pointer;
+  transition:opacity .15s ease;
+  user-select:none;
+}
+.share-paper-title-toggle:hover{opacity:.75;text-decoration:underline;text-underline-offset:3px;}
 .share-paper-info{
   display:flex;
   align-items:center;
@@ -4206,6 +4252,7 @@ html:has(body.share-page){overflow-x:clip;}
   font-weight:500;
   cursor:pointer;
   transition:background .15s, color .15s;
+  user-select:none;
 }
 .share-edit-btn:hover{background:var(--accent);color:var(--primary-ink);}
 .share-badge{
@@ -4214,6 +4261,7 @@ html:has(body.share-page){overflow-x:clip;}
   font-size:11px;
   font-weight:500;
   letter-spacing:.5px;
+  user-select:none;
 }
 .share-badge.view{
   background:var(--bg-hover);
@@ -4262,12 +4310,27 @@ html:has(body.share-page){overflow-x:clip;}
 .share-editor:focus{outline:none;}
 .share-reader h1,.share-editor h1{
   font-size:1.9em;
+  font-weight:700;
   margin:1.2em 0 .6em;
   text-align:center;
   letter-spacing:1px;
 }
-.share-reader h2,.share-editor h2{font-size:1.5em;margin:1.1em 0 .5em;}
-.share-reader h3,.share-editor h3{font-size:1.2em;font-weight:600;margin:1em 0 .4em;}
+.share-reader h2,.share-editor h2{font-size:1.5em;font-weight:700;margin:1.1em 0 .5em;}
+.share-reader h3,.share-editor h3{font-size:1.2em;font-weight:700;margin:1em 0 .4em;}
+.share-reader h4,.share-editor h4{font-weight:600;}
+/* 分享页标题内 strong 继承标题字重，避免同层级标题因手动加粗而粗细不一 */
+.share-reader h1 strong,.share-reader h1 b,
+.share-reader h2 strong,.share-reader h2 b,
+.share-reader h3 strong,.share-reader h3 b,
+.share-reader h4 strong,.share-reader h4 b,
+.share-reader h5 strong,.share-reader h5 b,
+.share-reader h6 strong,.share-reader h6 b,
+.share-editor h1 strong,.share-editor h1 b,
+.share-editor h2 strong,.share-editor h2 b,
+.share-editor h3 strong,.share-editor h3 b,
+.share-editor h4 strong,.share-editor h4 b,
+.share-editor h5 strong,.share-editor h5 b,
+.share-editor h6 strong,.share-editor h6 b{font-weight:inherit;}
 .share-reader p,.share-editor p{
   margin:.7em 0;
   /* Progressive enhancement: avoids extremely short final lines. */
@@ -4561,7 +4624,7 @@ body.image-preview-open{overflow:hidden!important;}
     bottom:auto;
   }
 }
-.share-footer-line{opacity:.7;}
+.share-footer-line{opacity:.7;user-select:none;}
 .share-footer-brand{
   display:inline-flex;align-items:center;justify-content:center;
   height:24px;
@@ -4607,6 +4670,7 @@ body.image-preview-open{overflow:hidden!important;}
 .share-visitors{
   position:relative;
   font-family:var(--sans);
+  user-select:none;
 }
 .sv-trigger{
   display:inline-flex;
@@ -4624,6 +4688,7 @@ body.image-preview-open{overflow:hidden!important;}
   cursor:pointer;
   box-shadow:0 2px 8px rgba(0,0,0,.08);
   transition:background .12s, color .12s, border-color .12s;
+  user-select:none;
 }
 .sv-trigger:hover{background:var(--bg-hover);color:var(--ink);}
 .sv-trigger.active{border-color:var(--accent);color:var(--accent);}
@@ -4774,7 +4839,7 @@ body.image-preview-open{overflow:hidden!important;}
   .share-topbar{position:relative;}
   .share-toc{display:none;}
   .share-toc-toggle,.share-progress{display:none!important;}
-  .share-toc-overlay{position:fixed;inset:0;z-index:120;background:rgba(20,22,22,.42);}
+  .share-toc-overlay{position:fixed;inset:0;z-index:120;background:rgba(20,22,22,.42);user-select:none;}
   .share-toc-overlay[hidden],.share-toc-sheet[hidden]{display:none;}
   .share-reading-dock{
     position:fixed;z-index:95;left:50%;bottom:calc(12px + env(safe-area-inset-bottom));transform:translateX(-50%);
@@ -4783,6 +4848,7 @@ body.image-preview-open{overflow:hidden!important;}
     border:1px solid color-mix(in srgb,var(--line) 74%,transparent);border-radius:22px;
     background:color-mix(in srgb,var(--bg-editor) 88%,transparent);color:var(--ink-soft);
     box-shadow:0 4px 14px rgba(30,25,18,.11);backdrop-filter:blur(18px) saturate(1.04);-webkit-backdrop-filter:blur(18px) saturate(1.04);
+    user-select:none;
   }
   .share-reading-dock[hidden]{display:none!important;}
   .share-chapter-dock{
@@ -4790,6 +4856,7 @@ body.image-preview-open{overflow:hidden!important;}
     display:inline-flex;align-items:center;gap:8px;
     border:0;border-radius:0;background:transparent;color:var(--ink-soft);
     box-shadow:none;font-family:var(--sans);cursor:pointer;
+    user-select:none;
   }
   .share-chapter-dock:active{transform:translateY(1px);}
   .share-chapter-dock svg{width:17px;height:17px;flex:0 0 auto;color:var(--accent);}
@@ -4799,15 +4866,16 @@ body.image-preview-open{overflow:hidden!important;}
     width:auto;max-height:min(72dvh,560px);
     display:flex;flex-direction:column;overflow:hidden;
     background:var(--bg-editor);border:1px solid var(--line);border-width:1px 0 0;border-radius:20px 20px 0 0;box-shadow:0 -12px 36px rgba(30,25,18,.16);padding-bottom:env(safe-area-inset-bottom);
+    user-select:none;
   }
   .share-toc-sheet-head{height:54px;padding:0 12px 0 18px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;}
   .share-toc-sheet-head strong{font-family:var(--sans);font-size:15px;color:var(--ink);}
-  .share-toc-sheet-close{width:40px;height:40px;border:0;border-radius:10px;background:transparent;color:var(--ink-soft);display:grid;place-items:center;cursor:pointer;}
+  .share-toc-sheet-close{width:40px;height:40px;border:0;border-radius:10px;background:transparent;color:var(--ink-soft);display:grid;place-items:center;cursor:pointer;user-select:none;}
   .share-toc-sheet-close:hover{background:var(--bg-hover);color:var(--ink);}
   .share-toc-sheet-close svg{width:20px;height:20px;}
   .share-toc-sheet-list{list-style:none;margin:0;padding:10px 10px 18px;overflow:auto;}
   .share-toc-sheet-list li{margin:1px 0;}
-  .share-toc-sheet-list button{width:100%;min-height:42px;padding:9px 10px;border:0;border-left:2px solid transparent;border-radius:6px;background:transparent;color:var(--ink-soft);font-family:var(--sans);font-size:14px;line-height:1.45;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .share-toc-sheet-list button{width:100%;min-height:42px;padding:9px 10px;border:0;border-left:2px solid transparent;border-radius:6px;background:transparent;color:var(--ink-soft);font-family:var(--sans);font-size:14px;line-height:1.45;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;}
   .share-toc-sheet-list .level-h2 button{padding-left:22px;}
   .share-toc-sheet-list .level-h3 button{padding-left:34px;}
   .share-toc-sheet-list button:hover{background:var(--bg-hover);color:var(--ink);}
@@ -5246,6 +5314,7 @@ body.table-resizing *{cursor:col-resize!important;user-select:none!important;}
   color:var(--ink-soft);
   font-size:13px;
   line-height:1.55;
+  user-select:none;
 }
 
 /* 飞书式选区工具栏与段落二级菜单 */

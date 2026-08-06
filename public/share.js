@@ -209,6 +209,12 @@ async function submitPassword() {
       return;
     }
     if (res.status === 410) { errEl.textContent = '链接已过期'; return; }
+    if (res.status === 429) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = (body && body.error) || '尝试次数过多，请稍后再试';
+      inputs.forEach(inp => inp.value = '');
+      return;
+    }
     if (!res.ok) { errEl.textContent = '访问失败'; return; }
     const docRes = await fetch('/api/public/share/' + token + '/doc', { credentials: 'same-origin' });
     if (!docRes.ok) { errEl.textContent = '加载文档失败'; return; }
@@ -276,6 +282,31 @@ function renderDoc(data) {
   if (reader) reader.querySelectorAll('img').forEach((image) => {
     image.loading = 'lazy'; image.decoding = 'async';
   });
+
+  // 长标题：默认最多显示 2 行，超长时标题可点击展开/收起
+  const titleEl = container.querySelector('.share-paper-title');
+  const headEl = container.querySelector('.share-paper-head');
+  if (titleEl && headEl && titleEl.scrollHeight > titleEl.clientHeight + 1) {
+    titleEl.classList.add('collapsible');
+    titleEl.setAttribute('role', 'button');
+    titleEl.setAttribute('tabindex', '0');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-paper-title-toggle';
+    btn.textContent = '展开完整标题';
+    btn.setAttribute('aria-expanded', 'false');
+    headEl.insertBefore(btn, titleEl.nextSibling);
+    const toggle = () => {
+      const expanded = titleEl.classList.toggle('expanded');
+      btn.textContent = expanded ? '收起标题' : '展开完整标题';
+      btn.setAttribute('aria-expanded', String(expanded));
+    };
+    btn.addEventListener('click', toggle);
+    titleEl.addEventListener('click', toggle);
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+  }
 
   if (canEdit) setupShareEditToggle(token);
   setupProgress();
