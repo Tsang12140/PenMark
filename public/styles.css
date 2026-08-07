@@ -4415,12 +4415,17 @@ body.share-page{
   outline:none;
   overflow-wrap:anywhere;
   word-break:break-word;
-  /* 中文正文默认左对齐：强制两端对齐在中文窄屏下会拉伸字距，出现宽窄不一的"河流"，
-     大厂中文产品（飞书/Notion 等）均默认左对齐，靠行高与页边距营造整齐感 */
-  text-align:left;
-  text-align:start;
-  text-justify:auto;
-  text-align-last:auto;
+  /* 中文正文两端对齐 + 标点压缩：根治左对齐右锯齿 & 旧式两端对齐字距不均。
+     - text-justify:inter-character 只在字符间分配拉伸空间，不拉标点，避免"宽窄不一"；
+     - text-spacing-trim:space-all 压缩全角标点占位（2024+ 浏览器支持，不支持的降级为普通两端对齐，不报错）；
+     - text-align-last:left 段末最后一行不拉伸；
+     - text-wrap:pretty 优化孤字，避免末行单字独占。
+     编辑器（.editor）仍保持左对齐，避免输入时整行重排影响写作。 */
+  text-align:justify;
+  text-align-last:left;
+  text-justify:inter-character;
+  text-spacing-trim:space-all;
+  text-wrap:pretty;
   /* 标题、引用、代码等块级元素覆盖回左对齐 */
 }
 .share-reader h1,.share-reader h2,.share-reader h3,
@@ -5066,11 +5071,11 @@ body.image-preview-open{overflow:hidden!important;}
   .share-container{padding:48px 20px 84px;}
   .share-container.share-access-gate{min-height:calc(100dvh - 52px);padding:20px 18px 48px;}
   .share-pwd-card{padding:30px 20px 26px;border-radius:14px;}
-  .share-paper{padding:28px 8px 36px;border:0;border-radius:0;box-shadow:none;}
+  .share-paper{padding:28px 18px 36px;border:0;border-radius:0;box-shadow:none;}
   .share-paper-head{padding-bottom:16px;margin-bottom:20px;}
   .share-paper-title{font-size:24px;letter-spacing:1px;}
-  /* 正文左对齐（基础规则已统一），移动端只保留字号/行高；
-     容器左右留白 20px + 纸张 8px = 每侧 28px，正文有呼吸空间 */
+  /* 正文两端对齐 + 标点压缩（基础规则已统一），移动端只保留字号/行高；
+     容器左右留白 20px + 纸张 18px = 每侧 38px，正文有呼吸空间 */
   .share-reader,.share-editor{font-size:16px;line-height:1.85;}
   .share-topbar{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));}
   .share-brand-mark .share-brand-logo{height:30px;}
@@ -5856,7 +5861,7 @@ body.dashboard-active .editor-wrap{display:none;}
 .version-preview-render h1{font-size:22px;font-weight:700;line-height:1.35;margin:18px 0 10px;}
 .version-preview-render h2{font-size:18px;font-weight:700;line-height:1.4;margin:16px 0 8px;}
 .version-preview-render h3{font-size:16px;font-weight:600;line-height:1.45;margin:14px 0 6px;}
-.version-preview-render p{margin:0 0 10px;}
+.version-preview-render p{margin:0 0 10px;text-align:justify;text-align-last:left;text-justify:inter-character;text-spacing-trim:space-all;text-wrap:pretty;}
 .version-preview-render ul,.version-preview-render ol{margin:0 0 10px;padding-left:24px;}
 .version-preview-render li{margin:2px 0;}
 .version-preview-render blockquote{margin:0 0 10px;padding:6px 14px;border-left:3px solid var(--line-soft);color:var(--ink-soft);background:var(--highlight);}
