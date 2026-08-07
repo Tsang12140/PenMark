@@ -4415,9 +4415,11 @@ body.share-page{
   outline:none;
   overflow-wrap:anywhere;
   word-break:break-word;
-  /* 默认两端对齐，中文也走字符间距补齐，避免右侧锯齿 */
-  text-align:justify;
-  text-justify:inter-ideograph;
+  /* 中文正文默认左对齐：强制两端对齐在中文窄屏下会拉伸字距，出现宽窄不一的"河流"，
+     大厂中文产品（飞书/Notion 等）均默认左对齐，靠行高与页边距营造整齐感 */
+  text-align:left;
+  text-align:start;
+  text-justify:auto;
   text-align-last:auto;
   /* 标题、引用、代码等块级元素覆盖回左对齐 */
 }
@@ -5061,18 +5063,15 @@ body.image-preview-open{overflow:hidden!important;}
   [data-theme="dark"] .share-toc-sheet-close:hover{background:#343b39;color:#f0efe9;}
 }
 @media (max-width:760px){
-  .share-container{padding:48px 0 84px;}
+  .share-container{padding:48px 20px 84px;}
   .share-container.share-access-gate{min-height:calc(100dvh - 52px);padding:20px 18px 48px;}
   .share-pwd-card{padding:30px 20px 26px;border-radius:14px;}
-  .share-paper{padding:28px 20px 36px;border:0;border-radius:0;box-shadow:none;}
+  .share-paper{padding:28px 8px 36px;border:0;border-radius:0;box-shadow:none;}
   .share-paper-head{padding-bottom:16px;margin-bottom:20px;}
   .share-paper-title{font-size:24px;letter-spacing:1px;}
-  /* 阅读区在移动端保持两端对齐（与桌面一致），文字填满到右缘，避免参差右边缘/短末行；
-     编辑区保留左对齐，编辑时更顺手 */
-  .share-reader{font-size:16px;line-height:1.85;}
-  .share-reader p,.share-reader li{font-size:1em;line-height:inherit;}
-  .share-editor{font-size:16px;line-height:1.85;text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
-  .share-editor p,.share-editor li{text-align:left;text-align:start;text-justify:auto;text-align-last:auto;}
+  /* 正文左对齐（基础规则已统一），移动端只保留字号/行高；
+     容器左右留白 20px + 纸张 8px = 每侧 28px，正文有呼吸空间 */
+  .share-reader,.share-editor{font-size:16px;line-height:1.85;}
   .share-topbar{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));}
   .share-brand-mark .share-brand-logo{height:30px;}
   .share-theme-toggle{width:32px;height:32px;font-size:14px;}
